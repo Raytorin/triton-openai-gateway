@@ -1,0 +1,26 @@
+{{- if and .Values.mediaPersistence.enabled (not .Values.mediaPersistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "triton-gateway.mediaClaimName" . }}
+  labels:
+    {{- include "triton-gateway.labels" . | nindent 4 }}
+  {{- if or .Values.mediaPersistence.retain .Values.mediaPersistence.annotations }}
+  annotations:
+    {{- if .Values.mediaPersistence.retain }}
+    helm.sh/resource-policy: keep
+    {{- end }}
+    {{- with .Values.mediaPersistence.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.mediaPersistence.accessModes | nindent 4 }}
+  {{- with .Values.mediaPersistence.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.mediaPersistence.size }}
+{{- end }}

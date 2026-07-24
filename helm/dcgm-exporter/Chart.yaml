@@ -1,0 +1,15 @@
+apiVersion: v2
+name: triton-dcgm-exporter
+description: Standalone NVIDIA DCGM Exporter for an existing Triton deployment
+type: application
+version: 0.1.0
+appVersion: "4.8.2"
+annotations:
+  io.github.raytorin/provenance: "urn:uuid:0ce7364a-f483-5a7d-be30-7b536427a0d0"
+maintainers:
+  - name: Raytorin
+    url: https://github.com/Raytorin
+dependencies:
+  - name: dcgm-exporter
+    version: "4.8.2"
+    repository: https://nvidia.github.io/dcgm-exporter/helm-charts

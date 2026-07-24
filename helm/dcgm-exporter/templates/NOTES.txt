@@ -1,0 +1,8 @@
+DCGM Exporter is installed independently from Triton.
+
+Metrics service:
+  http://{{ .Release.Name }}-dcgm-exporter.{{ .Release.Namespace }}.svc:9400/metrics
+
+Local check:
+  kubectl -n {{ .Release.Namespace }} port-forward service/{{ .Release.Name }}-dcgm-exporter 9400:9400
+  curl -s http://127.0.0.1:9400/metrics | grep DCGM_FI_DEV_GPU_UTIL

@@ -1,0 +1,13 @@
+{
+  "gpu_memory_utilization": 0.8,
+  "max_model_len": 16384,
+  "tensor_parallel_size": 1,
+  "dtype": "auto",
+  "trust_remote_code": true,
+  "max_num_seqs": 4,
+  "limit_mm_per_prompt": {
+    "image": 32,
+    "video": 1,
+    "audio": 1
+  }
+}

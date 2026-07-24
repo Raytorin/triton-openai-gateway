@@ -1,0 +1,13 @@
+Triton OpenAI Gateway
+Copyright 2026 Raytorin
+Project provenance identifier: urn:uuid:0ce7364a-f483-5a7d-be30-7b536427a0d0
+
+The original project architecture, gateway orchestration, multimodal
+processing, operational tooling, and documentation were created by Raytorin
+(https://github.com/Raytorin).
+
+This product includes software developed by third parties. Their copyright and
+license notices are retained in the corresponding source files and documented
+in THIRD_PARTY_NOTICES.md.
+
+This software contains source code provided by NVIDIA Corporation.

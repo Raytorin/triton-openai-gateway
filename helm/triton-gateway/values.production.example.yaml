@@ -1,0 +1,60 @@
+replicaCount: 1
+
+image:
+  repository: registry.example.com/ml/triton-openai-gateway
+  tag: 26.06-vllm-gateway
+  pullPolicy: IfNotPresent
+
+updateStrategy:
+  type: Recreate
+
+triton:
+  modelRepository: s3://object-store.example.com/bucket/triton
+  modelControlMode: explicit
+  strictReadiness: false
+  loadModels:
+    - chat-model
+    - embedding-model
+  gpuMetrics:
+    # Use external when GPU Operator/DCGM Exporter is already installed.
+    mode: external
+
+s3:
+  existingSecret: triton-server-s3-credentials
+
+modelStorage:
+  persistence:
+    enabled: true
+    existingClaim: triton-model-files
+
+homeStorage:
+  sizeLimit: 40Gi
+
+sharedMemory:
+  enabled: true
+  sizeLimit: 8Gi
+
+# /health keeps the gateway reachable while models load or unload.
+startupProbe:
+  path: /health
+  port: gateway
+
+readinessProbe:
+  path: /health
+  port: gateway
+
+resources:
+  requests:
+    cpu: "10"
+    memory: 80Gi
+    nvidia.com/gpu: "8"
+  limits:
+    cpu: "10"
+    memory: 80Gi
+    nvidia.com/gpu: "8"
+
+tolerations:
+  - key: nvidia.com
+    operator: Equal
+    value: gpu
+    effect: NoSchedule

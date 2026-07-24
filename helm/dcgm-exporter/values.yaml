@@ -1,0 +1,56 @@
+dcgm-exporter:
+  # Set to nvidia when the cluster does not use the NVIDIA runtime by default.
+  runtimeClassName: ""
+
+  image:
+    repository: nvcr.io/nvidia/k8s/dcgm-exporter
+    tag: 4.5.3-4.8.2-distroless
+    pullPolicy: IfNotPresent
+
+  arguments:
+    - -f
+    - /etc/dcgm-exporter/default-counters.csv
+
+  service:
+    enable: true
+    type: ClusterIP
+    port: 9400
+    internalTrafficPolicy: Cluster
+
+  # Enable only when the Prometheus Operator CRDs are installed.
+  serviceMonitor:
+    enabled: false
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 512Mi
+
+  securityContext:
+    runAsNonRoot: false
+    runAsUser: 0
+    allowPrivilegeEscalation: false
+    capabilities:
+      add:
+        - SYS_ADMIN
+      drop:
+        - ALL
+
+  # The exporter must run on GPU nodes, including tainted nodes.
+  tolerations:
+    - operator: Exists
+
+  # For direct access from Streamlit, select the Triton node so the Service has
+  # one relevant endpoint. Example:
+  # nodeSelector:
+  #   kubernetes.io/hostname: gpu-worker-01
+  nodeSelector: {}
+
+  kubernetes:
+    enablePodLabels: false
+    enablePodUID: false
+    rbac:
+      create: true

@@ -1,0 +1,30 @@
+name: "Qwen3-VL-32B-Instruct-FP8"
+backend: "vllm_multimodal"
+
+max_batch_size: 0
+
+model_transaction_policy {
+  decoupled: true
+}
+
+instance_group [
+  {
+    kind: KIND_MODEL
+    count: 1
+  }
+]
+
+parameters [
+  {
+    key: "GPU_DEVICE_IDS"
+    value: { string_value: "0" }
+  },
+  {
+    key: "REPORT_CUSTOM_METRICS"
+    value: { string_value: "true" }
+  },
+  {
+    key: "ENABLE_VLLM_HEALTH_CHECK"
+    value: { string_value: "true" }
+  }
+]

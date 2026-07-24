@@ -1,0 +1,6 @@
+dependencies:
+- name: dcgm-exporter
+  repository: https://nvidia.github.io/dcgm-exporter/helm-charts
+  version: 4.8.2
+digest: sha256:be90c1aff46a983dcbe72374def26279161cea0b445125ac5c1381bf773baf05
+generated: "2026-07-17T20:06:51.200032895+03:00"

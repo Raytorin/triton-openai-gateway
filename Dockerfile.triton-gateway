@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 Raytorin
+# SPDX-License-Identifier: Apache-2.0
+
+ARG BASE_IMAGE=nvcr.io/nvidia/tritonserver:26.06-vllm-python-py3@sha256:a080eaace14725e9d740eb909e2fe6bfc56e611385900aeb8dc3a04f32ec2bc6
+FROM ${BASE_IMAGE}
+
+LABEL org.opencontainers.image.title="Triton OpenAI Gateway" \
+      org.opencontainers.image.description="OpenAI-compatible APIs and multimodal orchestration for NVIDIA Triton and vLLM" \
+      org.opencontainers.image.version="0.1.0" \
+      org.opencontainers.image.authors="Raytorin" \
+      org.opencontainers.image.source="https://github.com/Raytorin/triton-openai-gateway" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      io.github.raytorin.provenance="urn:uuid:0ce7364a-f483-5a7d-be30-7b536427a0d0"
+
+COPY docker/triton-chat-gateway-requirements.txt /tmp/triton-chat-gateway-requirements.txt
+COPY docker/verify-runtime.py /tmp/verify-runtime.py
+
+RUN python3 -m pip install --no-cache-dir -r /tmp/triton-chat-gateway-requirements.txt \
+    && python3 /tmp/verify-runtime.py \
+    && rm -f /tmp/triton-chat-gateway-requirements.txt /tmp/verify-runtime.py
+
+COPY watch_triton.sh /usr/local/bin/watch_triton.sh
+COPY docker/80-watch-triton.sh /opt/nvidia/entrypoint.d/80-watch-triton.sh
+COPY docker/90-triton-chat-gateway.sh /opt/nvidia/entrypoint.d/90-triton-chat-gateway.sh
+COPY gateway /opt/tritonserver/gateway
+COPY backends/vllm_multimodal /opt/tritonserver/backends/vllm_multimodal
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /opt/tritonserver/licenses/triton-openai-gateway/
+
+RUN test -f /opt/tritonserver/backends/vllm_multimodal/model.py \
+    && test -f /opt/tritonserver/backends/python/libtriton_python.so \
+    && test -x /opt/tritonserver/backends/python/triton_python_backend_stub \
+    && test -f /opt/tritonserver/backends/python/triton_python_backend_utils.py \
+    && python3 -m compileall -q /opt/tritonserver/backends/vllm_multimodal \
+    && chmod 0755 /usr/local/bin/watch_triton.sh \
+                  /opt/nvidia/entrypoint.d/80-watch-triton.sh \
+                  /opt/nvidia/entrypoint.d/90-triton-chat-gateway.sh
+
+EXPOSE 8000 8001 8002 8080

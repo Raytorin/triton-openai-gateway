@@ -1,0 +1,26 @@
+{{- if and .Values.modelStorage.persistence.enabled (not .Values.modelStorage.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "triton-gateway.modelClaimName" . }}
+  labels:
+    {{- include "triton-gateway.labels" . | nindent 4 }}
+  {{- if or .Values.modelStorage.persistence.retain .Values.modelStorage.persistence.annotations }}
+  annotations:
+    {{- if .Values.modelStorage.persistence.retain }}
+    helm.sh/resource-policy: keep
+    {{- end }}
+    {{- with .Values.modelStorage.persistence.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.modelStorage.persistence.accessModes | nindent 4 }}
+  {{- with .Values.modelStorage.persistence.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.modelStorage.persistence.size }}
+{{- end }}

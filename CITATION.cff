@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using these metadata."
+title: "Triton OpenAI Gateway"
+type: software
+authors:
+  - name: "Raytorin"
+    website: "https://github.com/Raytorin"
+repository-code: "https://github.com/Raytorin/triton-openai-gateway"
+url: "https://github.com/Raytorin/triton-openai-gateway"
+license: Apache-2.0

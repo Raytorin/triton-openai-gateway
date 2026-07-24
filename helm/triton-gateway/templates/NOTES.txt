@@ -1,0 +1,21 @@
+Gateway endpoint:
+  http://{{ include "triton-gateway.fullname" . }}:{{ .Values.service.ports.gateway }}/v1
+
+Health checks from inside the cluster:
+  curl http://{{ include "triton-gateway.fullname" . }}:{{ .Values.service.ports.gateway }}/health
+  curl http://{{ include "triton-gateway.fullname" . }}:{{ .Values.service.ports.http }}/v2/health/ready
+
+{{- if and (eq .Values.triton.gpuMetrics.mode "external") (index .Values "dcgm-exporter" "enabled") }}
+DCGM Exporter metrics:
+  curl http://{{ .Release.Name }}-dcgm-exporter:9400/metrics
+{{- else if eq .Values.triton.gpuMetrics.mode "external" }}
+GPU metrics use external mode. Configure an existing dcgm-exporter endpoint or
+enable the bundled exporter with --set dcgm-exporter.enabled=true.
+{{- end }}
+
+{{- if .Values.mediaPersistence.enabled }}
+Media PVC:
+  {{ include "triton-gateway.mediaClaimName" . }} mounted at {{ .Values.mediaPersistence.mountPath }}
+{{- else }}
+Media PVC is disabled. Enable it with --set mediaPersistence.enabled=true.
+{{- end }}

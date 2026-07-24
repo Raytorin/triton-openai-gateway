@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 Raytorin
+# SPDX-License-Identifier: Apache-2.0
+
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+
+  - package-ecosystem: pip
+    directory: /docker
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - runtime
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - runtime
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - ci

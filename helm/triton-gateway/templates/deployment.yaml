@@ -1,0 +1,342 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "triton-gateway.fullname" . }}
+  labels:
+    {{- include "triton-gateway.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  progressDeadlineSeconds: {{ .Values.progressDeadlineSeconds }}
+  strategy:
+    type: {{ .Values.updateStrategy.type }}
+    {{- if eq .Values.updateStrategy.type "RollingUpdate" }}
+    rollingUpdate:
+      {{- toYaml .Values.updateStrategy.rollingUpdate | nindent 6 }}
+    {{- end }}
+  selector:
+    matchLabels:
+      {{- include "triton-gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "triton-gateway.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "triton-gateway.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: triton-gateway
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- if eq .Values.triton.gpuMetrics.mode "builtin" }}
+            {{- toYaml .Values.triton.gpuMetrics.builtinSecurityContext | nindent 12 }}
+            {{- else }}
+            {{- toYaml .Values.securityContext | nindent 12 }}
+            {{- end }}
+          args:
+            - tritonserver
+            - "--model-repository={{ .Values.triton.modelRepository }}"
+            - "--model-control-mode={{ .Values.triton.modelControlMode }}"
+            - "--strict-readiness={{ .Values.triton.strictReadiness }}"
+            - "--allow-gpu-metrics={{ eq .Values.triton.gpuMetrics.mode "builtin" }}"
+            {{- range .Values.triton.loadModels }}
+            - "--load-model={{ . }}"
+            {{- end }}
+            {{- if .Values.triton.httpMaxInputSize }}
+            - "--http-max-input-size={{ .Values.triton.httpMaxInputSize }}"
+            {{- end }}
+            {{- if .Values.triton.tracing.enabled }}
+            - "--trace-config=mode=opentelemetry"
+            - "--trace-config=level={{ .Values.triton.tracing.level }}"
+            - "--trace-config=rate={{ .Values.triton.tracing.rate }}"
+            - "--trace-config=count={{ .Values.triton.tracing.count }}"
+            - "--trace-config=opentelemetry,url={{ .Values.triton.tracing.endpoint }}"
+            - "--trace-config=opentelemetry,resource=service.name={{ .Values.triton.tracing.serviceName }}"
+            {{- end }}
+            {{- range .Values.triton.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            - name: TRITON_BASE_URL
+              value: http://127.0.0.1:8000
+            - name: TRITON_GRPC_URL
+              value: 127.0.0.1:8001
+            - name: MODELS_ACTIVE_DIR
+              value: {{ .Values.gateway.modelsActiveDir | quote }}
+            - name: TRITON_FRONTEND_LOCAL_MODEL_REPOSITORY
+              value: {{ .Values.gateway.modelsActiveDir | quote }}
+            - name: GATEWAY_PORT
+              value: {{ .Values.gateway.port | quote }}
+            - name: REQUEST_TIMEOUT_SECONDS
+              value: {{ .Values.gateway.requestTimeoutSeconds | quote }}
+            - name: GATEWAY_MAX_REQUEST_BODY_BYTES
+              value: {{ .Values.gateway.maxRequestBodyBytes | quote }}
+            - name: TOKENIZER_PRELOAD
+              value: {{ .Values.gateway.tokenizerPreload | quote }}
+            - name: GATEWAY_EMBEDDING_MAX_CONCURRENCY
+              value: {{ .Values.gateway.embeddingMaxConcurrency | quote }}
+            - name: GATEWAY_MAX_INFLIGHT_REQUESTS
+              value: {{ .Values.gateway.admission.maxInflight | quote }}
+            - name: GATEWAY_MAX_QUEUE_SIZE
+              value: {{ .Values.gateway.admission.maxQueue | quote }}
+            - name: GATEWAY_QUEUE_TIMEOUT_SECONDS
+              value: {{ .Values.gateway.admission.queueTimeoutSeconds | quote }}
+            - name: GATEWAY_CHAT_MAX_INFLIGHT_REQUESTS
+              value: {{ .Values.gateway.admission.chatMaxInflight | quote }}
+            - name: GATEWAY_CHAT_MAX_QUEUE_SIZE
+              value: {{ .Values.gateway.admission.chatMaxQueue | quote }}
+            - name: GATEWAY_MEDIA_MAX_INFLIGHT_REQUESTS
+              value: {{ .Values.gateway.admission.mediaMaxInflight | quote }}
+            - name: GATEWAY_MEDIA_MAX_QUEUE_SIZE
+              value: {{ .Values.gateway.admission.mediaMaxQueue | quote }}
+            - name: GATEWAY_EMBEDDINGS_MAX_INFLIGHT_REQUESTS
+              value: {{ .Values.gateway.admission.embeddingsMaxInflight | quote }}
+            - name: GATEWAY_EMBEDDINGS_MAX_QUEUE_SIZE
+              value: {{ .Values.gateway.admission.embeddingsMaxQueue | quote }}
+            - name: GATEWAY_RERANK_MAX_INFLIGHT_REQUESTS
+              value: {{ .Values.gateway.admission.rerankMaxInflight | quote }}
+            - name: GATEWAY_RERANK_MAX_QUEUE_SIZE
+              value: {{ .Values.gateway.admission.rerankMaxQueue | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.gateway.observability.logFormat | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.gateway.observability.logLevel | quote }}
+            - name: LOG_PROMPT_PREVIEW
+              value: {{ .Values.gateway.observability.logPromptPreview | quote }}
+            - name: GATEWAY_DEBUG
+              value: {{ .Values.gateway.observability.debugEnabled | quote }}
+            - name: DEBUG_LOG_PAYLOADS
+              value: {{ .Values.gateway.observability.debugLogPayloads | quote }}
+            - name: DEBUG_PREVIEW_CHARS
+              value: {{ .Values.gateway.observability.debugPreviewChars | quote }}
+            - name: UVICORN_ACCESS_LOG
+              value: {{ .Values.gateway.observability.uvicornAccessLog | quote }}
+            - name: TOKENIZER_TRUST_REMOTE_CODE
+              value: {{ .Values.gateway.tokenizerTrustRemoteCode | quote }}
+            - name: TMP_ROOT
+              value: {{ .Values.gateway.tmpRoot | quote }}
+            - name: VLLM_MULTIMODAL_MAX_MEDIA_BYTES
+              value: {{ .Values.gateway.nativeBackend.maxMediaBytes | quote }}
+            - name: VLLM_MULTIMODAL_MAX_REQUEST_BYTES
+              value: {{ .Values.gateway.nativeBackend.maxRequestBytes | quote }}
+            - name: VLLM_MULTIMODAL_MAX_MEDIA_ITEMS
+              value: {{ .Values.gateway.nativeBackend.maxMediaItems | quote }}
+            - name: VLLM_MULTIMODAL_MAX_SOURCE_PIXELS
+              value: {{ .Values.gateway.nativeBackend.maxSourcePixels | quote }}
+            - name: VLLM_MULTIMODAL_MAX_OUTPUT_PIXELS
+              value: {{ .Values.gateway.nativeBackend.maxOutputPixels | quote }}
+            - name: VLLM_MULTIMODAL_MAX_VIDEO_FRAMES
+              value: {{ .Values.gateway.nativeBackend.maxVideoFrames | quote }}
+            - name: VLLM_MULTIMODAL_MAX_TOTAL_VIDEO_FRAMES
+              value: {{ .Values.gateway.nativeBackend.maxTotalVideoFrames | quote }}
+            - name: VLLM_MULTIMODAL_MAX_PDF_PAGES
+              value: {{ .Values.gateway.nativeBackend.maxPdfPages | quote }}
+            - name: VLLM_MULTIMODAL_MAX_AUDIO_SECONDS
+              value: {{ .Values.gateway.nativeBackend.maxAudioSeconds | quote }}
+            - name: VLLM_MULTIMODAL_PREPROCESS_CONCURRENCY
+              value: {{ .Values.gateway.nativeBackend.preprocessConcurrency | quote }}
+            - name: VLLM_MULTIMODAL_RESPONSE_QUEUE_SIZE
+              value: {{ .Values.gateway.nativeBackend.responseQueueSize | quote }}
+            - name: VLLM_MULTIMODAL_METRICS_QUEUE_SIZE
+              value: {{ .Values.gateway.nativeBackend.metricsQueueSize | quote }}
+            - name: VLLM_MULTIMODAL_REPORT_CUSTOM_METRICS
+              value: {{ .Values.gateway.nativeBackend.reportCustomMetrics | quote }}
+            - name: VLLM_MEDIA_PDF_CHUNK_PAGES
+              value: {{ .Values.gateway.vllmMultimodal.pdfChunkPages | quote }}
+            - name: VLLM_MEDIA_PDF_DPI
+              value: {{ .Values.gateway.vllmMultimodal.pdfDpi | quote }}
+            - name: VLLM_MEDIA_PDF_MAX_PIXELS
+              value: {{ .Values.gateway.vllmMultimodal.pdfMaxPixels | quote }}
+            - name: VLLM_MEDIA_PDF_TEXT_MODE
+              value: {{ .Values.gateway.vllmMultimodal.pdfTextMode | quote }}
+            - name: VLLM_MEDIA_VIDEO_FPS
+              value: {{ .Values.gateway.vllmMultimodal.videoFps | quote }}
+            - name: VLLM_MEDIA_VIDEO_MAX_FRAMES
+              value: {{ .Values.gateway.vllmMultimodal.videoMaxFrames | quote }}
+            - name: VLLM_MEDIA_VIDEO_CHUNK_FRAMES
+              value: {{ .Values.gateway.vllmMultimodal.videoChunkFrames | quote }}
+            - name: VLLM_MEDIA_VIDEO_MAX_PIXELS
+              value: {{ .Values.gateway.vllmMultimodal.videoMaxPixels | quote }}
+            - name: VLLM_MEDIA_IMAGE_MAX_PIXELS
+              value: {{ .Values.gateway.vllmMultimodal.imageMaxPixels | quote }}
+            - name: VLLM_MEDIA_TEXT_CHUNK_CHARS
+              value: {{ .Values.gateway.vllmMultimodal.textChunkChars | quote }}
+            - name: VLLM_MEDIA_SUMMARY_MAX_TOKENS
+              value: {{ .Values.gateway.vllmMultimodal.summaryMaxTokens | quote }}
+            - name: VLLM_MEDIA_REDUCE_GROUP_SIZE
+              value: {{ .Values.gateway.vllmMultimodal.reduceGroupSize | quote }}
+            - name: VLLM_MEDIA_FINAL_SUMMARY_LIMIT
+              value: {{ .Values.gateway.vllmMultimodal.finalSummaryLimit | quote }}
+            - name: VLLM_MEDIA_MAP_CONCURRENCY
+              value: {{ .Values.gateway.vllmMultimodal.mapConcurrency | quote }}
+            - name: VLLM_MEDIA_PDF_RAG_EMBEDDING_CONCURRENCY
+              value: {{ .Values.gateway.vllmMultimodal.pdfRagEmbeddingConcurrency | quote }}
+            - name: VLLM_MEDIA_PDF_EMBEDDING_CACHE_SIZE
+              value: {{ .Values.gateway.vllmMultimodal.pdfEmbeddingCacheSize | quote }}
+            - name: VLLM_MEDIA_MAX_REMOTE_BYTES
+              value: {{ .Values.gateway.vllmMultimodal.maxRemoteMediaBytes | quote }}
+            - name: VLLM_MEDIA_REMOTE_TIMEOUT
+              value: {{ .Values.gateway.vllmMultimodal.remoteMediaTimeoutSeconds | quote }}
+            - name: VLLM_MEDIA_ALLOW_PRIVATE_URLS
+              value: {{ .Values.gateway.vllmMultimodal.allowPrivateRemoteUrls | quote }}
+            - name: VLLM_MEDIA_AUDIO_ASR_DEVICE
+              value: {{ .Values.gateway.vllmMultimodal.audioAsrDevice | quote }}
+            - name: VLLM_MEDIA_AUDIO_CHUNK_SECONDS
+              value: {{ .Values.gateway.vllmMultimodal.audioChunkLengthSeconds | quote }}
+            - name: VLLM_MEDIA_AUDIO_STRIDE_SECONDS
+              value: {{ .Values.gateway.vllmMultimodal.audioStrideLengthSeconds | quote }}
+            {{- if .Values.gateway.vllmMultimodal.audioAsrModel }}
+            - name: VLLM_MEDIA_AUDIO_ASR_MODEL
+              value: {{ .Values.gateway.vllmMultimodal.audioAsrModel | quote }}
+            {{- end }}
+            {{- if .Values.mediaPersistence.enabled }}
+            - name: TRITON_MEDIA_DIR
+              value: {{ .Values.mediaPersistence.mountPath | quote }}
+            - name: TRITON_MULTIMODAL_TMPDIR
+              value: {{ .Values.mediaPersistence.mountPath | quote }}
+            {{- if .Values.mediaPersistence.useAsTmpDir }}
+            - name: TMPDIR
+              value: {{ .Values.mediaPersistence.mountPath | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.gateway.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if or .Values.s3.existingSecret .Values.extraEnvFrom }}
+          envFrom:
+            {{- if .Values.s3.existingSecret }}
+            - secretRef:
+                name: {{ .Values.s3.existingSecret }}
+            {{- end }}
+            {{- with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+            - name: grpc
+              containerPort: 8001
+              protocol: TCP
+            - name: metrics
+              containerPort: 8002
+              protocol: TCP
+            - name: gateway
+              containerPort: {{ .Values.gateway.port }}
+              protocol: TCP
+          {{- if .Values.startupProbe.enabled }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.startupProbe.path }}
+              port: {{ .Values.startupProbe.port }}
+              scheme: HTTP
+            initialDelaySeconds: {{ .Values.startupProbe.initialDelaySeconds }}
+            failureThreshold: {{ .Values.startupProbe.failureThreshold }}
+            periodSeconds: {{ .Values.startupProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.startupProbe.timeoutSeconds }}
+          {{- end }}
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.livenessProbe.path }}
+              port: {{ .Values.livenessProbe.port }}
+              scheme: HTTP
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+          {{- end }}
+          {{- if .Values.readinessProbe.enabled }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.readinessProbe.path }}
+              port: {{ .Values.readinessProbe.port }}
+              scheme: HTTP
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- range .Values.modelStorage.mountPaths }}
+            - name: model-storage
+              mountPath: {{ . | quote }}
+            {{- end }}
+            - name: home-storage
+              mountPath: /home/triton-server
+            {{- if .Values.sharedMemory.enabled }}
+            - name: shared-memory
+              mountPath: /dev/shm
+            {{- end }}
+            {{- if .Values.mediaPersistence.enabled }}
+            - name: media-storage
+              mountPath: {{ .Values.mediaPersistence.mountPath | quote }}
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      volumes:
+        - name: model-storage
+          {{- if .Values.modelStorage.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "triton-gateway.modelClaimName" . }}
+          {{- else }}
+          emptyDir:
+            {{- with .Values.modelStorage.emptyDir.sizeLimit }}
+            sizeLimit: {{ . }}
+            {{- end }}
+          {{- end }}
+        - name: home-storage
+          emptyDir:
+            {{- with .Values.homeStorage.sizeLimit }}
+            sizeLimit: {{ . }}
+            {{- end }}
+        {{- if .Values.sharedMemory.enabled }}
+        - name: shared-memory
+          emptyDir:
+            medium: Memory
+            {{- with .Values.sharedMemory.sizeLimit }}
+            sizeLimit: {{ . }}
+            {{- end }}
+        {{- end }}
+        {{- if .Values.mediaPersistence.enabled }}
+        - name: media-storage
+          persistentVolumeClaim:
+            claimName: {{ include "triton-gateway.mediaClaimName" . }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

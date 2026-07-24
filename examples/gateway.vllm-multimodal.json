@@ -1,0 +1,61 @@
+{
+  "admission": {
+    "chat": {
+      "max_inflight": 64,
+      "max_queue": 256,
+      "queue_timeout_seconds": 30
+    },
+    "media": {
+      "max_inflight": 4,
+      "max_queue": 16,
+      "queue_timeout_seconds": 30
+    },
+    "embeddings": {
+      "max_inflight": 64,
+      "max_queue": 256,
+      "queue_timeout_seconds": 30
+    },
+    "rerank": {
+      "max_inflight": 64,
+      "max_queue": 256,
+      "queue_timeout_seconds": 30
+    }
+  },
+  "vllm_multimodal": {
+    "media_history_mode": "latest",
+    "reset_history_on_new_media": false,
+    "focus_current_media": true,
+    "media_history_max_tokens": 512,
+    "pdf_chunk_pages": 2,
+    "pdf_dpi": 144,
+    "pdf_max_pixels": 262144,
+    "pdf_text_mode": "auto",
+    "video_fps": 1.0,
+    "video_max_frames": 32,
+    "video_chunk_frames": 2,
+    "video_max_pixels": 262144,
+    "image_max_pixels": 262144,
+    "text_chunk_chars": 6000,
+    "summary_max_tokens": 256,
+    "reduce_group_size": 5,
+    "final_summary_limit": 6,
+    "map_concurrency": 2,
+    "pdf_rag": {
+      "embedding_model": "",
+      "dimensions": null,
+      "chunk_chars": 1800,
+      "chunk_overlap": 200,
+      "top_k": 8,
+      "min_text_chars": 200,
+      "query_prefix": "",
+      "embedding_concurrency": 8,
+      "embedding_cache_size": 4096
+    },
+    "max_remote_media_bytes": 209715200,
+    "remote_media_timeout": 60,
+    "audio_asr_model": "",
+    "audio_asr_device": "-1",
+    "audio_chunk_length_seconds": 30,
+    "audio_stride_length_seconds": 5
+  }
+}

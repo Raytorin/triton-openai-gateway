@@ -1,0 +1,290 @@
+replicaCount: 1
+
+revisionHistoryLimit: 3
+progressDeadlineSeconds: 3600
+
+# Recreate avoids a deadlock when one Triton pod already owns every GPU needed
+# by its replacement. Use RollingUpdate only when the cluster has spare GPUs.
+updateStrategy:
+  type: Recreate
+  rollingUpdate:
+    maxSurge: 0
+    maxUnavailable: 1
+
+image:
+  repository: example.registry.local/nvidia/tritonserver
+  tag: 26.06-vllm-gateway
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+triton:
+  modelRepository: s3://minio.minio.svc:9000/example-bucket/triton
+  modelControlMode: explicit
+  strictReadiness: false
+  # Models loaded when Triton starts. Keep empty when lifecycle is controlled
+  # only through the repository API.
+  loadModels: []
+  gpuMetrics:
+    # builtin exposes nv_gpu_* on :8002, but embedded DCGM must run as root.
+    # external keeps the Triton container non-root and expects dcgm-exporter.
+    mode: builtin
+    builtinSecurityContext:
+      runAsUser: 0
+      runAsGroup: 0
+      runAsNonRoot: false
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+  # Base64 media can make HTTP requests significantly larger than source files.
+  httpMaxInputSize: "268435456"
+  tracing:
+    enabled: false
+    endpoint: http://otel-collector.observability.svc:4318/v1/traces
+    level: TIMESTAMPS
+    # 0 traces only requests carrying an OpenTelemetry context.
+    rate: 0
+    count: -1
+    serviceName: triton-inference-server
+  extraArgs: []
+
+gateway:
+  port: 8080
+  requestTimeoutSeconds: 600
+  maxRequestBodyBytes: "268435456"
+  tokenizerPreload: true
+  embeddingMaxConcurrency: "8"
+  admission:
+    maxInflight: "256"
+    maxQueue: "512"
+    queueTimeoutSeconds: "30"
+    chatMaxInflight: "64"
+    chatMaxQueue: "256"
+    mediaMaxInflight: "4"
+    mediaMaxQueue: "16"
+    embeddingsMaxInflight: "64"
+    embeddingsMaxQueue: "256"
+    rerankMaxInflight: "64"
+    rerankMaxQueue: "256"
+  observability:
+    logFormat: json
+    logLevel: INFO
+    logPromptPreview: false
+    # Enables safe debug metadata for every chat request. A client can instead
+    # enable it for one request by sending debug=true.
+    debugEnabled: false
+    debugLogPayloads: false
+    debugPreviewChars: "2000"
+    uvicornAccessLog: false
+  tokenizerTrustRemoteCode: true
+  modelsActiveDir: /tmp/models-active
+  tmpRoot: /tmp
+  nativeBackend:
+    # Maximum decoded size of one image/video/audio/PDF item.
+    maxMediaBytes: "268435456"
+    maxRequestBytes: "805306368"
+    maxMediaItems: "64"
+    maxSourcePixels: "100000000"
+    maxOutputPixels: "4194304"
+    maxVideoFrames: "256"
+    maxTotalVideoFrames: "256"
+    maxPdfPages: "64"
+    maxAudioSeconds: "600"
+    preprocessConcurrency: "2"
+    responseQueueSize: "256"
+    metricsQueueSize: "4096"
+    reportCustomMetrics: true
+  vllmMultimodal:
+    pdfChunkPages: 2
+    pdfDpi: 144
+    pdfMaxPixels: 262144
+    pdfTextMode: auto
+    videoFps: 1.0
+    videoMaxFrames: 32
+    videoChunkFrames: 4
+    videoMaxPixels: 262144
+    imageMaxPixels: 262144
+    textChunkChars: 6000
+    summaryMaxTokens: 256
+    reduceGroupSize: 5
+    finalSummaryLimit: 6
+    mapConcurrency: 2
+    pdfRagEmbeddingConcurrency: 8
+    pdfEmbeddingCacheSize: 4096
+    maxRemoteMediaBytes: "209715200"
+    remoteMediaTimeoutSeconds: 60
+    # Keep false unless models must access trusted private media endpoints.
+    allowPrivateRemoteUrls: false
+    # Required only for audio. Prefer a local model path mounted in the pod.
+    audioAsrModel: ""
+    # -1 means CPU. Set 0 only if the ASR model may share the visible GPU/MIG.
+    audioAsrDevice: "-1"
+    audioChunkLengthSeconds: 30
+    audioStrideLengthSeconds: 5
+  extraEnv: []
+
+s3:
+  # Secret should contain the variables expected by the Triton S3 repository agent.
+  existingSecret: ""
+
+service:
+  type: ClusterIP
+  annotations: {}
+  ports:
+    http: 8000
+    grpc: 8001
+    metrics: 8002
+    gateway: 8080
+
+modelStorage:
+  mountPaths:
+    - /models
+    - /tmp
+  persistence:
+    enabled: false
+    existingClaim: ""
+    storageClassName: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 100Gi
+    annotations: {}
+    retain: true
+  emptyDir:
+    sizeLimit: 50Gi
+
+mediaPersistence:
+  enabled: false
+  existingClaim: ""
+  storageClassName: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 100Gi
+  mountPath: /var/lib/triton/media
+  # Gateway temporary directories and native backend video files use this path.
+  # Files remain on the PVC only while a request is processed.
+  useAsTmpDir: true
+  annotations: {}
+  retain: true
+
+homeStorage:
+  sizeLimit: 40Gi
+
+# Triton Python backend and large multimodal requests use POSIX shared memory.
+# This memory-backed emptyDir replaces Docker's small default /dev/shm.
+sharedMemory:
+  enabled: true
+  sizeLimit: 8Gi
+
+resources: {}
+# Example for one MIG device:
+# resources:
+#   requests:
+#     cpu: "10"
+#     memory: 80Gi
+#     nvidia.com/mig-3g.40gb: "1"
+#   limits:
+#     cpu: "10"
+#     memory: 80Gi
+#     nvidia.com/mig-3g.40gb: "1"
+
+startupProbe:
+  enabled: true
+  # Probe the gateway process, not model readiness. This keeps the API reachable
+  # while explicit models are still loading.
+  path: /health
+  port: gateway
+  initialDelaySeconds: 0
+  failureThreshold: 60
+  periodSeconds: 10
+  timeoutSeconds: 2
+
+livenessProbe:
+  enabled: true
+  path: /health
+  port: gateway
+  initialDelaySeconds: 15
+  failureThreshold: 3
+  periodSeconds: 10
+  timeoutSeconds: 2
+
+readinessProbe:
+  enabled: true
+  # Set path to /ready to remove the pod from Service endpoints whenever Triton
+  # is not ready. /health keeps the UI/API reachable during model load/unload.
+  path: /health
+  port: gateway
+  initialDelaySeconds: 5
+  failureThreshold: 6
+  periodSeconds: 5
+  timeoutSeconds: 2
+
+terminationGracePeriodSeconds: 60
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+extraEnvFrom: []
+extraVolumes: []
+extraVolumeMounts: []
+
+# Optional official NVIDIA exporter. Do not enable it when GPU Operator already
+# provides dcgm-exporter in the cluster.
+dcgm-exporter:
+  enabled: false
+  image:
+    repository: nvcr.io/nvidia/k8s/dcgm-exporter
+    tag: 4.5.3-4.8.2-distroless
+    pullPolicy: IfNotPresent
+  arguments:
+    - -f
+    - /etc/dcgm-exporter/default-counters.csv
+  service:
+    enable: true
+    port: 9400
+    internalTrafficPolicy: Cluster
+  serviceMonitor:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 512Mi
+  securityContext:
+    runAsNonRoot: false
+    runAsUser: 0
+    allowPrivilegeEscalation: false
+    capabilities:
+      add:
+        - SYS_ADMIN
+      drop:
+        - ALL
+  tolerations:
+    - operator: Exists
