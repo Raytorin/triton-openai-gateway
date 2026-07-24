@@ -17,7 +17,7 @@ qwen-vl-utils[decord]==0.0.14
 # tritonclient 2.70.0 requires grpcio < 1.68.
 av==17.1.0
 decord==0.6.0
-grpcio==1.67.1
+grpcio==1.83.0
 protobuf==6.33.6
 prometheus-client==0.25.0
 python-rapidjson==1.23
