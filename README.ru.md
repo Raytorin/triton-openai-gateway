@@ -64,17 +64,17 @@ embeddings и reranking.
 ## Архитектура
 
 ```mermaid
-flowchart LR
-    C[OpenAI client / LiteLLM / UI] -->|HTTP :8080| G[FastAPI gateway]
-    G --> TPL[Tokenizer and chat template]
-    G --> MEDIA[Bounded media pipeline]
-    TPL -->|gRPC / HTTP loopback| T[NVIDIA Triton]
-    MEDIA -->|gRPC / HTTP loopback| T
-    T --> V[vLLM backend]
-    T --> VM[vllm_multimodal backend]
-    T --> P[Python pooling / rerank models]
-    S[S3 model repository] --> T
-    W[Model watcher] --> R["/tmp/models-active"]
+graph LR
+    C["OpenAI clients"] --> G["FastAPI gateway"]
+    G --> TPL["Tokenizer and chat template"]
+    G --> M["Media pipeline"]
+    TPL --> T["NVIDIA Triton"]
+    M --> T
+    T --> V["vLLM backend"]
+    T --> VM["Multimodal vLLM backend"]
+    T --> P["Pooling and rerank models"]
+    S["S3 model repository"] --> T
+    W["Model watcher"] --> R["Active model links"]
     R --> G
 ```
 
