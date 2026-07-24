@@ -15,7 +15,7 @@ qwen-vl-utils[decord]==0.0.14
 
 # Critical transitive dependencies are pinned as well. In particular,
 # tritonclient 2.70.0 requires grpcio < 1.68.
-av==17.1.0
+av==18.0.0
 decord==0.6.0
 grpcio==1.67.1
 protobuf==6.33.6
