@@ -74,7 +74,7 @@ flowchart LR
     T --> VM[vllm_multimodal backend]
     T --> P[Python pooling / rerank models]
     S[S3 model repository] --> T
-    W[Model watcher] --> R[/tmp/models-active]
+    W[Model watcher] --> R["/tmp/models-active"]
     R --> G
 ```
 
