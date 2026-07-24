@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Raytorin
 # SPDX-License-Identifier: Apache-2.0
 
-av==17.1.0
+av==18.0.0
 cffconvert==2.0.0
 decord==0.6.0
 fastapi==0.139.2
