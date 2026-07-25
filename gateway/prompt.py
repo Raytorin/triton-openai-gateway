@@ -218,31 +218,22 @@ def fit_conversation_to_context(
     reserved_media_tokens: int = 0,
     safety_margin_tokens: int = 64,
 ) -> tuple[list[dict[str, Any]], str, int, int]:
-    prompt_limit = (
-        int(max_model_len)
-        - max(int(max_completion_tokens), 1)
-        - max(int(reserved_media_tokens), 0)
-        - max(int(safety_margin_tokens), 0)
+    prompt_limit = context_prompt_limit(
+        max_model_len,
+        max_completion_tokens,
+        reserved_media_tokens,
+        safety_margin_tokens,
     )
-    if prompt_limit <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Requested output and media reserve leave no room for the input prompt: "
-                f"max_model_len={max_model_len}, max_tokens={max_completion_tokens}, "
-                f"media_reserve={reserved_media_tokens}."
-            ),
-        )
 
     fitted = [dict(message) for message in conversation]
     dropped_messages = 0
     while True:
         prompt = render_chat_prompt(tokenizer, fitted, tools)
-        prompt_tokens = _prompt_token_count(tokenizer, prompt)
+        prompt_tokens = prompt_token_count(tokenizer, prompt)
         if prompt_tokens <= prompt_limit:
             return fitted, prompt, prompt_tokens, dropped_messages
 
-        removable = _oldest_removable_turn(fitted)
+        removable = oldest_removable_turn(fitted)
         if not removable:
             raise HTTPException(
                 status_code=400,
@@ -259,14 +250,38 @@ def fit_conversation_to_context(
         dropped_messages += len(removable)
 
 
-def _prompt_token_count(tokenizer, prompt: str) -> int:
+def context_prompt_limit(
+    max_model_len: int,
+    max_completion_tokens: int,
+    reserved_media_tokens: int = 0,
+    safety_margin_tokens: int = 64,
+) -> int:
+    prompt_limit = (
+        int(max_model_len)
+        - max(int(max_completion_tokens), 1)
+        - max(int(reserved_media_tokens), 0)
+        - max(int(safety_margin_tokens), 0)
+    )
+    if prompt_limit <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Requested output and media reserve leave no room for the input prompt: "
+                f"max_model_len={max_model_len}, max_tokens={max_completion_tokens}, "
+                f"media_reserve={reserved_media_tokens}."
+            ),
+        )
+    return prompt_limit
+
+
+def prompt_token_count(tokenizer, prompt: str) -> int:
     try:
         return len(tokenizer.encode(prompt, add_special_tokens=False))
     except TypeError:
         return len(tokenizer.encode(prompt))
 
 
-def _oldest_removable_turn(conversation: list[dict[str, Any]]) -> list[int]:
+def oldest_removable_turn(conversation: list[dict[str, Any]]) -> list[int]:
     latest_user_index = next(
         (
             index

@@ -152,10 +152,81 @@ Important groups:
 | `video_*` | Sampling FPS, frame count, pixel budget, and chunk size |
 | `audio_*` | Local ASR model, device, and chunk overlap |
 | `max_remote_media_bytes` | Download limit for remote content |
+| `context_compression` | Context overflow, rolling-summary, and fallback policy |
+| `rerank` | Named post-score selection strategies and optional SQLite source |
 
 The `pdf_rag.embedding_model` value must name an embedding model already loaded
 in the same Triton server. Retrieval is used only when enough text can be
 extracted from the PDF.
+
+### Context Compression
+
+Context handling is configured per chat model. The default `truncate` mode
+preserves the previous behavior; `disabled` returns HTTP `400` on overflow;
+`summarize` replaces the oldest complete turns with a rolling summary while
+preserving system messages, recent turns, and the current user request.
+
+```json
+{
+  "context_compression": {
+    "mode": "summarize",
+    "fallback_mode": "truncate",
+    "summary_model": "",
+    "summary_max_tokens": 256,
+    "summary_input_max_tokens": 4096,
+    "preserve_recent_messages": 4,
+    "max_summary_calls": 4,
+    "summary_timeout_seconds": 120,
+    "cache_size": 256,
+    "version": "1",
+    "safety_margin_tokens": 64
+  }
+}
+```
+
+Summarization runs only when the rendered prompt would overflow. An empty
+`summary_model` uses the requested chat model; otherwise it must name another
+loaded chat model. Internal summary calls have separate Prometheus counters and
+are not added to the client response's `usage`.
+
+See
+[`examples/gateway.context-compression.json`](../examples/gateway.context-compression.json)
+for all commonly used settings.
+
+### Rerank Selection
+
+The rerank model always scores every supplied document first. The gateway then
+sorts the scores and applies the selected post-processing strategy. Existing
+requests without `selection` retain the `top_n` behavior.
+
+```json
+{
+  "rerank": {
+    "default_strategy": "top_n",
+    "strategies": {
+      "strict": {
+        "method": "top_n_and_threshold",
+        "parameters": {
+          "score_threshold": 0.5,
+          "top_n": 5
+        },
+        "allow_request_parameters": ["top_n"],
+        "version": "1"
+      }
+    }
+  }
+}
+```
+
+Clients select a named policy with
+`"selection": {"strategy": "strict", "parameters": {"top_n": 2}}`.
+Built-in methods include `top_n`, `score_threshold`,
+`top_n_and_threshold`, `metadata_filter`, and `diversity`. Strategies can
+also be refreshed from a read-only SQLite database configured under
+`rerank.database`; clients cannot submit executable code or SQL.
+
+See [`examples/gateway.rerank.json`](../examples/gateway.rerank.json) for the
+complete static and SQLite configuration.
 
 ## Environment Variables
 

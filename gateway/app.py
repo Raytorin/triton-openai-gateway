@@ -19,13 +19,31 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import __author__, __repository__
 from .admission import AdmissionController, AdmissionLease
+from .context_compression import (
+    ContextCompressionSettings,
+    SummaryGeneration,
+    build_summary_conversation,
+    load_context_compression_settings,
+    prepare_conversation_context,
+)
 from .debug import (
     log_chat_prompt_debug,
     log_chat_request_debug,
     log_chat_response_debug,
 )
 from .embeddings import build_embedding_inputs, encode_embedding, tokenize_embedding_inputs
-from .metrics import EMBEDDING_BATCH_SIZE, MEDIA_PROCESSING, metrics_response
+from .metrics import (
+    CONTEXT_COMPRESSION_DURATION,
+    CONTEXT_COMPRESSION_MESSAGES,
+    CONTEXT_COMPRESSION_REQUESTS,
+    CONTEXT_SUMMARY_CACHE,
+    CONTEXT_SUMMARY_CALLS,
+    CONTEXT_SUMMARY_TOKENS,
+    EMBEDDING_BATCH_SIZE,
+    MEDIA_PROCESSING,
+    RERANK_STRATEGY_SELECTIONS,
+    metrics_response,
+)
 from .multimodal import (
     extract_media_payloads,
     focus_current_media_context,
@@ -42,11 +60,13 @@ from .prompt import (
     build_usage,
     fit_conversation_to_context,
     has_tool_result,
+    prompt_token_count,
     selected_tools,
     tool_choice_instruction,
 )
 from .registry import ModelRegistry
 from .rerank import build_rerank_documents, build_rerank_response
+from .rerank_strategies import resolve_rerank_strategy
 from .sanitizer import sanitize_generated_text, strip_prompt_echo
 from .schemas import ChatCompletionRequest, EmbeddingsRequest, RerankRequest
 from .settings import (
@@ -376,6 +396,14 @@ async def create_embeddings(request: EmbeddingsRequest):
 @admitted("rerank")
 async def rerank(request: RerankRequest):
     documents = build_rerank_documents(request)
+    model_path = registry.resolve(request.model)
+    strategy = resolve_rerank_strategy(request, model_path)
+    RERANK_STRATEGY_SELECTIONS.labels(
+        request.model,
+        strategy.name,
+        strategy.method,
+        strategy.source,
+    ).inc()
     log_event(
         logger,
         "rerank.routed",
@@ -383,6 +411,11 @@ async def rerank(request: RerankRequest):
         model=request.model,
         backend=registry.get_backend(request.model) or "unknown",
         transport="http",
+        strategy=strategy.name,
+        strategy_method=strategy.method,
+        strategy_source=strategy.source,
+        strategy_version=strategy.version,
+        candidate_count=len(documents),
     )
 
     scores = await call_triton_rerank(
@@ -393,7 +426,113 @@ async def rerank(request: RerankRequest):
         request.batch_size,
         bool(request.normalize),
     )
-    return build_rerank_response(request, documents, scores)
+    return build_rerank_response(request, documents, scores, strategy)
+
+
+async def _generate_context_summary(
+    request_model: str,
+    settings: ContextCompressionSettings,
+    previous_summary: str | None,
+    source_text: str,
+) -> SummaryGeneration:
+    summary_model = settings.summary_model or request_model
+    summary_model_path = registry.resolve(summary_model)
+    registry.validate_route(summary_model, "chat", summary_model_path)
+    summary_tokenizer, summary_model_path = await registry.get_tokenizer_async(
+        summary_model
+    )
+    summary_conversation = build_summary_conversation(
+        previous_summary,
+        source_text,
+    )
+    summary_model_settings = load_vllm_media_settings(summary_model_path)
+    (
+        summary_conversation,
+        summary_prompt,
+        summary_prompt_tokens,
+        _,
+    ) = fit_conversation_to_context(
+        summary_tokenizer,
+        summary_conversation,
+        tools=None,
+        max_model_len=summary_model_settings.max_model_len,
+        max_completion_tokens=settings.summary_max_tokens,
+        safety_margin_tokens=settings.safety_margin_tokens,
+    )
+    sampling_parameters = {
+        "max_tokens": settings.summary_max_tokens,
+        "temperature": settings.summary_temperature,
+    }
+    backend = registry.get_backend(summary_model)
+    try:
+        if backend == "python":
+            generated_text = await call_triton_python_chat(
+                summary_model,
+                summary_prompt,
+                summary_conversation,
+                sampling_parameters,
+            )
+        elif backend in {"vllm", "vllm_multimodal"}:
+            generated_text = await call_triton_multimodal(
+                summary_model,
+                summary_prompt,
+                sampling_parameters,
+                images=[],
+            )
+        else:
+            generated_text = await call_triton(
+                summary_model,
+                summary_prompt,
+                sampling_parameters,
+            )
+    except asyncio.CancelledError:
+        CONTEXT_SUMMARY_CALLS.labels(
+            request_model,
+            summary_model,
+            "cancelled",
+        ).inc()
+        raise
+    except Exception:
+        CONTEXT_SUMMARY_CALLS.labels(
+            request_model,
+            summary_model,
+            "error",
+        ).inc()
+        raise
+
+    generated_text = strip_prompt_echo(summary_prompt, generated_text)
+    generated_text, _ = sanitize_generated_text(generated_text)
+    if not generated_text.strip():
+        CONTEXT_SUMMARY_CALLS.labels(
+            request_model,
+            summary_model,
+            "error",
+        ).inc()
+        raise HTTPException(
+            status_code=502,
+            detail="Context summarization model returned an empty response",
+        )
+    output_tokens = prompt_token_count(summary_tokenizer, generated_text)
+    CONTEXT_SUMMARY_CALLS.labels(
+        request_model,
+        summary_model,
+        "success",
+    ).inc()
+    CONTEXT_SUMMARY_TOKENS.labels(
+        request_model,
+        summary_model,
+        "input",
+    ).inc(summary_prompt_tokens)
+    CONTEXT_SUMMARY_TOKENS.labels(
+        request_model,
+        summary_model,
+        "output",
+    ).inc(output_tokens)
+    return SummaryGeneration(
+        text=generated_text,
+        input_tokens=summary_prompt_tokens,
+        output_tokens=output_tokens,
+    )
 
 
 @app.post("/v1/chat/completions")
@@ -408,6 +547,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
     conversation = build_conversation(request.messages)
     log_chat_request_debug(request, conversation, tools, tool_parser)
     media_settings = load_vllm_media_settings(model_path)
+    context_settings = load_context_compression_settings(model_path)
     conversation, removed_historical_media = scope_media_history(
         conversation,
         media_settings.media_history_mode,
@@ -434,12 +574,17 @@ async def create_chat_completion(request: ChatCompletionRequest):
                 removed_message_count=removed_history_messages,
             )
     elif request_media.has_any and media_settings.focus_current_media:
+        history_token_budget = (
+            None
+            if context_settings.mode == "summarize"
+            else media_settings.media_history_max_tokens
+        )
         conversation, kept_history_messages, dropped_history_messages = (
             focus_current_media_context(
                 conversation,
                 tokenizer,
                 request_media,
-                media_settings.media_history_max_tokens,
+                history_token_budget,
             )
         )
         log_event(
@@ -447,7 +592,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
             "media.context_focused",
             "Conversation focused on current media",
             model=request.model,
-            history_token_budget=media_settings.media_history_max_tokens,
+            history_token_budget=history_token_budget,
             kept_history_messages=kept_history_messages,
             dropped_history_messages=dropped_history_messages,
         )
@@ -524,23 +669,114 @@ async def create_chat_completion(request: ChatCompletionRequest):
         )
     images = [payload.data for payload in media.images]
     reserved_media_tokens = _estimate_media_context_tokens(media, media_settings)
-    conversation, prompt, prompt_tokens, dropped_context_messages = (
-        fit_conversation_to_context(
-            tokenizer,
-            conversation,
-            tools,
-            media_settings.max_model_len,
-            int(sampling_parameters.get("max_tokens") or 256),
+    context_started_at = time.monotonic()
+    try:
+        context_preparation = await prepare_conversation_context(
+            model_name=request.model,
+            tokenizer=tokenizer,
+            conversation=conversation,
+            tools=tools,
+            max_model_len=media_settings.max_model_len,
+            max_completion_tokens=int(
+                sampling_parameters.get("max_tokens") or 256
+            ),
             reserved_media_tokens=reserved_media_tokens,
+            settings=context_settings,
+            summary_generator=lambda previous, source: _generate_context_summary(
+                request.model,
+                context_settings,
+                previous,
+                source,
+            ),
         )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        context_duration = time.monotonic() - context_started_at
+        CONTEXT_COMPRESSION_REQUESTS.labels(
+            request.model,
+            context_settings.mode,
+            "error",
+        ).inc()
+        CONTEXT_COMPRESSION_DURATION.labels(
+            request.model,
+            context_settings.mode,
+            "error",
+        ).observe(context_duration)
+        log_event(
+            logger,
+            "chat.context_compression_failed",
+            "Unable to fit conversation into model context",
+            level=logging.WARNING
+            if isinstance(exc, HTTPException) and exc.status_code < 500
+            else logging.ERROR,
+            model=request.model,
+            compression_mode=context_settings.mode,
+            error_type=type(exc).__name__,
+            duration_ms=round(context_duration * 1000, 3),
+        )
+        raise
+
+    conversation = context_preparation.conversation
+    prompt = context_preparation.prompt
+    prompt_tokens = context_preparation.prompt_tokens
+    CONTEXT_COMPRESSION_REQUESTS.labels(
+        request.model,
+        context_preparation.mode,
+        context_preparation.action,
+    ).inc()
+    CONTEXT_COMPRESSION_DURATION.labels(
+        request.model,
+        context_preparation.mode,
+        context_preparation.action,
+    ).observe(context_preparation.duration_seconds)
+    affected_messages = (
+        context_preparation.summarized_messages
+        or context_preparation.dropped_messages
     )
-    if dropped_context_messages:
+    if affected_messages:
+        CONTEXT_COMPRESSION_MESSAGES.labels(
+            request.model,
+            context_preparation.action,
+        ).observe(affected_messages)
+    if context_preparation.action == "summarize":
+        CONTEXT_SUMMARY_CACHE.labels(
+            request.model,
+            "hit" if context_preparation.summary_cache_hit else "miss",
+        ).inc()
+        log_event(
+            logger,
+            "chat.context_summarized",
+            "Historical conversation summarized to fit model context",
+            model=request.model,
+            compression_mode=context_preparation.mode,
+            summary_model=context_preparation.summary_model,
+            summarized_message_count=context_preparation.summarized_messages,
+            summary_calls=context_preparation.summary_calls,
+            summary_cache_hit=context_preparation.summary_cache_hit,
+            summary_input_tokens=context_preparation.summary_input_tokens,
+            summary_output_tokens=context_preparation.summary_output_tokens,
+            prompt_tokens=prompt_tokens,
+            max_model_len=media_settings.max_model_len,
+            reserved_media_tokens=reserved_media_tokens,
+            duration_ms=round(
+                context_preparation.duration_seconds * 1000,
+                3,
+            ),
+        )
+    elif context_preparation.dropped_messages:
         log_event(
             logger,
             "chat.context_trimmed",
             "Oldest conversation turns removed to fit model context",
+            level=logging.WARNING
+            if context_preparation.action == "truncate_fallback"
+            else logging.INFO,
             model=request.model,
-            dropped_message_count=dropped_context_messages,
+            compression_mode=context_preparation.mode,
+            compression_action=context_preparation.action,
+            dropped_message_count=context_preparation.dropped_messages,
+            fallback_reason=context_preparation.fallback_reason or None,
             prompt_tokens=prompt_tokens,
             max_model_len=media_settings.max_model_len,
             reserved_media_tokens=reserved_media_tokens,
@@ -582,6 +818,8 @@ async def create_chat_completion(request: ChatCompletionRequest):
         prompt_chars=len(prompt),
         prompt_tokens=prompt_tokens,
         reserved_media_tokens=reserved_media_tokens,
+        context_compression_mode=context_preparation.mode,
+        context_compression_action=context_preparation.action,
     )
     if LOG_PROMPT_PREVIEW:
         logger.debug(

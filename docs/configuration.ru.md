@@ -153,10 +153,81 @@ watcher запишет путь до конкретного файла.
 | `video_*` | FPS, число кадров, pixel budget и размер чанка |
 | `audio_*` | Локальная ASR-модель, device и overlap чанков |
 | `max_remote_media_bytes` | Лимит скачивания remote content |
+| `context_compression` | Политика переполнения контекста, rolling summary и fallback |
+| `rerank` | Именованные стратегии отбора после scoring и опциональный SQLite source |
 
 `pdf_rag.embedding_model` должен содержать имя embedding-модели, уже загруженной
 в том же Triton. Retrieval используется только для PDF, из которых удалось
 извлечь достаточный объём текста.
+
+### Сжатие контекста
+
+Обработка истории настраивается для каждой chat-модели. Режим `truncate` по
+умолчанию сохраняет прежнее поведение; `disabled` возвращает HTTP `400` при
+переполнении; `summarize` заменяет старейшие полные turn-ы rolling summary,
+сохраняя system messages, недавнюю историю и текущий запрос пользователя.
+
+```json
+{
+  "context_compression": {
+    "mode": "summarize",
+    "fallback_mode": "truncate",
+    "summary_model": "",
+    "summary_max_tokens": 256,
+    "summary_input_max_tokens": 4096,
+    "preserve_recent_messages": 4,
+    "max_summary_calls": 4,
+    "summary_timeout_seconds": 120,
+    "cache_size": 256,
+    "version": "1",
+    "safety_margin_tokens": 64
+  }
+}
+```
+
+Summarization запускается только тогда, когда сформированный prompt не
+помещается. Пустой `summary_model` использует запрошенную chat-модель; иначе
+нужно указать другую загруженную chat-модель. Внутренние summary-вызовы
+учитываются отдельными Prometheus-метриками и не добавляются в `usage` ответа
+клиенту.
+
+Распространённые параметры приведены в
+[`examples/gateway.context-compression.json`](../examples/gateway.context-compression.json).
+
+### Отбор результатов rerank
+
+Rerank-модель сначала оценивает каждый переданный документ. Затем gateway
+сортирует score и применяет выбранную стратегию постобработки. Запросы без
+`selection` сохраняют прежнее поведение `top_n`.
+
+```json
+{
+  "rerank": {
+    "default_strategy": "top_n",
+    "strategies": {
+      "strict": {
+        "method": "top_n_and_threshold",
+        "parameters": {
+          "score_threshold": 0.5,
+          "top_n": 5
+        },
+        "allow_request_parameters": ["top_n"],
+        "version": "1"
+      }
+    }
+  }
+}
+```
+
+Клиент выбирает именованную политику через
+`"selection": {"strategy": "strict", "parameters": {"top_n": 2}}`.
+Встроены методы `top_n`, `score_threshold`,
+`top_n_and_threshold`, `metadata_filter` и `diversity`. Стратегии также
+можно обновлять из read-only SQLite, настроенной в `rerank.database`; клиент
+не может передать исполняемый код или SQL.
+
+Полный статический и SQLite-пример:
+[`examples/gateway.rerank.json`](../examples/gateway.rerank.json).
 
 ## Переменные окружения
 

@@ -107,6 +107,42 @@ PDF_EMBEDDING_CACHE = Counter(
     "In-memory PDF embedding cache lookups.",
     ("model", "result"),
 )
+RERANK_STRATEGY_SELECTIONS = Counter(
+    "triton_gateway_rerank_strategy_selections_total",
+    "Resolved rerank selection strategies.",
+    ("model", "strategy", "method", "source"),
+)
+CONTEXT_COMPRESSION_REQUESTS = Counter(
+    "triton_gateway_context_compression_total",
+    "Context preparation results.",
+    ("model", "mode", "action"),
+)
+CONTEXT_COMPRESSION_DURATION = Histogram(
+    "triton_gateway_context_compression_duration_seconds",
+    "Duration of context fitting, truncation or summarization.",
+    ("model", "mode", "action"),
+)
+CONTEXT_COMPRESSION_MESSAGES = Histogram(
+    "triton_gateway_context_compression_messages",
+    "Number of historical messages removed or summarized.",
+    ("model", "action"),
+    buckets=(1, 2, 4, 8, 16, 32, 64, 128, 256),
+)
+CONTEXT_SUMMARY_CACHE = Counter(
+    "triton_gateway_context_summary_cache_total",
+    "Process-local rolling summary cache lookups.",
+    ("model", "result"),
+)
+CONTEXT_SUMMARY_CALLS = Counter(
+    "triton_gateway_context_summary_calls_total",
+    "Internal context summarization model calls.",
+    ("model", "summary_model", "status"),
+)
+CONTEXT_SUMMARY_TOKENS = Counter(
+    "triton_gateway_context_summary_tokens_total",
+    "Tokens processed by internal context summarization calls.",
+    ("model", "summary_model", "direction"),
+)
 
 
 _KNOWN_PATHS = {
