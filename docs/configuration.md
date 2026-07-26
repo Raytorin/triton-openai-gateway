@@ -49,7 +49,9 @@ MODEL_NAME/
 
 The gateway reads tokenizer and model metadata from the active numeric version.
 For the S3 repository flow, the watcher creates a stable link under
-`/tmp/models-active/MODEL_NAME` after Triton has materialized the version.
+`<watcher-root>/models-active/MODEL_NAME` after Triton has materialized the
+version. The root follows `WATCHER_MODEL_DIR`, `TMP_ROOT`, Triton's
+`TMPDIR`, then `/tmp`, in that order.
 
 ## `config.pbtxt`
 
@@ -239,7 +241,10 @@ set the corresponding environment variables.
 | --- | --- | --- |
 | `TRITON_BASE_URL` | `http://127.0.0.1:8000` | Triton HTTP endpoint |
 | `TRITON_GRPC_URL` | `127.0.0.1:8001` | Triton gRPC endpoint |
-| `MODELS_ACTIVE_DIR` | `/tmp/models-active` | Stable active-model links |
+| `WATCHER_MODEL_DIR` | unset | Explicit local directory containing Triton's temporary `folder*` checkouts |
+| `TMP_ROOT` | unset | Backward-compatible watcher root alias |
+| `TMPDIR` | system value | Triton temporary directory and automatic watcher fallback |
+| `MODELS_ACTIVE_DIR` | `<watcher-root>/models-active` | Stable active-model links |
 | `GATEWAY_PORT` | `8080` | FastAPI listen port |
 | `REQUEST_TIMEOUT_SECONDS` | `600` | Upstream request timeout |
 | `GATEWAY_MAX_REQUEST_BODY_BYTES` | `268435456` | Maximum HTTP request body |

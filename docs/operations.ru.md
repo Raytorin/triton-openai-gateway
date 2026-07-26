@@ -137,7 +137,7 @@ collector. Для анализа ёмкости и насыщения основ
 
 | Симптом | Возможная причина | Действие |
 | --- | --- | --- |
-| Модель есть в Triton, но gateway сообщает `not found` | Не создана активная symlink | Проверьте watcher logs, числовую версию и права записи в `TMP_ROOT` |
+| Модель есть в Triton, но gateway сообщает `not found` | Не создана активная symlink | Проверьте watcher logs, числовую версию и права записи в выбранный корень watcher |
 | `AsyncEngineArgs` отклоняет ключ | `model.json` содержит аргумент, которого нет в закреплённом vLLM | Удалите или переименуйте ключ; настройки gateway храните в `gateway.json` |
 | `KIND_GPU is currently for single-GPU models` | Tensor-parallel engine использует Triton `KIND_GPU` | Используйте один `KIND_MODEL` и назначьте ему нужные devices |
 | Shared memory pool не увеличивается | Контейнеру не хватает `/dev/shm` | Увеличьте Docker `--shm-size` или memory volume `/dev/shm` в pod |

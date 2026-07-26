@@ -74,10 +74,12 @@ spec:
               value: http://127.0.0.1:8000
             - name: TRITON_GRPC_URL
               value: 127.0.0.1:8001
+            {{- if .Values.gateway.modelsActiveDir }}
             - name: MODELS_ACTIVE_DIR
               value: {{ .Values.gateway.modelsActiveDir | quote }}
             - name: TRITON_FRONTEND_LOCAL_MODEL_REPOSITORY
               value: {{ .Values.gateway.modelsActiveDir | quote }}
+            {{- end }}
             - name: GATEWAY_PORT
               value: {{ .Values.gateway.port | quote }}
             - name: REQUEST_TIMEOUT_SECONDS
@@ -126,8 +128,13 @@ spec:
               value: {{ .Values.gateway.observability.uvicornAccessLog | quote }}
             - name: TOKENIZER_TRUST_REMOTE_CODE
               value: {{ .Values.gateway.tokenizerTrustRemoteCode | quote }}
+            {{- if .Values.gateway.watcherModelDir }}
+            - name: WATCHER_MODEL_DIR
+              value: {{ .Values.gateway.watcherModelDir | quote }}
+            {{- else if .Values.gateway.tmpRoot }}
             - name: TMP_ROOT
               value: {{ .Values.gateway.tmpRoot | quote }}
+            {{- end }}
             - name: VLLM_MULTIMODAL_MAX_MEDIA_BYTES
               value: {{ .Values.gateway.nativeBackend.maxMediaBytes | quote }}
             - name: VLLM_MULTIMODAL_MAX_REQUEST_BYTES

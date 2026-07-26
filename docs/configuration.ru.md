@@ -49,8 +49,10 @@ MODEL_NAME/
 ```
 
 Gateway читает tokenizer и metadata модели из активной числовой версии. В S3
-сценарии watcher создаёт стабильную ссылку `/tmp/models-active/MODEL_NAME` после
-того, как Triton материализовал версию.
+сценарии watcher создаёт стабильную ссылку
+`<watcher-root>/models-active/MODEL_NAME` после того, как Triton
+материализовал версию. Корень выбирается по приоритету `WATCHER_MODEL_DIR`,
+`TMP_ROOT`, `TMPDIR` Triton, затем `/tmp`.
 
 ## `config.pbtxt`
 
@@ -240,7 +242,10 @@ Rerank-модель сначала оценивает каждый переда�
 | --- | --- | --- |
 | `TRITON_BASE_URL` | `http://127.0.0.1:8000` | Triton HTTP endpoint |
 | `TRITON_GRPC_URL` | `127.0.0.1:8001` | Triton gRPC endpoint |
-| `MODELS_ACTIVE_DIR` | `/tmp/models-active` | Стабильные ссылки активных моделей |
+| `WATCHER_MODEL_DIR` | не задано | Явная локальная директория временных checkout `folder*` Triton |
+| `TMP_ROOT` | не задано | Обратно совместимый alias корня watcher |
+| `TMPDIR` | системное значение | Временная директория Triton и автоматический fallback watcher |
+| `MODELS_ACTIVE_DIR` | `<watcher-root>/models-active` | Стабильные ссылки активных моделей |
 | `GATEWAY_PORT` | `8080` | Порт FastAPI |
 | `REQUEST_TIMEOUT_SECONDS` | `600` | Таймаут upstream-запроса |
 | `GATEWAY_MAX_REQUEST_BODY_BYTES` | `268435456` | Максимальный размер HTTP request body |

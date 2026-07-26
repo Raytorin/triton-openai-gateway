@@ -27,7 +27,7 @@ Docker-образ запускает watcher и FastAPI через хуки NVID
 
 1. Клиент отправляет `POST /v1/chat/completions` с OpenAI-style `messages`.
 2. Admission control выделяет slot или помещает запрос в ограниченную очередь.
-3. Registry разрешает путь `/tmp/models-active/<model>`.
+3. Registry разрешает путь `<watcher-root>/models-active/<model>`.
 4. Gateway загружает или повторно использует токенайзер модели.
 5. `tokenizer.apply_chat_template(...)` формирует prompt, tools и tool history в
    нативном формате модели.
@@ -140,13 +140,15 @@ media, embeddings и rerank. Каждый limiter задаёт:
 ## Обнаружение моделей
 
 S3 repository agent Triton материализует версию модели во временный путь,
-например `/tmp/folderAbCd/1`. Watcher:
+например `<watcher-root>/folderAbCd/1`. Корень выбирается из
+`WATCHER_MODEL_DIR`, совместимого alias `TMP_ROOT`, `TMPDIR` Triton или
+`/tmp`. Watcher:
 
 1. ожидает числовую версию с `model.json` или `model.py`;
 2. переписывает путь модели во временном `model.json` на реальную директорию;
 3. для GGUF указывает конкретный `.gguf` файл;
 4. удаляет engine arguments, несовместимые с закреплённой версией vLLM;
-5. создаёт `/tmp/models-active/<model>` для доступа к tokenizer и gateway config;
+5. создаёт `<watcher-root>/models-active/<model>` для доступа к tokenizer и gateway config;
 6. удаляет устаревшие ссылки после unload.
 
 Исходный model repository не изменяется. Меняется только временная копия Triton.

@@ -39,7 +39,18 @@ def _normalize_grpc_url(value: str) -> str:
 TRITON_GRPC_URL = _normalize_grpc_url(
     os.environ.get("TRITON_GRPC_URL", _default_triton_grpc_url())
 )
-MODELS_ACTIVE_DIR = Path(os.environ.get("MODELS_ACTIVE_DIR", "/tmp/models-active"))
+_WATCHER_MODEL_DIR = (
+    os.environ.get("WATCHER_MODEL_DIR")
+    or os.environ.get("TMP_ROOT")
+    or os.environ.get("TMPDIR")
+    or "/tmp"
+)
+MODELS_ACTIVE_DIR = Path(
+    os.environ.get(
+        "MODELS_ACTIVE_DIR",
+        str(Path(_WATCHER_MODEL_DIR) / "models-active"),
+    )
+)
 REQUEST_TIMEOUT_SECONDS = float(os.environ.get("REQUEST_TIMEOUT_SECONDS", "600"))
 EMBEDDING_MAX_CONCURRENCY = max(
     int(os.environ.get("GATEWAY_EMBEDDING_MAX_CONCURRENCY", "8")),

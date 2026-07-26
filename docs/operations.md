@@ -135,7 +135,7 @@ Metrics remain the primary source for capacity and saturation analysis.
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
-| Model exists in Triton but gateway says not found | Active symlink was not created | Check watcher logs, numeric version layout, and writable `TMP_ROOT` |
+| Model exists in Triton but gateway says not found | Active symlink was not created | Check watcher logs, numeric version layout, and write access to the selected watcher root |
 | `AsyncEngineArgs` rejects a key | `model.json` contains an argument unsupported by pinned vLLM | Remove or rename the key; keep gateway settings in `gateway.json` |
 | `KIND_GPU is currently for single-GPU models` | A tensor-parallel engine uses Triton `KIND_GPU` | Use one `KIND_MODEL` instance and assign the required devices |
 | Shared memory pool cannot grow | Container `/dev/shm` is too small | Increase Docker `--shm-size` or pod `/dev/shm` memory volume |

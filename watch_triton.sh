@@ -4,9 +4,10 @@
 
 set -euo pipefail
 
-TMP_ROOT="${TMP_ROOT:-/tmp}"
+WATCHER_MODEL_DIR="${WATCHER_MODEL_DIR:-${TMP_ROOT:-${TMPDIR:-/tmp}}}"
+WATCHER_MODEL_DIR_SOURCE="${WATCHER_MODEL_DIR_SOURCE:-direct}"
 VERSION_DIR_REGEX="${VERSION_DIR_REGEX:-^[0-9]+$}"
-MODELS_ACTIVE_DIR="${MODELS_ACTIVE_DIR:-/tmp/models-active}"
+MODELS_ACTIVE_DIR="${MODELS_ACTIVE_DIR:-${WATCHER_MODEL_DIR%/}/models-active}"
 
 sync_model_json() {
   local target_dir="$1"
@@ -224,10 +225,10 @@ scan_once() {
     while IFS= read -r target; do
       scan_target "${target}"
     done < <(find "${folder}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
-  done < <(find "${TMP_ROOT}" -maxdepth 1 -type d -name 'folder*' 2>/dev/null | sort)
+  done < <(find "${WATCHER_MODEL_DIR}" -maxdepth 1 -type d -name 'folder*' 2>/dev/null | sort)
 }
 
-echo "$(date '+%F %T') watching ${TMP_ROOT} ..."
+echo "$(date '+%F %T') watching ${WATCHER_MODEL_DIR} (source=${WATCHER_MODEL_DIR_SOURCE}, models_active_dir=${MODELS_ACTIVE_DIR}) ..."
 
 while true; do
   scan_once

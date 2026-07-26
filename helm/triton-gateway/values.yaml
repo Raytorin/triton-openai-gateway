@@ -101,8 +101,12 @@ gateway:
     debugPreviewChars: "2000"
     uvicornAccessLog: false
   tokenizerTrustRemoteCode: true
-  modelsActiveDir: /tmp/models-active
-  tmpRoot: /tmp
+  # Leave empty to create <watcherModelDir|TMP_ROOT|TMPDIR|/tmp>/models-active.
+  modelsActiveDir: ""
+  # Leave empty to use Triton's TMPDIR, then /tmp.
+  watcherModelDir: ""
+  # Deprecated release 5 alias. Used only when watcherModelDir is empty.
+  tmpRoot: ""
   nativeBackend:
     # Maximum decoded size of one image/video/audio/PDF item.
     maxMediaBytes: "268435456"

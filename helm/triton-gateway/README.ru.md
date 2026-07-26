@@ -138,6 +138,12 @@ modelStorage:
 Перед увеличением `replicaCount` используйте ReadWriteMany или отдельный PVC для
 каждого pod.
 
+По умолчанию watcher использует временную директорию Triton и создаёт внутри
+неё `models-active`. Задавайте `gateway.watcherModelDir`, только если
+временные checkout `folder*` создаются в другом месте, а
+`gateway.modelsActiveDir` — если активным ссылкам нужен отдельный путь.
+`gateway.tmpRoot` сохранён как совместимый alias.
+
 ## Временное хранилище media
 
 Большим видео и PDF может не хватить writable layer контейнера. Подключите

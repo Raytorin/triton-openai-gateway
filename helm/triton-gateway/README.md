@@ -138,6 +138,12 @@ modelStorage:
 Use `ReadWriteMany` storage or one PVC per pod before increasing
 `replicaCount`.
 
+By default the watcher follows Triton's temporary directory and creates
+`models-active` below it. Set `gateway.watcherModelDir` only when temporary
+`folder*` checkouts are materialized elsewhere; set
+`gateway.modelsActiveDir` only when active links need a separate path.
+`gateway.tmpRoot` remains a compatibility alias.
+
 ## Temporary Media Storage
 
 Large videos and PDFs may need more temporary space than the container layer.
