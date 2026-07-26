@@ -244,6 +244,7 @@ async def prepare_conversation_context(
     reserved_media_tokens: int,
     settings: ContextCompressionSettings,
     summary_generator: SummaryGenerator | None = None,
+    enable_thinking: bool = False,
 ) -> ContextPreparation:
     started_at = time.monotonic()
     prompt_limit = context_prompt_limit(
@@ -252,7 +253,12 @@ async def prepare_conversation_context(
         reserved_media_tokens,
         settings.safety_margin_tokens,
     )
-    prompt = render_chat_prompt(tokenizer, conversation, tools)
+    prompt = render_chat_prompt(
+        tokenizer,
+        conversation,
+        tools,
+        enable_thinking=enable_thinking,
+    )
     tokens = prompt_token_count(tokenizer, prompt)
     summary_model = settings.summary_model or model_name
     if tokens <= prompt_limit:
@@ -280,6 +286,7 @@ async def prepare_conversation_context(
             settings,
             summary_model,
             action="truncate",
+            enable_thinking=enable_thinking,
         )
         return replace(
             result,
@@ -302,6 +309,7 @@ async def prepare_conversation_context(
             prompt_limit=prompt_limit,
             settings=settings,
             summary_generator=summary_generator,
+            enable_thinking=enable_thinking,
         )
     except asyncio.CancelledError:
         raise
@@ -324,6 +332,7 @@ async def prepare_conversation_context(
             summary_model,
             action="truncate_fallback",
             fallback_reason=type(exc).__name__,
+            enable_thinking=enable_thinking,
         )
 
     return replace(
@@ -377,6 +386,7 @@ async def _summarize_context(
     prompt_limit: int,
     settings: ContextCompressionSettings,
     summary_generator: SummaryGenerator,
+    enable_thinking: bool,
 ) -> ContextPreparation:
     retained, removed = _select_summary_source(
         tokenizer,
@@ -384,6 +394,7 @@ async def _summarize_context(
         tools,
         prompt_limit,
         settings,
+        enable_thinking,
     )
     if not removed:
         raise HTTPException(
@@ -413,6 +424,7 @@ async def _summarize_context(
             cached.boundary,
             cached.covered_messages,
             prompt_limit,
+            enable_thinking,
         )
         return ContextPreparation(
             conversation=fitted,
@@ -482,6 +494,7 @@ async def _summarize_context(
         boundary,
         len(removed),
         prompt_limit,
+        enable_thinking,
     )
     _put_cached_summary(
         model_name,
@@ -522,6 +535,7 @@ def _truncate_context(
     *,
     action: str,
     fallback_reason: str = "",
+    enable_thinking: bool = False,
 ) -> ContextPreparation:
     fitted, prompt, prompt_tokens, dropped = fit_conversation_to_context(
         tokenizer,
@@ -531,6 +545,7 @@ def _truncate_context(
         max_completion_tokens,
         reserved_media_tokens=reserved_media_tokens,
         safety_margin_tokens=settings.safety_margin_tokens,
+        enable_thinking=enable_thinking,
     )
     return ContextPreparation(
         conversation=fitted,
@@ -550,6 +565,7 @@ def _select_summary_source(
     tools: list[dict[str, Any]] | None,
     prompt_limit: int,
     settings: ContextCompressionSettings,
+    enable_thinking: bool,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     retained = [dict(message) for message in conversation]
     removed: list[dict[str, Any]] = []
@@ -563,7 +579,12 @@ def _select_summary_source(
                 "placeholder",
                 len(removed),
             )
-            prompt = render_chat_prompt(tokenizer, trial, tools)
+            prompt = render_chat_prompt(
+                tokenizer,
+                trial,
+                tools,
+                enable_thinking=enable_thinking,
+            )
             if prompt_token_count(tokenizer, prompt) <= prompt_limit:
                 return retained, removed
 
@@ -627,6 +648,7 @@ def _render_with_summary(
     boundary: str,
     covered_messages: int,
     prompt_limit: int,
+    enable_thinking: bool,
 ) -> tuple[list[dict[str, Any]], str, int]:
     fitted = _inject_summary(
         retained,
@@ -635,7 +657,12 @@ def _render_with_summary(
         boundary,
         covered_messages,
     )
-    prompt = render_chat_prompt(tokenizer, fitted, tools)
+    prompt = render_chat_prompt(
+        tokenizer,
+        fitted,
+        tools,
+        enable_thinking=enable_thinking,
+    )
     tokens = prompt_token_count(tokenizer, prompt)
     if tokens > prompt_limit:
         raise HTTPException(

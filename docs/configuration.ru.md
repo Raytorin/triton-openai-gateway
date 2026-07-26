@@ -157,6 +157,7 @@ watcher запишет путь до конкретного файла.
 | `max_remote_media_bytes` | Лимит скачивания remote content |
 | `context_compression` | Политика переполнения контекста, rolling summary и fallback |
 | `rerank` | Именованные стратегии отбора после scoring и опциональный SQLite source |
+| `reasoning` | Режим thinking, parser ответа и OpenAI-совместимое поле |
 
 `pdf_rag.embedding_model` должен содержать имя embedding-модели, уже загруженной
 в том же Triton. Retrieval используется только для PDF, из которых удалось
@@ -230,6 +231,34 @@ Rerank-модель сначала оценивает каждый переда�
 
 Полный статический и SQLite-пример:
 [`examples/gateway.rerank.json`](../examples/gateway.rerank.json).
+
+### Вывод reasoning
+
+По умолчанию reasoning выключен и настраивается для каждой модели:
+
+```json
+{
+  "reasoning": {
+    "mode": "separate",
+    "parser": "auto",
+    "response_field": "reasoning_content"
+  }
+}
+```
+
+`disabled` запрашивает chat template без thinking и удаляет случайно
+возвращённые reasoning blocks. `hidden` разрешает модели рассуждать, но не
+возвращает текст клиенту. `separate` отделяет reasoning от итогового
+`content` в JSON и SSE. Клиент может понизить `separate` до `hidden` для
+одного запроса через `"include_reasoning": false`, но не может ослабить более
+строгую серверную политику.
+
+`parser: "auto"` определяет поддерживаемые Qwen chat templates. Также
+доступны явные parser-ы `qwen3` и `think_tags`. Для LiteLLM и
+OpenAI-совместимых клиентов используйте
+`response_field: "reasoning_content"`, а для схемы vLLM — `"reasoning"`.
+
+Пример: [`examples/gateway.reasoning.json`](../examples/gateway.reasoning.json).
 
 ## Переменные окружения
 

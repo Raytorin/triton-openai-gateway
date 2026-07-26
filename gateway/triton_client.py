@@ -29,6 +29,14 @@ from .metrics import (
 )
 from .observability import get_request_id, get_traceparent, log_event
 from .prompt import build_usage
+from .reasoning import (
+    DISABLED_REASONING_SETTINGS,
+    ReasoningResult,
+    ReasoningSettings,
+    observe_reasoning_result,
+    reasoning_message_fields,
+    split_reasoning_output,
+)
 from .sanitizer import sanitize_generated_text, strip_prompt_echo
 from .schemas import ChatCompletionRequest
 from .settings import (
@@ -44,6 +52,73 @@ _http_client: httpx.AsyncClient | None = None
 _grpc_client: grpc_aio.InferenceServerClient | None = None
 _grpc_client_lock = asyncio.Lock()
 logger = logging.getLogger("triton-chat-gateway")
+REASONING_STREAM_HOLDBACK_CHARS = 12
+
+
+def _process_completed_generation(
+    request: ChatCompletionRequest,
+    tokenizer,
+    prompt: str,
+    generated_text: str,
+    reasoning_settings: ReasoningSettings | None,
+) -> tuple[str, ReasoningResult, dict[str, Any]]:
+    settings = reasoning_settings or DISABLED_REASONING_SETTINGS
+    raw_generated_text = strip_prompt_echo(prompt, generated_text)
+    reasoning_result = split_reasoning_output(raw_generated_text, settings)
+    content, _ = sanitize_generated_text(reasoning_result.content)
+    usage = build_usage(
+        tokenizer,
+        prompt,
+        raw_generated_text,
+        reasoning_text=reasoning_result.reasoning,
+    )
+    reasoning_tokens, content_tokens = observe_reasoning_result(
+        request.model,
+        tokenizer,
+        settings,
+        reasoning_result,
+    )
+    log_event(
+        logger,
+        "chat.reasoning_processed",
+        "Reasoning policy applied to chat response",
+        model=request.model,
+        reasoning_mode=settings.mode,
+        reasoning_parser=settings.parser,
+        reasoning_detected=reasoning_result.detected,
+        reasoning_incomplete=reasoning_result.incomplete,
+        reasoning_tokens=reasoning_tokens,
+        content_tokens=content_tokens,
+    )
+    return content, reasoning_result, usage
+
+
+def _reasoning_delta(
+    reasoning_result: ReasoningResult,
+    settings: ReasoningSettings,
+    emitted_reasoning: str,
+    *,
+    final: bool,
+) -> tuple[str, str]:
+    if not settings.expose_reasoning:
+        return "", emitted_reasoning
+    safe_reasoning = reasoning_result.reasoning
+    if (
+        not final
+        and reasoning_result.incomplete
+        and len(safe_reasoning) > REASONING_STREAM_HOLDBACK_CHARS
+    ):
+        safe_reasoning = safe_reasoning[:-REASONING_STREAM_HOLDBACK_CHARS]
+    elif not final and reasoning_result.incomplete:
+        safe_reasoning = ""
+
+    if safe_reasoning.startswith(emitted_reasoning):
+        delta = safe_reasoning[len(emitted_reasoning) :]
+    else:
+        # Cumulative output should be monotonic. Suppress a non-monotonic
+        # parser transition rather than duplicating reasoning in the client.
+        delta = ""
+    return delta, safe_reasoning if delta else emitted_reasoning
 
 
 def get_http_client() -> httpx.AsyncClient:
@@ -569,10 +644,12 @@ async def stream_triton_multimodal_to_openai(
     sampling_parameters: dict[str, Any],
     images: list[str],
     media: MediaPayloads | None = None,
+    reasoning_settings: ReasoningSettings | None = None,
 ) -> AsyncIterator[str]:
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     emitted_text = ""
+    emitted_reasoning = ""
     raw_generated_text = ""
     role_sent = False
     stop_requested = False
@@ -584,6 +661,7 @@ async def stream_triton_multimodal_to_openai(
         media=media,
     )
     outputs = [grpcclient.InferRequestedOutput("text_output")]
+    settings = reasoning_settings or DISABLED_REASONING_SETTINGS
 
     yield sse_event(
         build_openai_chunk(
@@ -613,8 +691,12 @@ async def stream_triton_multimodal_to_openai(
                     else:
                         raw_generated_text += event_text
 
-                    current_text, should_stop = sanitize_generated_text(
+                    reasoning_result = split_reasoning_output(
                         raw_generated_text,
+                        settings,
+                    )
+                    current_text, should_stop = sanitize_generated_text(
+                        reasoning_result.content,
                         streaming=True,
                     )
                     safe_text = current_text
@@ -628,6 +710,13 @@ async def stream_triton_multimodal_to_openai(
                     else:
                         delta_text = safe_text
 
+                    reasoning_delta, emitted_reasoning = _reasoning_delta(
+                        reasoning_result,
+                        settings,
+                        emitted_reasoning,
+                        final=False,
+                    )
+
                     if not role_sent:
                         yield sse_event(
                             build_openai_chunk(
@@ -638,6 +727,16 @@ async def stream_triton_multimodal_to_openai(
                             )
                         )
                         role_sent = True
+
+                    if reasoning_delta:
+                        yield sse_event(
+                            build_openai_chunk(
+                                response_id,
+                                created,
+                                request.model,
+                                {settings.response_field: reasoning_delta},
+                            )
+                        )
 
                     if delta_text:
                         yield sse_event(
@@ -667,7 +766,23 @@ async def stream_triton_multimodal_to_openai(
             detail=f"Triton multimodal gRPC stream failed: {exc}",
         ) from exc
 
-    final_text, _ = sanitize_generated_text(raw_generated_text)
+    reasoning_result = split_reasoning_output(raw_generated_text, settings)
+    final_text, _ = sanitize_generated_text(reasoning_result.content)
+    reasoning_delta, emitted_reasoning = _reasoning_delta(
+        reasoning_result,
+        settings,
+        emitted_reasoning,
+        final=True,
+    )
+    if reasoning_delta:
+        yield sse_event(
+            build_openai_chunk(
+                response_id,
+                created,
+                request.model,
+                {settings.response_field: reasoning_delta},
+            )
+        )
     if final_text.startswith(emitted_text):
         delta_text = final_text[len(emitted_text) :]
     else:
@@ -684,14 +799,41 @@ async def stream_triton_multimodal_to_openai(
         )
         emitted_text = final_text
 
-    usage = build_usage(tokenizer, prompt, emitted_text)
+    usage = build_usage(
+        tokenizer,
+        prompt,
+        raw_generated_text,
+        reasoning_text=reasoning_result.reasoning,
+    )
+    reasoning_tokens, content_tokens = observe_reasoning_result(
+        request.model,
+        tokenizer,
+        settings,
+        reasoning_result,
+    )
+    log_event(
+        logger,
+        "chat.reasoning_processed",
+        "Reasoning policy applied to chat response",
+        model=request.model,
+        reasoning_mode=settings.mode,
+        reasoning_parser=settings.parser,
+        reasoning_detected=reasoning_result.detected,
+        reasoning_incomplete=reasoning_result.incomplete,
+        reasoning_tokens=reasoning_tokens,
+        content_tokens=content_tokens,
+    )
     yield sse_event(
         build_openai_chunk(
             response_id,
             created,
             request.model,
             {},
-            finish_reason="stop",
+            finish_reason=(
+                "length"
+                if reasoning_result.incomplete and not final_text
+                else "stop"
+            ),
             usage=usage,
         )
     )
@@ -704,6 +846,7 @@ async def stream_triton_native_multimodal_to_openai(
     prompt: str,
     sampling_parameters: dict[str, Any],
     media: MediaPayloads,
+    reasoning_settings: ReasoningSettings | None = None,
 ) -> AsyncIterator[str]:
     async for event in stream_triton_multimodal_to_openai(
         request,
@@ -712,6 +855,7 @@ async def stream_triton_native_multimodal_to_openai(
         sampling_parameters,
         [],
         media,
+        reasoning_settings,
     ):
         yield event
 
@@ -846,10 +990,12 @@ async def stream_triton_to_openai(
     tokenizer,
     prompt: str,
     sampling_parameters: dict[str, Any],
+    reasoning_settings: ReasoningSettings | None = None,
 ) -> AsyncIterator[str]:
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     emitted_text = ""
+    emitted_reasoning = ""
     raw_generated_text = ""
     role_sent = False
     generate_stream_url = f"{TRITON_BASE_URL}/v2/models/{quote(request.model, safe='')}/generate_stream"
@@ -860,6 +1006,7 @@ async def stream_triton_to_openai(
             "stream": True,
         },
     }
+    settings = reasoning_settings or DISABLED_REASONING_SETTINGS
 
     with triton_call("generate-stream", request.model, "http"):
         async with get_http_client().stream(
@@ -901,8 +1048,12 @@ async def stream_triton_to_openai(
                 else:
                     raw_generated_text += event_text
 
-                current_text, should_stop = sanitize_generated_text(
+                reasoning_result = split_reasoning_output(
                     raw_generated_text,
+                    settings,
+                )
+                current_text, should_stop = sanitize_generated_text(
+                    reasoning_result.content,
                     streaming=True,
                 )
                 safe_text = current_text
@@ -916,6 +1067,13 @@ async def stream_triton_to_openai(
                 else:
                     delta_text = safe_text
 
+                reasoning_delta, emitted_reasoning = _reasoning_delta(
+                    reasoning_result,
+                    settings,
+                    emitted_reasoning,
+                    final=False,
+                )
+
                 if not role_sent:
                     yield sse_event(
                         build_openai_chunk(
@@ -926,6 +1084,16 @@ async def stream_triton_to_openai(
                         )
                     )
                     role_sent = True
+
+                if reasoning_delta:
+                    yield sse_event(
+                        build_openai_chunk(
+                            response_id,
+                            created,
+                            request.model,
+                            {settings.response_field: reasoning_delta},
+                        )
+                    )
 
                 if delta_text:
                     yield sse_event(
@@ -941,7 +1109,23 @@ async def stream_triton_to_openai(
                 if should_stop:
                     break
 
-    final_text, _ = sanitize_generated_text(raw_generated_text)
+    reasoning_result = split_reasoning_output(raw_generated_text, settings)
+    final_text, _ = sanitize_generated_text(reasoning_result.content)
+    reasoning_delta, emitted_reasoning = _reasoning_delta(
+        reasoning_result,
+        settings,
+        emitted_reasoning,
+        final=True,
+    )
+    if reasoning_delta:
+        yield sse_event(
+            build_openai_chunk(
+                response_id,
+                created,
+                request.model,
+                {settings.response_field: reasoning_delta},
+            )
+        )
     if final_text.startswith(emitted_text):
         delta_text = final_text[len(emitted_text) :]
     else:
@@ -958,14 +1142,41 @@ async def stream_triton_to_openai(
         )
         emitted_text = final_text
 
-    usage = build_usage(tokenizer, prompt, emitted_text)
+    usage = build_usage(
+        tokenizer,
+        prompt,
+        raw_generated_text,
+        reasoning_text=reasoning_result.reasoning,
+    )
+    reasoning_tokens, content_tokens = observe_reasoning_result(
+        request.model,
+        tokenizer,
+        settings,
+        reasoning_result,
+    )
+    log_event(
+        logger,
+        "chat.reasoning_processed",
+        "Reasoning policy applied to chat response",
+        model=request.model,
+        reasoning_mode=settings.mode,
+        reasoning_parser=settings.parser,
+        reasoning_detected=reasoning_result.detected,
+        reasoning_incomplete=reasoning_result.incomplete,
+        reasoning_tokens=reasoning_tokens,
+        content_tokens=content_tokens,
+    )
     yield sse_event(
         build_openai_chunk(
             response_id,
             created,
             request.model,
             {},
-            finish_reason="stop",
+            finish_reason=(
+                "length"
+                if reasoning_result.incomplete and not final_text
+                else "stop"
+            ),
             usage=usage,
         )
     )
@@ -1049,6 +1260,7 @@ async def stream_python_chat_to_openai(
     sampling_parameters: dict[str, Any],
     tools: list[dict[str, Any]] | None = None,
     tool_parser: str | None = None,
+    reasoning_settings: ReasoningSettings | None = None,
 ) -> AsyncIterator[str]:
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
@@ -1093,14 +1305,18 @@ async def stream_python_chat_to_openai(
         yield "data: [DONE]\n\n"
         return
 
-    generated_text = strip_prompt_echo(prompt, generated_text)
-    generated_text, _ = sanitize_generated_text(generated_text)
+    generated_text, reasoning_result, usage = _process_completed_generation(
+        request,
+        tokenizer,
+        prompt,
+        generated_text,
+        reasoning_settings,
+    )
     tool_calls, remaining_text = (
         extract_tool_calls(generated_text, tools, tool_parser)
         if tools
         else ([], generated_text)
     )
-    usage = build_usage(tokenizer, prompt, generated_text)
 
     yield sse_event(
         build_openai_chunk(
@@ -1111,7 +1327,21 @@ async def stream_python_chat_to_openai(
         )
     )
 
-    finish_reason = "stop"
+    finish_reason = (
+        "length"
+        if reasoning_result.incomplete and not remaining_text
+        else "stop"
+    )
+    settings = reasoning_settings or DISABLED_REASONING_SETTINGS
+    if settings.expose_reasoning and reasoning_result.reasoning:
+        yield sse_event(
+            build_openai_chunk(
+                response_id,
+                created,
+                request.model,
+                reasoning_message_fields(reasoning_result, settings),
+            )
+        )
     if tool_calls:
         finish_reason = "tool_calls"
         for index, tool_call in enumerate(tool_calls):
@@ -1168,15 +1398,20 @@ async def stream_tool_aware_response(
     sampling_parameters: dict[str, Any],
     tools: list[dict[str, Any]],
     tool_parser: str | None = None,
+    reasoning_settings: ReasoningSettings | None = None,
 ) -> AsyncIterator[str]:
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
 
     generated_text = await call_triton(request.model, prompt, sampling_parameters)
-    generated_text = strip_prompt_echo(prompt, generated_text)
-    generated_text, _ = sanitize_generated_text(generated_text)
+    generated_text, reasoning_result, usage = _process_completed_generation(
+        request,
+        tokenizer,
+        prompt,
+        generated_text,
+        reasoning_settings,
+    )
     tool_calls, remaining_text = extract_tool_calls(generated_text, tools, tool_parser)
-    usage = build_usage(tokenizer, prompt, generated_text)
 
     yield sse_event(
         build_openai_chunk(
@@ -1187,7 +1422,21 @@ async def stream_tool_aware_response(
         )
     )
 
-    finish_reason = "stop"
+    finish_reason = (
+        "length"
+        if reasoning_result.incomplete and not remaining_text
+        else "stop"
+    )
+    settings = reasoning_settings or DISABLED_REASONING_SETTINGS
+    if settings.expose_reasoning and reasoning_result.reasoning:
+        yield sse_event(
+            build_openai_chunk(
+                response_id,
+                created,
+                request.model,
+                reasoning_message_fields(reasoning_result, settings),
+            )
+        )
     if tool_calls:
         finish_reason = "tool_calls"
         for index, tool_call in enumerate(tool_calls):
@@ -1246,6 +1495,7 @@ async def stream_tool_aware_multimodal_response(
     tools: list[dict[str, Any]],
     tool_parser: str | None = None,
     media: MediaPayloads | None = None,
+    reasoning_settings: ReasoningSettings | None = None,
 ) -> AsyncIterator[str]:
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
@@ -1257,10 +1507,14 @@ async def stream_tool_aware_multimodal_response(
         images,
         media,
     )
-    generated_text = strip_prompt_echo(prompt, generated_text)
-    generated_text, _ = sanitize_generated_text(generated_text)
+    generated_text, reasoning_result, usage = _process_completed_generation(
+        request,
+        tokenizer,
+        prompt,
+        generated_text,
+        reasoning_settings,
+    )
     tool_calls, remaining_text = extract_tool_calls(generated_text, tools, tool_parser)
-    usage = build_usage(tokenizer, prompt, generated_text)
 
     yield sse_event(
         build_openai_chunk(
@@ -1271,7 +1525,21 @@ async def stream_tool_aware_multimodal_response(
         )
     )
 
-    finish_reason = "stop"
+    finish_reason = (
+        "length"
+        if reasoning_result.incomplete and not remaining_text
+        else "stop"
+    )
+    settings = reasoning_settings or DISABLED_REASONING_SETTINGS
+    if settings.expose_reasoning and reasoning_result.reasoning:
+        yield sse_event(
+            build_openai_chunk(
+                response_id,
+                created,
+                request.model,
+                reasoning_message_fields(reasoning_result, settings),
+            )
+        )
     if tool_calls:
         finish_reason = "tool_calls"
         for index, tool_call in enumerate(tool_calls):
@@ -1329,6 +1597,7 @@ async def stream_tool_aware_native_multimodal_response(
     media: MediaPayloads,
     tools: list[dict[str, Any]],
     tool_parser: str | None = None,
+    reasoning_settings: ReasoningSettings | None = None,
 ) -> AsyncIterator[str]:
     async for event in stream_tool_aware_multimodal_response(
         request,
@@ -1339,5 +1608,6 @@ async def stream_tool_aware_native_multimodal_response(
         tools,
         tool_parser,
         media,
+        reasoning_settings,
     ):
         yield event

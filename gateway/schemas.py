@@ -27,6 +27,7 @@ class ChatCompletionRequest(BaseModel):
     repetition_penalty: float | None = None
     stream: bool = False
     debug: bool = False
+    include_reasoning: bool | None = None
 
     model_config = {"extra": "allow"}
 

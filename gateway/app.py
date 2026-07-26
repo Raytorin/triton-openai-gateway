@@ -65,6 +65,12 @@ from .prompt import (
     tool_choice_instruction,
 )
 from .registry import ModelRegistry
+from .reasoning import (
+    load_reasoning_settings,
+    observe_reasoning_result,
+    reasoning_message_fields,
+    split_reasoning_output,
+)
 from .rerank import build_rerank_documents, build_rerank_response
 from .rerank_strategies import resolve_rerank_strategy
 from .sanitizer import sanitize_generated_text, strip_prompt_echo
@@ -548,6 +554,10 @@ async def create_chat_completion(request: ChatCompletionRequest):
     log_chat_request_debug(request, conversation, tools, tool_parser)
     media_settings = load_vllm_media_settings(model_path)
     context_settings = load_context_compression_settings(model_path)
+    reasoning_settings = load_reasoning_settings(
+        model_path,
+        include_reasoning=request.include_reasoning,
+    )
     conversation, removed_historical_media = scope_media_history(
         conversation,
         media_settings.media_history_mode,
@@ -688,6 +698,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
                 previous,
                 source,
             ),
+            enable_thinking=reasoning_settings.enable_thinking,
         )
     except asyncio.CancelledError:
         raise
@@ -820,6 +831,9 @@ async def create_chat_completion(request: ChatCompletionRequest):
         reserved_media_tokens=reserved_media_tokens,
         context_compression_mode=context_preparation.mode,
         context_compression_action=context_preparation.action,
+        reasoning_mode=reasoning_settings.mode,
+        reasoning_parser=reasoning_settings.parser,
+        reasoning_supported=reasoning_settings.supported,
     )
     if LOG_PROMPT_PREVIEW:
         logger.debug(
@@ -845,12 +859,14 @@ async def create_chat_completion(request: ChatCompletionRequest):
                     sampling_parameters,
                     tools,
                     tool_parser,
+                    reasoning_settings,
                 )),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",
                     "X-Accel-Buffering": "no",
+                    **reasoning_settings.response_headers(),
                 },
             )
 
@@ -865,12 +881,14 @@ async def create_chat_completion(request: ChatCompletionRequest):
                         media,
                         tools,
                         tool_parser,
+                        reasoning_settings,
                     )),
                     media_type="text/event-stream",
                     headers={
                         "Cache-Control": "no-cache",
                         "Connection": "keep-alive",
                         "X-Accel-Buffering": "no",
+                        **reasoning_settings.response_headers(),
                     },
                 )
 
@@ -881,12 +899,14 @@ async def create_chat_completion(request: ChatCompletionRequest):
                     prompt,
                     sampling_parameters,
                     media,
+                    reasoning_settings,
                 )),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",
                     "X-Accel-Buffering": "no",
+                    **reasoning_settings.response_headers(),
                 },
             )
 
@@ -900,12 +920,14 @@ async def create_chat_completion(request: ChatCompletionRequest):
                     images,
                     tools,
                     tool_parser,
+                    reasoning_settings=reasoning_settings,
                 )),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",
                     "X-Accel-Buffering": "no",
+                    **reasoning_settings.response_headers(),
                 },
             )
 
@@ -918,12 +940,14 @@ async def create_chat_completion(request: ChatCompletionRequest):
                     sampling_parameters,
                     tools,
                     tool_parser,
+                    reasoning_settings,
                 )),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",
                     "X-Accel-Buffering": "no",
+                    **reasoning_settings.response_headers(),
                 },
             )
 
@@ -935,12 +959,14 @@ async def create_chat_completion(request: ChatCompletionRequest):
                     prompt,
                     sampling_parameters,
                     images,
+                    reasoning_settings=reasoning_settings,
                 )),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",
                     "X-Accel-Buffering": "no",
+                    **reasoning_settings.response_headers(),
                 },
             )
 
@@ -950,12 +976,14 @@ async def create_chat_completion(request: ChatCompletionRequest):
                 tokenizer,
                 prompt,
                 sampling_parameters,
+                reasoning_settings,
             )),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
                 "X-Accel-Buffering": "no",
+                **reasoning_settings.response_headers(),
             },
         )
 
@@ -982,15 +1010,36 @@ async def create_chat_completion(request: ChatCompletionRequest):
         )
     else:
         generated_text = await call_triton(request.model, prompt, sampling_parameters)
-    generated_text = strip_prompt_echo(prompt, generated_text)
-    generated_text, _ = sanitize_generated_text(generated_text)
+    raw_generated_text = strip_prompt_echo(prompt, generated_text)
+    reasoning_result = split_reasoning_output(
+        raw_generated_text,
+        reasoning_settings,
+    )
+    generated_text, _ = sanitize_generated_text(reasoning_result.content)
     tool_calls, remaining_text = (
         extract_tool_calls(generated_text, tools, tool_parser)
         if tools
         else ([], generated_text)
     )
-    usage = build_usage(tokenizer, prompt, generated_text)
-    finish_reason = "tool_calls" if tool_calls else "stop"
+    usage = build_usage(
+        tokenizer,
+        prompt,
+        raw_generated_text,
+        reasoning_text=reasoning_result.reasoning,
+    )
+    reasoning_tokens, content_tokens = observe_reasoning_result(
+        request.model,
+        tokenizer,
+        reasoning_settings,
+        reasoning_result,
+    )
+    finish_reason = (
+        "tool_calls"
+        if tool_calls
+        else "length"
+        if reasoning_result.incomplete and not remaining_text
+        else "stop"
+    )
     log_chat_response_debug(
         request,
         generated_text,
@@ -998,10 +1047,23 @@ async def create_chat_completion(request: ChatCompletionRequest):
         tool_calls,
         finish_reason,
     )
+    log_event(
+        logger,
+        "chat.reasoning_processed",
+        "Reasoning policy applied to chat response",
+        model=request.model,
+        reasoning_mode=reasoning_settings.mode,
+        reasoning_parser=reasoning_settings.parser,
+        reasoning_detected=reasoning_result.detected,
+        reasoning_incomplete=reasoning_result.incomplete,
+        reasoning_tokens=reasoning_tokens,
+        content_tokens=content_tokens,
+    )
 
     message: dict[str, Any] = {
         "role": "assistant",
         "content": remaining_text if remaining_text else "",
+        **reasoning_message_fields(reasoning_result, reasoning_settings),
     }
     if tool_calls:
         message["tool_calls"] = tool_calls
@@ -1019,4 +1081,5 @@ async def create_chat_completion(request: ChatCompletionRequest):
             }
         ],
         "usage": usage,
+        "reasoning_status": reasoning_settings.response_status(),
     }

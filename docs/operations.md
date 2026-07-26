@@ -59,7 +59,9 @@ removed.
 - admission in-flight, queued, rejected, and wait time;
 - Triton calls, duration, and active streams;
 - tokenizer loading and cache behavior;
-- media preprocessing and PDF embedding cache activity.
+- media preprocessing and PDF embedding cache activity;
+- context compression, internal summary calls, rerank strategy selection, and
+  reasoning token counts.
 
 ### Triton And vLLM
 

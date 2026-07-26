@@ -143,6 +143,16 @@ CONTEXT_SUMMARY_TOKENS = Counter(
     "Tokens processed by internal context summarization calls.",
     ("model", "summary_model", "direction"),
 )
+REASONING_REQUESTS = Counter(
+    "triton_gateway_reasoning_requests_total",
+    "Chat responses processed by the configured reasoning policy.",
+    ("model", "mode", "parser", "result"),
+)
+REASONING_TOKENS = Counter(
+    "triton_gateway_reasoning_tokens_total",
+    "Estimated reasoning and final-content tokens returned by chat models.",
+    ("model", "mode", "kind"),
+)
 
 
 _KNOWN_PATHS = {

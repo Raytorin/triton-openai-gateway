@@ -59,6 +59,7 @@ clients usually need additional protocol and orchestration behavior:
 | Long PDFs and videos exceed one prompt | Text-first extraction, chunked map/reduce, and optional PDF retrieval |
 | Long conversations exceed the model context | Per-model rolling summaries, deterministic truncation, or explicit rejection |
 | Rerank consumers need different cut-off rules | Named score, metadata, threshold, and diversity selection strategies |
+| Reasoning models mix thought and answer text | Configurable hidden or separate reasoning fields for JSON and SSE |
 | Unbounded client traffic can exhaust the pod | Per-route admission queues, timeouts, cancellation, and HTTP `429` |
 | Logs alone do not show the request path | Request IDs, structured logs, Prometheus metrics, and optional OTLP traces |
 | S3 repository agents materialize temporary paths | A watcher repairs vLLM model paths and maintains active model links |
@@ -95,6 +96,7 @@ protocol, prompt rendering, media orchestration, and request controls.
 - Optional embedding retrieval for text PDFs.
 - Per-model context overflow policies with rolling summaries and bounded fallback.
 - Configurable rerank selection after every candidate has been scored by the model.
+- Reasoning policies for hidden or separately returned model reasoning.
 - Bounded global and per-route admission queues.
 - JSON, CEF, or text logs with `X-Request-ID` correlation.
 - Gateway, Triton, vLLM, GPU/MIG, and OpenTelemetry integration points.

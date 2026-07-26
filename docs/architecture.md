@@ -30,11 +30,12 @@ Gateway-to-Triton traffic stays on loopback by default.
 4. The gateway loads or reuses the model tokenizer.
 5. `tokenizer.apply_chat_template(...)` renders the prompt, tools, and tool
    history in the model's native format.
-6. Context-window handling removes the oldest eligible turns if the prompt plus
-   requested output cannot fit in `max_model_len`.
+6. Context-window policy keeps the prompt unchanged, summarizes old complete
+   turns, truncates them, or rejects the request according to `gateway.json`.
 7. The gateway opens a decoupled Triton gRPC stream for the vLLM model.
 8. Triton/vLLM performs scheduling and generation.
-9. The gateway converts the result to an OpenAI response or SSE stream.
+9. The gateway separates configured reasoning text, normalizes tool calls, and
+   converts the result to an OpenAI response or SSE stream.
 10. Client disconnects cancel the corresponding Triton stream and release the
     admission slot.
 

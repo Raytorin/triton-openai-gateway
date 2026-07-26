@@ -31,11 +31,12 @@ Docker-образ запускает watcher и FastAPI через хуки NVID
 4. Gateway загружает или повторно использует токенайзер модели.
 5. `tokenizer.apply_chat_template(...)` формирует prompt, tools и tool history в
    нативном формате модели.
-6. Обработчик контекстного окна удаляет самые старые допустимые ходы, если prompt
-   и запрошенный output не помещаются в `max_model_len`.
+6. Политика context window сохраняет prompt, суммирует старые полные turn-ы,
+   удаляет их или отклоняет запрос в соответствии с `gateway.json`.
 7. Gateway открывает decoupled gRPC stream к vLLM-модели в Triton.
 8. Triton/vLLM выполняет scheduling и генерацию.
-9. Gateway преобразует результат в OpenAI response или SSE stream.
+9. Gateway отделяет настроенный reasoning, нормализует tool calls и преобразует
+   результат в OpenAI response или SSE stream.
 10. При отключении клиента соответствующий Triton stream отменяется, а admission
     slot освобождается.
 

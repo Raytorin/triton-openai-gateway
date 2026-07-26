@@ -172,12 +172,14 @@ def render_chat_prompt(
     tokenizer,
     conversation: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
+    *,
+    enable_thinking: bool = False,
 ) -> str:
     attempts: list[dict[str, Any]] = [
         {
             "tokenize": False,
             "add_generation_prompt": True,
-            "enable_thinking": False,
+            "enable_thinking": enable_thinking,
             **({"tools": tools} if tools else {}),
         },
         {
@@ -217,6 +219,7 @@ def fit_conversation_to_context(
     max_completion_tokens: int,
     reserved_media_tokens: int = 0,
     safety_margin_tokens: int = 64,
+    enable_thinking: bool = False,
 ) -> tuple[list[dict[str, Any]], str, int, int]:
     prompt_limit = context_prompt_limit(
         max_model_len,
@@ -228,7 +231,12 @@ def fit_conversation_to_context(
     fitted = [dict(message) for message in conversation]
     dropped_messages = 0
     while True:
-        prompt = render_chat_prompt(tokenizer, fitted, tools)
+        prompt = render_chat_prompt(
+            tokenizer,
+            fitted,
+            tools,
+            enable_thinking=enable_thinking,
+        )
         prompt_tokens = prompt_token_count(tokenizer, prompt)
         if prompt_tokens <= prompt_limit:
             return fitted, prompt, prompt_tokens, dropped_messages
@@ -354,11 +362,24 @@ def normalize_triton_stop_sequence(stop: str | list[str] | None) -> str | None:
     return TRITON_DEFAULT_STOP_SEQUENCE
 
 
-def build_usage(tokenizer, prompt: str, generated_text: str) -> dict[str, int]:
+def build_usage(
+    tokenizer,
+    prompt: str,
+    generated_text: str,
+    *,
+    reasoning_text: str = "",
+) -> dict[str, Any]:
     prompt_tokens = len(tokenizer(prompt, add_special_tokens=False).input_ids)
     completion_tokens = len(tokenizer(generated_text, add_special_tokens=False).input_ids)
-    return {
+    usage: dict[str, Any] = {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": prompt_tokens + completion_tokens,
     }
+    if reasoning_text:
+        usage["completion_tokens_details"] = {
+            "reasoning_tokens": len(
+                tokenizer(reasoning_text, add_special_tokens=False).input_ids
+            ),
+        }
+    return usage

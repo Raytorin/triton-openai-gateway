@@ -156,6 +156,7 @@ Important groups:
 | `max_remote_media_bytes` | Download limit for remote content |
 | `context_compression` | Context overflow, rolling-summary, and fallback policy |
 | `rerank` | Named post-score selection strategies and optional SQLite source |
+| `reasoning` | Thinking mode, output parser, and OpenAI-compatible response field |
 
 The `pdf_rag.embedding_model` value must name an embedding model already loaded
 in the same Triton server. Retrieval is used only when enough text can be
@@ -229,6 +230,34 @@ also be refreshed from a read-only SQLite database configured under
 
 See [`examples/gateway.rerank.json`](../examples/gateway.rerank.json) for the
 complete static and SQLite configuration.
+
+### Reasoning Output
+
+Reasoning policy is disabled by default and configured per model:
+
+```json
+{
+  "reasoning": {
+    "mode": "separate",
+    "parser": "auto",
+    "response_field": "reasoning_content"
+  }
+}
+```
+
+`disabled` requests a non-thinking chat template and strips accidental
+reasoning blocks. `hidden` allows model thinking but omits the text from the
+client response. `separate` returns reasoning independently from final
+`content` in both JSON and SSE. A client may downgrade `separate` to
+`hidden` for one request with `"include_reasoning": false`, but cannot
+elevate a stricter server policy.
+
+`parser: "auto"` detects supported Qwen chat templates. Explicit
+`qwen3` and `think_tags` parsers are also available. Use
+`response_field: "reasoning_content"` for LiteLLM/OpenAI-compatible clients or
+`"reasoning"` for clients following the vLLM schema.
+
+See [`examples/gateway.reasoning.json`](../examples/gateway.reasoning.json).
 
 ## Environment Variables
 

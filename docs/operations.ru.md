@@ -60,7 +60,9 @@ curl -fsS -X POST \
 - admission inflight, queue, rejected и wait time;
 - Triton calls, duration и активных streams;
 - загрузки tokenizer и поведения cache;
-- media preprocessing и PDF embedding cache.
+- media preprocessing и PDF embedding cache;
+- context compression, внутренних summary-вызовов, выбора rerank-стратегий и
+  числа reasoning tokens.
 
 ### Triton и vLLM
 
