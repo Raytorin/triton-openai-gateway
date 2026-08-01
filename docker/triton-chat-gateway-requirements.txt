@@ -18,7 +18,7 @@ qwen-vl-utils[decord]==0.0.14
 av==17.1.0
 decord==0.6.0
 grpcio==1.67.1
-protobuf==6.33.6
+protobuf==7.35.1
 prometheus-client==0.25.0
 python-rapidjson==1.23
 starlette==1.3.1
