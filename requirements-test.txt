@@ -11,7 +11,7 @@ numpy==1.26.4
 pillow==12.3.0
 pip-audit==2.10.1
 prometheus-client==0.25.0
-protobuf==6.33.6
+protobuf==7.35.1
 pydantic==2.10.6
 pymupdf==1.28.0
 pytest==9.1.1
