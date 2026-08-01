@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Raytorin
 # SPDX-License-Identifier: Apache-2.0
 
-fastapi==0.139.2
+fastapi==0.140.13
 httpx==0.27.2
 numpy==1.26.4
 sentencepiece==0.2.1
