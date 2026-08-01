@@ -4,7 +4,7 @@
 av==17.1.0
 cffconvert==2.0.0
 decord==0.6.0
-fastapi==0.139.2
+fastapi==0.140.13
 grpcio==1.67.1
 httpx==0.27.2
 numpy==1.26.4
