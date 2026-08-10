@@ -60,16 +60,8 @@ def test_bilingual_documents_keep_matching_heading_structure():
 def test_runtime_requirement_pins_match_verifier():
     verifier = runpy.run_path(str(ROOT / "docker" / "verify-runtime.py"))
     expected = verifier["EXPECTED_VERSIONS"]
-    requirements = {}
-    for line in (ROOT / "docker" / "triton-chat-gateway-requirements.txt").read_text(
-        encoding="utf-8"
-    ).splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        package, version = line.split("==", 1)
-        package = package.split("[", 1)[0].lower()
-        requirements[package] = version
+    read_pins = verifier["read_pinned_requirements"]
+    requirements = read_pins(ROOT / "docker" / "triton-chat-gateway-requirements.txt")
 
     mismatches = {
         package: (version, expected.get(package))
@@ -77,3 +69,19 @@ def test_runtime_requirement_pins_match_verifier():
         if expected.get(package) != version
     }
     assert not mismatches, f"Runtime pins differ from verifier: {mismatches}"
+
+
+def test_shared_test_and_runtime_requirement_pins_match():
+    verifier = runpy.run_path(str(ROOT / "docker" / "verify-runtime.py"))
+    read_pins = verifier["read_pinned_requirements"]
+    test_requirements = read_pins(ROOT / "requirements-test.txt")
+    runtime_requirements = read_pins(
+        ROOT / "docker" / "triton-chat-gateway-requirements.txt"
+    )
+
+    mismatches = {
+        package: (test_requirements[package], runtime_requirements[package])
+        for package in test_requirements.keys() & runtime_requirements.keys()
+        if test_requirements[package] != runtime_requirements[package]
+    }
+    assert not mismatches, f"Test and runtime pins differ: {mismatches}"

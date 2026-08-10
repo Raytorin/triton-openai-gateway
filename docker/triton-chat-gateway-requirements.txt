@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 fastapi==0.139.2
+pydantic==2.10.6
 httpx==0.27.2
 numpy==1.26.4
 sentencepiece==0.2.1
