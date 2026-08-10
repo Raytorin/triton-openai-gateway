@@ -12,7 +12,11 @@ import numpy as np
 
 from gateway.admission import AdmissionLease
 import gateway.app as gateway_app
-from gateway.prompt import build_usage, render_chat_prompt
+from gateway.prompt import (
+    build_usage,
+    completion_reached_token_limit,
+    render_chat_prompt,
+)
 from gateway.reasoning import (
     ReasoningSettings,
     load_reasoning_settings,
@@ -215,6 +219,20 @@ class ReasoningPromptAndUsageTests(unittest.TestCase):
         self.assertEqual(
             2,
             usage["completion_tokens_details"]["reasoning_tokens"],
+        )
+
+    def test_completion_limit_is_detected_from_usage(self):
+        self.assertTrue(
+            completion_reached_token_limit(
+                {"completion_tokens": 512},
+                {"max_tokens": 512},
+            )
+        )
+        self.assertFalse(
+            completion_reached_token_limit(
+                {"completion_tokens": 511},
+                {"max_tokens": 512},
+            )
         )
 
 

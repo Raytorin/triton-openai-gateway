@@ -58,6 +58,7 @@ from .prompt import (
     build_conversation,
     build_sampling_parameters,
     build_usage,
+    completion_reached_token_limit,
     fit_conversation_to_context,
     has_tool_result,
     prompt_token_count,
@@ -1037,7 +1038,10 @@ async def create_chat_completion(request: ChatCompletionRequest):
         "tool_calls"
         if tool_calls
         else "length"
-        if reasoning_result.incomplete and not remaining_text
+        if (
+            (reasoning_result.incomplete and not remaining_text)
+            or completion_reached_token_limit(usage, sampling_parameters)
+        )
         else "stop"
     )
     log_chat_response_debug(

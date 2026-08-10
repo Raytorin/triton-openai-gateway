@@ -331,7 +331,7 @@ async def prepare_conversation_context(
             settings,
             summary_model,
             action="truncate_fallback",
-            fallback_reason=type(exc).__name__,
+            fallback_reason=_context_fallback_reason(exc),
             enable_thinking=enable_thinking,
         )
 
@@ -339,6 +339,17 @@ async def prepare_conversation_context(
         result,
         duration_seconds=time.monotonic() - started_at,
     )
+
+
+def _context_fallback_reason(exc: Exception) -> str:
+    if not isinstance(exc, HTTPException):
+        return type(exc).__name__
+
+    detail = str(exc.detail).replace("\n", " ").strip()
+    if len(detail) > 240:
+        detail = f"{detail[:237]}..."
+    suffix = f": {detail}" if detail else ""
+    return f"HTTPException {exc.status_code}{suffix}"
 
 
 def build_summary_conversation(

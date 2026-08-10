@@ -383,3 +383,16 @@ def build_usage(
             ),
         }
     return usage
+
+
+def completion_reached_token_limit(
+    usage: dict[str, Any],
+    sampling_parameters: dict[str, Any],
+) -> bool:
+    """Best-effort length detection for Triton backends returning only text."""
+    try:
+        limit = int(sampling_parameters.get("max_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+    except (TypeError, ValueError):
+        return False
+    return limit > 0 and completion_tokens >= limit

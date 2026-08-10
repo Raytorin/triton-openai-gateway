@@ -28,7 +28,7 @@ from .metrics import (
     triton_call,
 )
 from .observability import get_request_id, get_traceparent, log_event
-from .prompt import build_usage
+from .prompt import build_usage, completion_reached_token_limit
 from .reasoning import (
     DISABLED_REASONING_SETTINGS,
     ReasoningResult,
@@ -831,7 +831,13 @@ async def stream_triton_multimodal_to_openai(
             {},
             finish_reason=(
                 "length"
-                if reasoning_result.incomplete and not final_text
+                if (
+                    (reasoning_result.incomplete and not final_text)
+                    or completion_reached_token_limit(
+                        usage,
+                        sampling_parameters,
+                    )
+                )
                 else "stop"
             ),
             usage=usage,
@@ -1174,7 +1180,13 @@ async def stream_triton_to_openai(
             {},
             finish_reason=(
                 "length"
-                if reasoning_result.incomplete and not final_text
+                if (
+                    (reasoning_result.incomplete and not final_text)
+                    or completion_reached_token_limit(
+                        usage,
+                        sampling_parameters,
+                    )
+                )
                 else "stop"
             ),
             usage=usage,
@@ -1329,7 +1341,10 @@ async def stream_python_chat_to_openai(
 
     finish_reason = (
         "length"
-        if reasoning_result.incomplete and not remaining_text
+        if (
+            (reasoning_result.incomplete and not remaining_text)
+            or completion_reached_token_limit(usage, sampling_parameters)
+        )
         else "stop"
     )
     settings = reasoning_settings or DISABLED_REASONING_SETTINGS
@@ -1424,7 +1439,10 @@ async def stream_tool_aware_response(
 
     finish_reason = (
         "length"
-        if reasoning_result.incomplete and not remaining_text
+        if (
+            (reasoning_result.incomplete and not remaining_text)
+            or completion_reached_token_limit(usage, sampling_parameters)
+        )
         else "stop"
     )
     settings = reasoning_settings or DISABLED_REASONING_SETTINGS
@@ -1527,7 +1545,10 @@ async def stream_tool_aware_multimodal_response(
 
     finish_reason = (
         "length"
-        if reasoning_result.incomplete and not remaining_text
+        if (
+            (reasoning_result.incomplete and not remaining_text)
+            or completion_reached_token_limit(usage, sampling_parameters)
+        )
         else "stop"
     )
     settings = reasoning_settings or DISABLED_REASONING_SETTINGS

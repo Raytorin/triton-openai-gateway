@@ -252,6 +252,11 @@ client response. `separate` returns reasoning independently from final
 `hidden` for one request with `"include_reasoning": false`, but cannot
 elevate a stricter server policy.
 
+Hiding reasoning does not stop the model from generating it. Reasoning and the
+final answer share `max_tokens`; if the model consumes the complete budget
+before producing final content, the gateway returns empty `content` with
+`finish_reason: "length"`.
+
 `parser: "auto"` detects supported Qwen chat templates. Explicit
 `qwen3` and `think_tags` parsers are also available. Use
 `response_field: "reasoning_content"` for LiteLLM/OpenAI-compatible clients or
