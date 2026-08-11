@@ -15,6 +15,7 @@ LANGUAGE_PAIRS = (
     ("SECURITY.md", "SECURITY.ru.md"),
     ("docs/architecture.md", "docs/architecture.ru.md"),
     ("docs/configuration.md", "docs/configuration.ru.md"),
+    ("docs/migration-26.07.md", "docs/migration-26.07.ru.md"),
     ("docs/operations.md", "docs/operations.ru.md"),
     ("backends/vllm_multimodal/README.md", "backends/vllm_multimodal/README.ru.md"),
     ("helm/triton-gateway/README.md", "helm/triton-gateway/README.ru.md"),

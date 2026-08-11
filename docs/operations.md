@@ -187,7 +187,7 @@ production profiling.
 | Prompt exceeds context | Text plus media tokens plus output reservation exceed `max_model_len` | Reduce media resolution/chunk size, history, or requested output; increase context only if memory permits |
 | Audio is rejected by a VL model | The architecture has no audio modality and no ASR is configured | Configure a local ASR model or use an audio-capable model |
 | GPU series are absent on `:8002` | Embedded DCGM could not initialize | Use root built-in mode or an external DCGM Exporter |
-| `pip` reports vLLM conflicts for `apache-tvm-ffi`, `openai`, or `pydantic` during the image build | The pinned NVIDIA `26.06` base image already contains these package-metadata mismatches | Keep the tested base digest and verified versions; do not upgrade core vLLM dependencies independently |
+| `pip` reports vLLM conflicts for `apache-tvm-ffi`, `openai`, or `pydantic` during the image build | The pinned NVIDIA `26.07` base image already contains these package-metadata mismatches | Keep the tested base digest and verified versions; do not upgrade core vLLM dependencies independently |
 | Gateway returns `429` | In-flight and queue capacity are full | Retry with backoff or tune tested admission limits |
 | Gateway returns `413` | Request body, media item, pages, pixels, frames, or audio duration exceeds a hard limit | Reduce the input or raise a specific limit after capacity testing |
 

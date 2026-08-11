@@ -31,7 +31,7 @@ Create an environment-specific values file:
 ```yaml
 image:
   repository: registry.example.com/ml/triton-openai-gateway
-  tag: "26.06"
+  tag: "26.07"
 
 triton:
   modelRepository: s3://object-store.example.com/models/triton

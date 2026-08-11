@@ -11,15 +11,15 @@
 ## Совместимость runtime
 
 Dockerfile закрепляет базовый образ NVIDIA Triton
-`26.06-vllm-python-py3` по digest. При сборке проверяются Triton client `2.70.0`,
-vLLM `0.22.1`, Transformers `5.6.0`, Torch и все добавленные зависимости для
-media и runtime. Замена базового образа является отдельной миграцией
+`26.07-vllm-python-py3` по digest. При сборке проверяются Triton client `2.71.0`,
+vLLM `0.24.0`, Transformers `5.6.1`, Torch, FlashInfer и все добавленные
+зависимости для media и runtime. Замена базового образа является отдельной миграцией
 совместимости, а не обычным обновлением пакета.
 
 Сборка с закреплённым образом:
 
 ```bash
-docker build -f Dockerfile.triton-gateway -t triton-openai-gateway:26.06 .
+docker build -f Dockerfile.triton-gateway -t triton-openai-gateway:26.07 .
 ```
 
 Меняйте базовый образ только после проверки полной матрицы runtime:

@@ -10,10 +10,12 @@ REQUIREMENTS_FILE = Path(__file__).with_name("triton-chat-gateway-requirements.t
 # These packages are part of one tested NVIDIA/vLLM runtime and must move with
 # the base image, not through independent dependency updates.
 BASE_IMAGE_VERSIONS = {
-    "compressed-tensors": "0.15.0.1",
-    "torch": "2.13.0a0+8145d630e8.nv26.6.54250401",
-    "transformers": "5.6.0",
-    "vllm": "0.22.1+7b9cb5b7.nv26.6.55098374",
+    "compressed-tensors": "0.17.0",
+    "flashinfer-python": "0.6.14+d0510b70.nv26.7.cu.59527636",
+    "torch": "2.13.0a0+9186a08b2c.nv26.7.59513937",
+    "transformers": "5.6.1",
+    "tritonserver": "2.71.0",
+    "vllm": "0.24.0+092c4842.nv26.7.59534043",
 }
 
 

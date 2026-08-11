@@ -188,7 +188,7 @@ OpenTelemetry показывает маршрут и задержки отдел
 | Prompt превышает context | Text, media tokens и output reserve больше `max_model_len` | Уменьшите resolution, chunk, history или output; увеличивайте context только при наличии памяти |
 | VL-модель отклоняет аудио | Архитектура не поддерживает аудио и ASR не настроен | Настройте локальную ASR-модель или используйте audio-capable модель |
 | На `:8002` нет GPU series | Не инициализировался встроенный DCGM | Используйте root builtin mode или внешний DCGM Exporter |
-| `pip` сообщает о конфликтах vLLM для `apache-tvm-ffi`, `openai` или `pydantic` при сборке образа | Закреплённый базовый образ NVIDIA `26.06` уже содержит эти расхождения package metadata | Сохраняйте проверенные digest и версии; не обновляйте core-зависимости vLLM независимо |
+| `pip` сообщает о конфликтах vLLM для `apache-tvm-ffi`, `openai` или `pydantic` при сборке образа | Закреплённый базовый образ NVIDIA `26.07` уже содержит эти расхождения package metadata | Сохраняйте проверенные digest и версии; не обновляйте core-зависимости vLLM независимо |
 | Gateway возвращает `429` | Заполнены inflight и queue | Повторите с backoff или настройте проверенные admission limits |
 | Gateway возвращает `413` | Превышен лимит body, media, страниц, pixels, кадров или длительности | Уменьшите input либо поднимите конкретный лимит после нагрузочного теста |
 

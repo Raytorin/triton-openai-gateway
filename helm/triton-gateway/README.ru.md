@@ -31,7 +31,7 @@ admission control, Prometheus metrics, DCGM и OTLP tracing Triton.
 ```yaml
 image:
   repository: registry.example.com/ml/triton-openai-gateway
-  tag: "26.06"
+  tag: "26.07"
 
 triton:
   modelRepository: s3://object-store.example.com/models/triton

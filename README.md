@@ -8,8 +8,8 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/Raytorin/triton-openai-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Raytorin/triton-openai-gateway/actions/workflows/ci.yml)
-[![Triton](https://img.shields.io/badge/NVIDIA%20Triton-26.06-76B900)](https://github.com/triton-inference-server/server)
-[![vLLM](https://img.shields.io/badge/vLLM-0.22.1-4C6EF5)](https://github.com/vllm-project/vllm)
+[![Triton](https://img.shields.io/badge/NVIDIA%20Triton-26.07-76B900)](https://github.com/triton-inference-server/server)
+[![vLLM](https://img.shields.io/badge/vLLM-0.24.0-4C6EF5)](https://github.com/vllm-project/vllm)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB)](https://www.python.org/)
 [![Maintainer](https://img.shields.io/badge/maintainer-Raytorin-181717)](https://github.com/Raytorin)
 
@@ -42,7 +42,7 @@ for chat and non-chat models.
 | Client compatibility | OpenAI-style API for LiteLLM, LibreChat, SDKs, and internal clients |
 | Model roles | Text/VL chat, embeddings, and reranking |
 | Multimodal inputs | Images, video, audio, and PDF with bounded preprocessing |
-| Runtime | NVIDIA Triton `26.06`, vLLM `0.22.1`, and Python `3.12` |
+| Runtime | NVIDIA Triton `26.07`, vLLM `0.24.0`, and Python `3.12` |
 | Operations | Admission queues, cancellation, structured logs, Prometheus metrics, and OTLP traces |
 | Deployment | Digest-pinned Docker build and Kubernetes Helm charts |
 
@@ -135,12 +135,12 @@ without a separate ASR model.
 
 ### 1. Build The Image
 
-The default base image is digest-pinned to Triton `26.06-vllm-python-py3`.
+The default base image is digest-pinned to Triton `26.07-vllm-python-py3`.
 
 ```bash
 docker build \
   -f Dockerfile.triton-gateway \
-  -t triton-openai-gateway:26.06 .
+  -t triton-openai-gateway:26.07 .
 ```
 
 All added Python dependencies are version-pinned and verified during the build.
@@ -174,7 +174,7 @@ environment file, then start the combined image:
 docker run --rm --gpus all --shm-size=8g \
   --env-file .env \
   -p 8000:8000 -p 8001:8001 -p 8002:8002 -p 8080:8080 \
-  triton-openai-gateway:26.06 \
+  triton-openai-gateway:26.07 \
   tritonserver \
   --model-repository=s3://S3_ENDPOINT/BUCKET/PREFIX \
   --model-control-mode=explicit \
@@ -187,7 +187,7 @@ For Kubernetes, use the bundled chart instead:
 helm upgrade --install triton-openai-gateway ./helm/triton-gateway \
   --namespace inference --create-namespace \
   --set image.repository=REGISTRY/triton-openai-gateway \
-  --set image.tag=26.06 \
+  --set image.tag=26.07 \
   --set triton.modelRepository=s3://S3_ENDPOINT/BUCKET/PREFIX \
   --set s3.existingSecret=triton-s3-credentials
 ```
@@ -239,6 +239,7 @@ and `8002`.
 | [Architecture](docs/architecture.md) | Components and end-to-end request flows |
 | [Configuration](docs/configuration.md) | Model files, `gateway.json`, environment, and Helm |
 | [Operations](docs/operations.md) | Health, metrics, logging, tracing, and troubleshooting |
+| [Triton 26.07 migration](docs/migration-26.07.md) | Runtime pins, compatibility notes, and production validation |
 | [API examples](examples/REQUEST_EXAMPLES.en.md) | Chat, media, tools, embeddings, and rerank requests |
 | [Custom backend](backends/vllm_multimodal/README.md) | Native multimodal Triton input contract |
 | [Helm deployment](helm/triton-gateway/README.md) | Kubernetes installation and values |

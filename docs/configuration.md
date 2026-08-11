@@ -10,15 +10,15 @@ separate prevents gateway-only keys from being passed to vLLM engine arguments.
 
 ## Runtime Compatibility
 
-The Dockerfile pins the NVIDIA Triton `26.06-vllm-python-py3` base image by
-digest. The build verifies Triton client `2.70.0`, vLLM `0.22.1`, Transformers
-`5.6.0`, Torch, and all added media/runtime dependencies. Changing the base
+The Dockerfile pins the NVIDIA Triton `26.07-vllm-python-py3` base image by
+digest. The build verifies Triton client `2.71.0`, vLLM `0.24.0`, Transformers
+`5.6.1`, Torch, FlashInfer, and all added media/runtime dependencies. Changing the base
 image is an explicit compatibility migration, not a routine package upgrade.
 
 Build with the pinned default:
 
 ```bash
-docker build -f Dockerfile.triton-gateway -t triton-openai-gateway:26.06 .
+docker build -f Dockerfile.triton-gateway -t triton-openai-gateway:26.07 .
 ```
 
 Override the base only when you have validated the complete runtime matrix:

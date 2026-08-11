@@ -13,7 +13,7 @@ updateStrategy:
 
 image:
   repository: example.registry.local/nvidia/tritonserver
-  tag: 26.06-vllm-gateway
+  tag: 26.07-vllm-gateway
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []

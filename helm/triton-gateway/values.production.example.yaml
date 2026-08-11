@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: registry.example.com/ml/triton-openai-gateway
-  tag: 26.06-vllm-gateway
+  tag: 26.07-vllm-gateway
   pullPolicy: IfNotPresent
 
 updateStrategy:
