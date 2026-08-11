@@ -62,13 +62,21 @@ curl -fsS -X POST \
 - загрузки tokenizer и поведения cache;
 - media preprocessing и PDF embedding cache;
 - context compression, внутренних summary-вызовов, выбора rerank-стратегий и
-  числа reasoning tokens.
+  числа reasoning tokens;
+- стадий generation lifecycle (`queue`, `preprocessing`, `triton`,
+  `postprocessing`, `total`), TTFT, числа токенов и output throughput.
+
+Успешные inference-ответы также содержат header `Server-Timing`. Для
+сэмплированной трассы gateway возвращает `X-Trace-ID`, связывающий логи и trace.
 
 ### Triton и vLLM
 
 `http://HOST:8002/metrics` публикует model metrics Triton. Встроенный backend
 `vllm_multimodal` по умолчанию отправляет custom vLLM metrics. Добавьте
 `REPORT_CUSTOM_METRICS=true` в `config.pbtxt`, чтобы явно закрепить это поведение.
+Series показывают состояние scheduler, running/waiting requests, заполнение
+KV-cache, prefix cache, число prefill/decode tokens, TTFT и end-to-end latency.
+Они дополняют timings gateway, а не заменяют их.
 
 ### GPU и MIG
 
@@ -134,9 +142,19 @@ python scripts/evaluate-context-memory.py \
 
 ## Tracing
 
-Helm chart может включить экспорт OpenTelemetry из Triton:
+Helm chart может отправлять сэмплированный span gateway и соответствующую trace
+Triton в один OpenTelemetry collector:
 
 ```yaml
+gateway:
+  observability:
+    generationTelemetry: true
+    otel:
+      enabled: true
+      endpoint: http://otel-collector.observability.svc:4318/v1/traces
+      sampleRatio: "0.05"
+      serviceName: triton-openai-gateway
+
 triton:
   tracing:
     enabled: true
@@ -146,9 +164,18 @@ triton:
     count: -1
 ```
 
-При `rate: 0` Triton трассирует запросы, содержащие W3C trace context. Включайте
-положительный sampling rate только с учётом объёма traces и нагрузки на
-collector. Для анализа ёмкости и насыщения основным источником остаются метрики.
+Gateway передаёт W3C `traceparent` в Triton. При `rate: 0` Triton трассирует
+только запросы, выбранные sampler gateway: оба span остаются в одной trace, без
+независимого двойного sampling. Телеметрия содержит timings, counters, имена
+модели/backend и типы исключений, но не отправляет prompts, media, ответы,
+результаты tools или reasoning content.
+
+Для анализа ёмкости и насыщения основным источником остаются метрики.
+OpenTelemetry показывает маршрут и задержки отдельных сэмплированных запросов.
+Ни метрики, ни traces не показывают скрытые активации или семантический ход
+«мыслей» модели. Для анализа GPU kernels и collectives используйте ограниченные
+по времени сессии Nsight Systems или Nsight Compute в тестовой среде, а не
+постоянный profiling в production.
 
 ## Типовые ошибки
 

@@ -33,6 +33,11 @@ from .debug import (
     log_chat_response_debug,
 )
 from .embeddings import build_embedding_inputs, encode_embedding, tokenize_embedding_inputs
+from .generation_telemetry import (
+    configure_generation_telemetry,
+    get_generation_telemetry,
+    observe_generation_usage,
+)
 from .metrics import (
     CONTEXT_COMPRESSION_DURATION,
     CONTEXT_COMPRESSION_MESSAGES,
@@ -103,6 +108,7 @@ from .triton_client import (
     stream_triton_native_multimodal_to_openai,
     stream_triton_to_openai,
 )
+from .tracing import shutdown_tracing
 from .vllm_media import (
     PdfEmbeddingContext,
     VllmMediaProcessingError,
@@ -136,6 +142,7 @@ async def lifespan(_app: FastAPI):
                 logger.exception("Tokenizer preload task failed during shutdown")
         await close_grpc_client()
         await close_http_client()
+        shutdown_tracing()
 
 
 app = FastAPI(
@@ -224,9 +231,18 @@ def admitted(route: str):
                 request.model,
                 model_path,
             )
+            configure_generation_telemetry(
+                route=resolved_route,
+                model=request.model,
+                backend=registry.get_backend(request.model) or "unknown",
+            )
+            if telemetry := get_generation_telemetry():
+                telemetry.admitted(lease.wait_seconds)
             try:
                 response = await endpoint(request)
-            except BaseException:
+            except BaseException as exc:
+                if telemetry := get_generation_telemetry():
+                    telemetry.fail(exc)
                 await lease.release()
                 raise
 
@@ -263,6 +279,8 @@ async def _guard_openai_stream(source: AsyncIterator[str]) -> AsyncIterator[str]
         async for event in source:
             yield event
     except HTTPException as exc:
+        if telemetry := get_generation_telemetry():
+            telemetry.fail(exc)
         log_event(
             logger,
             "stream.failed",
@@ -281,6 +299,8 @@ async def _guard_openai_stream(source: AsyncIterator[str]) -> AsyncIterator[str]
         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
     except Exception as exc:
+        if telemetry := get_generation_telemetry():
+            telemetry.fail(exc)
         logger.exception(
             "Unexpected streaming inference failure",
             extra={
@@ -387,14 +407,16 @@ async def create_embeddings(request: EmbeddingsRequest):
         for index, embedding, _ in results
     ]
 
+    usage = {
+        "prompt_tokens": total_prompt_tokens,
+        "total_tokens": total_prompt_tokens,
+    }
+    observe_generation_usage(usage)
     return {
         "object": "list",
         "data": data,
         "model": request.model,
-        "usage": {
-            "prompt_tokens": total_prompt_tokens,
-            "total_tokens": total_prompt_tokens,
-        },
+        "usage": usage,
     }
 
 

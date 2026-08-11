@@ -126,6 +126,16 @@ spec:
               value: {{ .Values.gateway.observability.debugPreviewChars | quote }}
             - name: UVICORN_ACCESS_LOG
               value: {{ .Values.gateway.observability.uvicornAccessLog | quote }}
+            - name: GATEWAY_GENERATION_TELEMETRY
+              value: {{ .Values.gateway.observability.generationTelemetry | quote }}
+            - name: GATEWAY_OTEL_ENABLED
+              value: {{ .Values.gateway.observability.otel.enabled | quote }}
+            - name: GATEWAY_OTEL_ENDPOINT
+              value: {{ .Values.gateway.observability.otel.endpoint | quote }}
+            - name: GATEWAY_OTEL_SAMPLE_RATIO
+              value: {{ .Values.gateway.observability.otel.sampleRatio | quote }}
+            - name: GATEWAY_OTEL_SERVICE_NAME
+              value: {{ .Values.gateway.observability.otel.serviceName | quote }}
             - name: TOKENIZER_TRUST_REMOTE_CODE
               value: {{ .Values.gateway.tokenizerTrustRemoteCode | quote }}
             {{- if .Values.gateway.watcherModelDir }}

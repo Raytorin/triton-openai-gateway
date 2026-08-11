@@ -226,6 +226,54 @@ class ObservabilityTests(unittest.TestCase):
         self.assertEqual(traceparent.decode(), observed["traceparent"])
         response_headers = dict(sent[0]["headers"])
         self.assertEqual(b"request-42", response_headers[b"x-request-id"])
+        self.assertEqual(
+            b"0123456789abcdef0123456789abcdef",
+            response_headers[b"x-trace-id"],
+        )
+
+    def test_middleware_logs_sanitized_generation_lifecycle(self):
+        completed = {}
+
+        async def app(scope, receive, send):
+            from gateway.generation_telemetry import (
+                configure_generation_telemetry,
+                get_generation_telemetry,
+            )
+
+            set_request_model("model-a")
+            configure_generation_telemetry(
+                route="chat",
+                model="model-a",
+                backend="vllm",
+                transport="grpc",
+            )
+            get_generation_telemetry().admitted(0.0)
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(_message):
+            return None
+
+        def capture(_logger, event, _message, **fields):
+            if event == "generation.telemetry.completed":
+                completed.update(fields)
+
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "headers": [],
+        }
+        with patch("gateway.observability.log_event", side_effect=capture):
+            asyncio.run(RequestContextMiddleware(app)(scope, receive, send))
+
+        self.assertEqual("model-a", completed["model"])
+        self.assertEqual("chat", completed["route"])
+        self.assertEqual("vllm", completed["backend"])
+        self.assertNotIn("prompt", completed)
 
 
 if __name__ == "__main__":

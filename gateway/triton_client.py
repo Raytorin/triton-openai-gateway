@@ -28,6 +28,7 @@ from .metrics import (
     triton_call,
 )
 from .observability import get_request_id, get_traceparent, log_event
+from .generation_telemetry import mark_first_generation_output
 from .prompt import build_usage, completion_reached_token_limit
 from .reasoning import (
     DISABLED_REASONING_SETTINGS,
@@ -905,12 +906,14 @@ async def call_triton_rerank(
             json=payload,
             headers=_request_headers(),
         )
-
-    if response.status_code != 200:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Triton rerank infer failed with status {response.status_code}: {response.text}",
-        )
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "Triton rerank infer failed with status "
+                    f"{response.status_code}: {response.text}"
+                ),
+            )
 
     scores_json = extract_text_output(response.json())
     try:
@@ -938,6 +941,12 @@ def build_openai_chunk(
     finish_reason: str | None = None,
     usage: dict[str, int] | None = None,
 ) -> dict[str, Any]:
+    if any(
+        value not in (None, "", [], {})
+        for key, value in delta.items()
+        if key != "role"
+    ):
+        mark_first_generation_output()
     payload: dict[str, Any] = {
         "id": response_id,
         "object": "chat.completion.chunk",
@@ -1211,12 +1220,14 @@ async def call_triton(model_name: str, prompt: str, sampling_parameters: dict[st
             json=payload,
             headers=_request_headers(),
         )
-
-    if response.status_code != 200:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Triton infer failed with status {response.status_code}: {response.text}",
-        )
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Triton infer failed with status {response.status_code}: "
+                    f"{response.text}"
+                ),
+            )
 
     return extract_text_output(response.json())
 
@@ -1253,13 +1264,15 @@ async def call_triton_python_chat(
             json=payload,
             headers=_request_headers(),
         )
-
-    if response.status_code != 200:
-        detail = f"Triton python chat infer failed with status {response.status_code}: {response.text}"
-        raise HTTPException(
-            status_code=413 if _is_context_length_error(detail) else 502,
-            detail=detail,
-        )
+        if response.status_code != 200:
+            detail = (
+                "Triton python chat infer failed with status "
+                f"{response.status_code}: {response.text}"
+            )
+            raise HTTPException(
+                status_code=413 if _is_context_length_error(detail) else 502,
+                detail=detail,
+            )
 
     return extract_text_output(response.json())
 

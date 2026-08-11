@@ -22,6 +22,12 @@ from .metrics import (
     HTTP_REQUESTS_INFLIGHT,
     metric_path,
 )
+from .generation_telemetry import (
+    get_generation_telemetry,
+    reset_generation_telemetry,
+    start_generation_telemetry,
+)
+from .tracing import start_request_trace
 
 
 REQUEST_ID_HEADER = b"x-request-id"
@@ -199,20 +205,41 @@ class RequestContextMiddleware:
             "utf-8", errors="ignore"
         )
         request_id = incoming_id if REQUEST_ID_RE.fullmatch(incoming_id) else uuid.uuid4().hex
-        traceparent = _valid_traceparent(headers.get(b"traceparent", b""))
-        trace_id = traceparent.split("-")[1] if traceparent else ""
+        started_at = time.monotonic()
+        method = str(scope.get("method") or "UNKNOWN")
+        raw_path = str(scope.get("path") or "")
+        request_trace = start_request_trace(
+            method=method,
+            path=raw_path,
+            headers={
+                key.decode("latin-1"): value.decode("latin-1")
+                for key, value in headers.items()
+            },
+            request_id=request_id,
+        )
+        traceparent = (
+            request_trace.traceparent
+            if request_trace.managed
+            else _valid_traceparent(headers.get(b"traceparent", b""))
+        )
+        trace_id = request_trace.trace_id or (
+            traceparent.split("-")[1] if traceparent else ""
+        )
         request_token = request_id_context.set(request_id)
         trace_token = trace_id_context.set(trace_id)
         traceparent_token = traceparent_context.set(traceparent)
         model_token = model_context.set("")
-        started_at = time.monotonic()
+        telemetry_token = start_generation_telemetry(
+            request_id,
+            raw_path,
+            started_at,
+        )
         status_code = 500
         response_started = False
         response_completed = False
         metrics_completed = False
         body_bytes = 0
-        method = str(scope.get("method") or "UNKNOWN")
-        path = metric_path(str(scope.get("path") or ""))
+        path = metric_path(raw_path)
         record_http_metrics = path != "/metrics"
         if record_http_metrics:
             HTTP_REQUESTS_INFLIGHT.labels(method, path).inc()
@@ -228,6 +255,23 @@ class RequestContextMiddleware:
                 HTTP_REQUEST_DURATION.labels(method, path).observe(duration)
                 HTTP_REQUEST_BODY_BYTES.labels(method, path).observe(body_bytes)
                 HTTP_REQUESTS_INFLIGHT.labels(method, path).dec()
+                telemetry = get_generation_telemetry()
+                telemetry_summary = (
+                    telemetry.finish(status_code) if telemetry is not None else None
+                )
+                if telemetry_summary is not None:
+                    log_event(
+                        self.logger,
+                        "generation.telemetry.completed",
+                        "Inference request telemetry completed",
+                        model=telemetry.model,
+                        **telemetry_summary,
+                    )
+                request_trace.finish(
+                    status_code=status_code,
+                    model=get_request_model(),
+                    telemetry=telemetry_summary,
+                )
                 self._log_completed(scope, status_code, started_at, body_bytes)
 
         if record_http_metrics:
@@ -264,6 +308,7 @@ class RequestContextMiddleware:
             )
             await send({"type": "http.response.body", "body": body})
             complete_request()
+            reset_generation_telemetry(telemetry_token)
             traceparent_context.reset(traceparent_token)
             trace_id_context.reset(trace_token)
             model_context.reset(model_token)
@@ -287,6 +332,18 @@ class RequestContextMiddleware:
                 response_headers = list(message.get("headers", []))
                 if not any(key.lower() == REQUEST_ID_HEADER for key, _ in response_headers):
                     response_headers.append((REQUEST_ID_HEADER, request_id.encode("ascii")))
+                if trace_id and not any(
+                    key.lower() == b"x-trace-id" for key, _ in response_headers
+                ):
+                    response_headers.append((b"x-trace-id", trace_id.encode("ascii")))
+                telemetry = get_generation_telemetry()
+                server_timing = telemetry.server_timing() if telemetry is not None else ""
+                if server_timing and not any(
+                    key.lower() == b"server-timing" for key, _ in response_headers
+                ):
+                    response_headers.append(
+                        (b"server-timing", server_timing.encode("ascii"))
+                    )
                 message["headers"] = response_headers
             elif (
                 message["type"] == "http.response.body"
@@ -316,6 +373,8 @@ class RequestContextMiddleware:
                 response_completed = True
             complete_request()
         except BaseException as exc:
+            if telemetry := get_generation_telemetry():
+                telemetry.fail(exc)
             if record_http_metrics and not response_completed:
                 log_event(
                     self.logger,
@@ -333,6 +392,7 @@ class RequestContextMiddleware:
             raise
         finally:
             complete_request()
+            reset_generation_telemetry(telemetry_token)
             traceparent_context.reset(traceparent_token)
             trace_id_context.reset(trace_token)
             model_context.reset(model_token)

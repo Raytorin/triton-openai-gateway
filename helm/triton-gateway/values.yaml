@@ -100,6 +100,12 @@ gateway:
     debugLogPayloads: false
     debugPreviewChars: "2000"
     uvicornAccessLog: false
+    generationTelemetry: true
+    otel:
+      enabled: false
+      endpoint: http://otel-collector.observability.svc:4318/v1/traces
+      sampleRatio: "0.05"
+      serviceName: triton-openai-gateway
   tokenizerTrustRemoteCode: true
   # Leave empty to create <watcherModelDir|TMP_ROOT|TMPDIR|/tmp>/models-active.
   modelsActiveDir: ""

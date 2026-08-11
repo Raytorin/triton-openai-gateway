@@ -260,6 +260,15 @@ The chart dependency archive is committed, so installation does not require
 ## OpenTelemetry
 
 ```yaml
+gateway:
+  observability:
+    generationTelemetry: true
+    otel:
+      enabled: true
+      endpoint: http://otel-collector.observability.svc:4318/v1/traces
+      sampleRatio: "0.05"
+      serviceName: triton-openai-gateway
+
 triton:
   tracing:
     enabled: true
@@ -270,7 +279,10 @@ triton:
     serviceName: triton-inference-server
 ```
 
-With `rate: 0`, only requests carrying trace context are traced.
+The gateway creates the root span and propagates W3C `traceparent` to Triton.
+With `rate: 0`, Triton only traces requests selected by the gateway sampler.
+Prompts, media, generated text, tool results, and reasoning content are not
+exported.
 
 ## Validate
 

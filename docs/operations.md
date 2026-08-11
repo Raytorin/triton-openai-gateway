@@ -61,13 +61,22 @@ removed.
 - tokenizer loading and cache behavior;
 - media preprocessing and PDF embedding cache activity;
 - context compression, internal summary calls, rerank strategy selection, and
-  reasoning token counts.
+  reasoning token counts;
+- generation lifecycle stages (`queue`, `preprocessing`, `triton`,
+  `postprocessing`, and `total`), TTFT, token counts, and output throughput.
+
+Successful inference responses also include a `Server-Timing` header. When a
+sampled trace exists, the gateway returns `X-Trace-ID` for log-to-trace
+correlation.
 
 ### Triton And vLLM
 
 `http://HOST:8002/metrics` exposes Triton model metrics. The included
 `vllm_multimodal` backend reports custom vLLM metrics by default; set
 `REPORT_CUSTOM_METRICS=true` in `config.pbtxt` to make the intent explicit.
+These series expose scheduler state, running and waiting requests, KV-cache
+occupancy, prefix-cache behavior, prefill/decode token counts, TTFT, and
+end-to-end latency. They complement gateway timings rather than replace them.
 
 ### GPU And MIG
 
@@ -132,9 +141,19 @@ the same model and `gateway.json` that will be deployed.
 
 ## Tracing
 
-The Helm chart can enable Triton OpenTelemetry export:
+The Helm chart can export a sampled gateway span and the matching Triton trace
+to the same OpenTelemetry collector:
 
 ```yaml
+gateway:
+  observability:
+    generationTelemetry: true
+    otel:
+      enabled: true
+      endpoint: http://otel-collector.observability.svc:4318/v1/traces
+      sampleRatio: "0.05"
+      serviceName: triton-openai-gateway
+
 triton:
   tracing:
     enabled: true
@@ -144,9 +163,18 @@ triton:
     count: -1
 ```
 
-With `rate: 0`, Triton traces requests carrying a W3C trace context. Use a
-positive sampling rate only after considering trace volume and collector load.
+The gateway propagates W3C `traceparent` to Triton. With `rate: 0`, Triton only
+traces requests selected by the gateway sampler, which keeps both spans in one
+trace and prevents independent double sampling. Telemetry records timings,
+counts, model/backend names, and exception types; it does not export prompts,
+media, generated text, tool results, or reasoning content.
+
 Metrics remain the primary source for capacity and saturation analysis.
+OpenTelemetry explains the path and latency of individual sampled requests.
+Neither mechanism exposes hidden activations or a semantic view of model
+"thoughts". For GPU kernel and collective analysis, use bounded Nsight Systems
+or Nsight Compute sessions in a test environment instead of continuous
+production profiling.
 
 ## Common Failures
 

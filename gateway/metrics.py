@@ -153,6 +153,52 @@ REASONING_TOKENS = Counter(
     "Estimated reasoning and final-content tokens returned by chat models.",
     ("model", "mode", "kind"),
 )
+GENERATION_REQUESTS = Counter(
+    "triton_gateway_generation_requests_total",
+    "Completed inference requests observed by the gateway telemetry lifecycle.",
+    ("route", "model", "status"),
+)
+GENERATION_STAGE_DURATION = Histogram(
+    "triton_gateway_generation_stage_duration_seconds",
+    "Request duration split into non-overlapping gateway and Triton stages.",
+    ("route", "model", "stage"),
+    buckets=(
+        0.001,
+        0.005,
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1.0,
+        2.5,
+        5.0,
+        10.0,
+        30.0,
+        60.0,
+        120.0,
+        300.0,
+        600.0,
+    ),
+)
+GENERATION_TOKENS = Counter(
+    "triton_gateway_generation_tokens_total",
+    "Input, output and reasoning tokens reported for inference requests.",
+    ("route", "model", "kind"),
+)
+GENERATION_TTFT = Histogram(
+    "triton_gateway_generation_time_to_first_token_seconds",
+    "Gateway-observed time from the first Triton call to the first streamed output.",
+    ("route", "model", "transport"),
+    buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
+)
+GENERATION_OUTPUT_THROUGHPUT = Histogram(
+    "triton_gateway_generation_output_tokens_per_second",
+    "Output token throughput derived from gateway-observed streaming decode time.",
+    ("route", "model"),
+    buckets=(1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000),
+)
 
 
 _KNOWN_PATHS = {
@@ -180,6 +226,15 @@ def metrics_response() -> Response:
 def triton_call(operation: str, model: str, transport: str) -> Iterator[None]:
     labels = (operation, model, transport)
     started_at = time.monotonic()
+    # Keep metric definitions independent from request-local context state.
+    from .generation_telemetry import get_generation_telemetry
+
+    telemetry = get_generation_telemetry()
+    observation = (
+        telemetry.begin_triton_call(operation, model, transport)
+        if telemetry is not None
+        else None
+    )
     TRITON_REQUESTS_INFLIGHT.labels(*labels).inc()
     status = "success"
     try:
@@ -187,10 +242,14 @@ def triton_call(operation: str, model: str, transport: str) -> Iterator[None]:
     except (asyncio.CancelledError, GeneratorExit):
         status = "cancelled"
         raise
-    except BaseException:
+    except BaseException as exc:
         status = "error"
+        if telemetry is not None:
+            telemetry.fail(exc)
         raise
     finally:
+        if telemetry is not None and observation is not None:
+            telemetry.finish_triton_call(observation, status)
         TRITON_REQUESTS_INFLIGHT.labels(*labels).dec()
         TRITON_REQUEST_DURATION.labels(*labels).observe(time.monotonic() - started_at)
         TRITON_REQUESTS.labels(operation, model, transport, status).inc()

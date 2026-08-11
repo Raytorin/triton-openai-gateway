@@ -48,6 +48,7 @@ class AdmissionTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             controller = AdmissionController()
             lease = await controller.acquire("chat", "model-a", Path(directory))
+            self.assertGreaterEqual(lease.wait_seconds, 0.0)
             await lease.release()
             await lease.release()
 

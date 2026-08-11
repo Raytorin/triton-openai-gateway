@@ -2,6 +2,8 @@ import base64
 from io import BytesIO
 import json
 from pathlib import Path
+import queue
+from types import ModuleType, SimpleNamespace
 import sys
 import tempfile
 import unittest
@@ -19,6 +21,52 @@ except ImportError as exc:  # These packages are installed in the release image.
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1] / "backends" / "vllm_multimodal"
 sys.path.insert(0, str(BACKEND_ROOT))
+TRITON_PYTHON_BACKEND = Path("/opt/tritonserver/backends/python")
+if TRITON_PYTHON_BACKEND.is_dir():
+    sys.path.insert(0, str(TRITON_PYTHON_BACKEND))
+else:
+    # CI validates the pure metrics adapter without shipping the Triton/vLLM
+    # runtime. Production images import the real modules from the backend.
+    pb_utils = ModuleType("triton_python_backend_utils")
+
+    class MetricFamily:
+        COUNTER = "counter"
+        GAUGE = "gauge"
+        HISTOGRAM = "histogram"
+
+    pb_utils.MetricFamily = MetricFamily
+    sys.modules["triton_python_backend_utils"] = pb_utils
+
+    vllm = ModuleType("vllm")
+    vllm.__path__ = []
+    vllm_config = ModuleType("vllm.config")
+    vllm_config.VllmConfig = object
+    vllm_v1 = ModuleType("vllm.v1")
+    vllm_v1.__path__ = []
+    vllm_metrics = ModuleType("vllm.v1.metrics")
+    vllm_metrics.__path__ = []
+    vllm_loggers = ModuleType("vllm.v1.metrics.loggers")
+
+    class StatLoggerBase:
+        def __init__(self, **_kwargs):
+            pass
+
+    vllm_loggers.StatLoggerBase = StatLoggerBase
+    vllm_loggers.build_1_2_5_buckets = lambda _maximum: [1]
+    vllm_stats = ModuleType("vllm.v1.metrics.stats")
+    vllm_stats.IterationStats = object
+    vllm_stats.MultiModalCacheStats = object
+    vllm_stats.SchedulerStats = object
+    sys.modules.update(
+        {
+            "vllm": vllm,
+            "vllm.config": vllm_config,
+            "vllm.v1": vllm_v1,
+            "vllm.v1.metrics": vllm_metrics,
+            "vllm.v1.metrics.loggers": vllm_loggers,
+            "vllm.v1.metrics.stats": vllm_stats,
+        }
+    )
 
 from utils.media import (  # noqa: E402
     build_multimodal_prompt,
@@ -29,6 +77,7 @@ from utils.media import (  # noqa: E402
 )
 from utils.observability import log_event as backend_log_event  # noqa: E402
 from utils.device_config import local_parallel_world_size  # noqa: E402
+from utils.metrics import VllmStatLogger  # noqa: E402
 
 
 def _encoded_envelope(data: bytes, mime_type: str, media_format: str) -> bytes:
@@ -89,6 +138,44 @@ def _video_bytes() -> bytes:
 
 
 class MultimodalBackendTests(unittest.TestCase):
+    def test_vllm_scheduler_and_cache_stats_are_exported(self):
+        stat_logger = object.__new__(VllmStatLogger)
+        stat_logger.metrics = SimpleNamespace(
+            gauge_running_requests="running",
+            gauge_waiting_requests="waiting",
+            gauge_kv_cache_usage="kv_usage",
+            counter_prefix_cache_queries="prefix_queries",
+            counter_prefix_cache_hits="prefix_hits",
+            counter_kv_cache_evictions="kv_evictions",
+            counter_mm_cache_queries="mm_queries",
+            counter_mm_cache_hits="mm_hits",
+        )
+        stat_logger._logger_queue = queue.Queue()
+        stat_logger._dropped_metrics = 0
+        stat_logger.log_logger = SimpleNamespace(log_warn=lambda _message: None)
+        scheduler = SimpleNamespace(
+            num_running_reqs=3,
+            num_waiting_reqs=2,
+            kv_cache_usage=0.75,
+            prefix_cache_stats=SimpleNamespace(queries=100, hits=80),
+            kv_cache_eviction_events=[object(), object()],
+        )
+        mm_cache = SimpleNamespace(queries=4, hits=3)
+
+        stat_logger.record(scheduler, None, mm_cache)
+
+        queued = []
+        while not stat_logger._logger_queue.empty():
+            queued.append(stat_logger._logger_queue.get_nowait())
+        self.assertIn(("running", "set", 3), queued)
+        self.assertIn(("waiting", "set", 2), queued)
+        self.assertIn(("kv_usage", "set", 0.75), queued)
+        self.assertIn(("prefix_queries", "increment", 100), queued)
+        self.assertIn(("prefix_hits", "increment", 80), queued)
+        self.assertIn(("kv_evictions", "increment", 2), queued)
+        self.assertIn(("mm_queries", "increment", 4), queued)
+        self.assertIn(("mm_hits", "increment", 3), queued)
+
     def test_device_validation_counts_local_data_parallel_ranks(self):
         topology = local_parallel_world_size(
             {

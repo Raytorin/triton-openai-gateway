@@ -261,6 +261,15 @@ dcgm-exporter:
 ## OpenTelemetry
 
 ```yaml
+gateway:
+  observability:
+    generationTelemetry: true
+    otel:
+      enabled: true
+      endpoint: http://otel-collector.observability.svc:4318/v1/traces
+      sampleRatio: "0.05"
+      serviceName: triton-openai-gateway
+
 triton:
   tracing:
     enabled: true
@@ -271,7 +280,9 @@ triton:
     serviceName: triton-inference-server
 ```
 
-При `rate: 0` трассируются только requests, содержащие trace context.
+Gateway создаёт root span и передаёт W3C `traceparent` в Triton. При `rate: 0`
+Triton трассирует только requests, выбранные sampler gateway. Prompts, media,
+сгенерированный текст, результаты tools и reasoning content не экспортируются.
 
 ## Проверка
 
