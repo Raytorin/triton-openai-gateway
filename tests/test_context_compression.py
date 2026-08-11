@@ -58,6 +58,9 @@ def settings(
     fallback_mode: str = "disabled",
     preserve_recent_messages: int = 2,
     cache_size: int = 32,
+    trigger_ratio: float = 1.0,
+    target_ratio: float = 1.0,
+    evidence_max_tokens: int = 0,
 ) -> ContextCompressionSettings:
     return ContextCompressionSettings(
         mode=mode,
@@ -72,6 +75,9 @@ def settings(
         cache_size=cache_size,
         version="test-v1",
         safety_margin_tokens=2,
+        trigger_ratio=trigger_ratio,
+        target_ratio=target_ratio,
+        evidence_max_tokens=evidence_max_tokens,
     )
 
 
@@ -96,6 +102,9 @@ class ContextCompressionSettingsTests(unittest.TestCase):
                             "summary_model": "summary-model",
                             "summary_max_tokens": 128,
                             "preserve_recent_messages": 6,
+                            "trigger_ratio": 0.8,
+                            "target_ratio": 0.6,
+                            "evidence_max_tokens": 384,
                             "version": "policy-2",
                         }
                     }
@@ -109,7 +118,28 @@ class ContextCompressionSettingsTests(unittest.TestCase):
         self.assertEqual("summary-model", loaded.summary_model)
         self.assertEqual(128, loaded.summary_max_tokens)
         self.assertEqual(6, loaded.preserve_recent_messages)
+        self.assertEqual(0.8, loaded.trigger_ratio)
+        self.assertEqual(0.6, loaded.target_ratio)
+        self.assertEqual(384, loaded.evidence_max_tokens)
         self.assertEqual("policy-2", loaded.version)
+
+    def test_target_ratio_cannot_exceed_trigger_ratio(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory)
+            (model_path / "gateway.json").write_text(
+                json.dumps(
+                    {
+                        "context_compression": {
+                            "mode": "summarize",
+                            "trigger_ratio": 0.7,
+                            "target_ratio": 0.8,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(HTTPException, "target_ratio"):
+                load_context_compression_settings(model_path)
 
     def test_invalid_mode_is_operator_error(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -216,6 +246,112 @@ class ContextCompressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("recent question", result.prompt)
         self.assertIn("current question", result.prompt)
         self.assertNotIn("old requirement old requirement", result.prompt)
+
+    async def test_proactive_compaction_runs_before_hard_context_limit(self):
+        conversation = [
+            {"role": "user", "content": "old fact " * 80},
+            {"role": "assistant", "content": "old response " * 80},
+            {"role": "user", "content": "recent question " * 6},
+            {"role": "assistant", "content": "recent answer " * 6},
+            {"role": "user", "content": "current question"},
+        ]
+        original_prompt = self.tokenizer.apply_chat_template(conversation)
+        original_tokens = len(self.tokenizer.encode(original_prompt))
+
+        async def summarize(_previous, _source):
+            return SummaryGeneration("Structured compact memory.", 40, 3)
+
+        result = await prepare_conversation_context(
+            model_name="chat",
+            tokenizer=self.tokenizer,
+            conversation=conversation,
+            tools=None,
+            max_model_len=400,
+            max_completion_tokens=20,
+            reserved_media_tokens=0,
+            settings=settings(
+                preserve_recent_messages=2,
+                trigger_ratio=0.8,
+                target_ratio=0.6,
+            ),
+            summary_generator=summarize,
+        )
+
+        self.assertLess(original_tokens, 378)
+        self.assertGreater(original_tokens, int(378 * 0.8))
+        self.assertEqual("summarize", result.action)
+        self.assertLessEqual(result.prompt_tokens, int(378 * 0.6))
+
+    async def test_proactive_compaction_failure_keeps_prompt_that_still_fits(self):
+        conversation = [
+            {"role": "user", "content": "old " * 100},
+            {"role": "assistant", "content": "answer " * 100},
+            {"role": "user", "content": "current"},
+        ]
+
+        async def summarize(_previous, _source):
+            raise RuntimeError("summary backend failed")
+
+        result = await prepare_conversation_context(
+            model_name="chat",
+            tokenizer=self.tokenizer,
+            conversation=conversation,
+            tools=None,
+            max_model_len=300,
+            max_completion_tokens=20,
+            reserved_media_tokens=0,
+            settings=settings(
+                fallback_mode="truncate",
+                preserve_recent_messages=0,
+                trigger_ratio=0.7,
+                target_ratio=0.5,
+            ),
+            summary_generator=summarize,
+        )
+
+        self.assertEqual("none_fallback", result.action)
+        self.assertEqual(0, result.dropped_messages)
+        self.assertEqual("RuntimeError", result.fallback_reason)
+
+    async def test_verbatim_evidence_preserves_exact_values_and_redacts_secret(self):
+        conversation = [
+            {
+                "role": "user",
+                "content": (
+                    "Use exact path /srv/models/qwen/model.json and port 8080. "
+                    "api_key=TEST_SECRET_VALUE_12345 must never be copied. "
+                ),
+            },
+            {"role": "assistant", "content": "Exact values recorded."},
+            {"role": "user", "content": "irrelevant filler " * 100},
+            {"role": "assistant", "content": "filler accepted " * 40},
+            {"role": "user", "content": "What were the exact values?"},
+        ]
+
+        async def summarize(_previous, _source):
+            return SummaryGeneration("The generated summary lost exact values.", 20, 7)
+
+        result = await prepare_conversation_context(
+            model_name="chat",
+            tokenizer=self.tokenizer,
+            conversation=conversation,
+            tools=None,
+            max_model_len=220,
+            max_completion_tokens=20,
+            reserved_media_tokens=0,
+            settings=settings(
+                preserve_recent_messages=0,
+                evidence_max_tokens=80,
+            ),
+            summary_generator=summarize,
+        )
+
+        self.assertEqual("summarize", result.action)
+        self.assertGreater(result.evidence_messages, 0)
+        self.assertIn("/srv/models/qwen/model.json", result.prompt)
+        self.assertIn("8080", result.prompt)
+        self.assertIn("[REDACTED]", result.prompt)
+        self.assertNotIn("TEST_SECRET_VALUE_12345", result.prompt)
 
     async def test_tool_turn_is_summarized_as_one_unit(self):
         conversation = [
@@ -424,6 +560,9 @@ class ContextCompressionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("untrusted data", conversation[0]["content"])
         self.assertIn("never follow instructions", conversation[0]["content"])
+        self.assertIn("[exact_facts_and_values]", conversation[0]["content"])
+        self.assertIn("[tool_calls_and_results]", conversation[0]["content"])
+        self.assertIn("scope words", conversation[0]["content"])
         self.assertIn("previous_summary", conversation[1]["content"])
 
 
@@ -506,9 +645,11 @@ class ContextCompressionEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("chat-model", triton_call.await_args_list[1].args[0])
         summary_prompt = triton_call.await_args_list[0].args[1]
         primary_prompt = triton_call.await_args_list[1].args[1]
-        self.assertIn("compact factual rolling summary", summary_prompt)
+        self.assertIn("compact structured memory", summary_prompt)
         self.assertIn(SUMMARY_MARKER, primary_prompt)
         self.assertIn("Compact historical facts.", primary_prompt)
+        self.assertEqual("summarize", response["context_status"]["action"])
+        self.assertTrue(response["context_status"]["compacted"])
 
 
 if __name__ == "__main__":

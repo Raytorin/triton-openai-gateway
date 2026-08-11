@@ -180,17 +180,29 @@ preserving system messages, recent turns, and the current user request.
     "preserve_recent_messages": 4,
     "max_summary_calls": 4,
     "summary_timeout_seconds": 120,
+    "summary_temperature": 0.0,
     "cache_size": 256,
-    "version": "1",
-    "safety_margin_tokens": 64
+    "version": "structured-memory-v2",
+    "safety_margin_tokens": 64,
+    "trigger_ratio": 0.8,
+    "target_ratio": 0.6,
+    "evidence_max_tokens": 384
   }
 }
 ```
 
-Summarization runs only when the rendered prompt would overflow. An empty
-`summary_model` uses the requested chat model; otherwise it must name another
-loaded chat model. Internal summary calls have separate Prometheus counters and
-are not added to the client response's `usage`.
+In `summarize` mode, compaction starts when the rendered prompt reaches
+`trigger_ratio` of the available prompt budget and aims for `target_ratio`.
+This proactive margin prevents every subsequent turn from immediately invoking
+another summary. `evidence_max_tokens` reserves verbatim, redacted evidence for
+important paths, identifiers, numbers, tool results, and corrected values that
+an abstractive summary could lose.
+
+An empty `summary_model` uses the requested chat model; otherwise it must name
+another loaded chat model. Internal summary calls have separate Prometheus
+counters and are not added to the client response's `usage`. Non-streaming
+responses expose `context_status`; streaming responses expose equivalent
+`X-Context-*` headers.
 
 See
 [`examples/gateway.context-compression.json`](../examples/gateway.context-compression.json)

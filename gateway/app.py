@@ -21,6 +21,7 @@ from . import __author__, __repository__
 from .admission import AdmissionController, AdmissionLease
 from .context_compression import (
     ContextCompressionSettings,
+    ContextPreparation,
     SummaryGeneration,
     build_summary_conversation,
     load_context_compression_settings,
@@ -443,6 +444,15 @@ async def _generate_context_summary(
     source_text: str,
 ) -> SummaryGeneration:
     summary_model = settings.summary_model or request_model
+    log_event(
+        logger,
+        "chat.context_compacting",
+        "Compacting historical conversation",
+        model=request_model,
+        summary_model=summary_model,
+        has_previous_summary=bool(previous_summary),
+        source_chars=len(source_text),
+    )
     summary_model_path = registry.resolve(summary_model)
     registry.validate_route(summary_model, "chat", summary_model_path)
     summary_tokenizer, summary_model_path = await registry.get_tokenizer_async(
@@ -540,6 +550,19 @@ async def _generate_context_summary(
         input_tokens=summary_prompt_tokens,
         output_tokens=output_tokens,
     )
+
+
+def _chat_stream_headers(
+    reasoning_settings: Any,
+    context_preparation: ContextPreparation,
+) -> dict[str, str]:
+    return {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+        **reasoning_settings.response_headers(),
+        **context_preparation.response_headers(),
+    }
 
 
 @app.post("/v1/chat/completions")
@@ -768,6 +791,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
             summary_cache_hit=context_preparation.summary_cache_hit,
             summary_input_tokens=context_preparation.summary_input_tokens,
             summary_output_tokens=context_preparation.summary_output_tokens,
+            evidence_message_count=context_preparation.evidence_messages,
             prompt_tokens=prompt_tokens,
             max_model_len=media_settings.max_model_len,
             reserved_media_tokens=reserved_media_tokens,
@@ -788,6 +812,19 @@ async def create_chat_completion(request: ChatCompletionRequest):
             compression_mode=context_preparation.mode,
             compression_action=context_preparation.action,
             dropped_message_count=context_preparation.dropped_messages,
+            fallback_reason=context_preparation.fallback_reason or None,
+            prompt_tokens=prompt_tokens,
+            max_model_len=media_settings.max_model_len,
+            reserved_media_tokens=reserved_media_tokens,
+        )
+    elif context_preparation.action == "none_fallback":
+        log_event(
+            logger,
+            "chat.context_compaction_skipped",
+            "Proactive context compaction failed; original prompt still fits",
+            level=logging.WARNING,
+            model=request.model,
+            compression_mode=context_preparation.mode,
             fallback_reason=context_preparation.fallback_reason or None,
             prompt_tokens=prompt_tokens,
             max_model_len=media_settings.max_model_len,
@@ -863,12 +900,10 @@ async def create_chat_completion(request: ChatCompletionRequest):
                     reasoning_settings,
                 )),
                 media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                    **reasoning_settings.response_headers(),
-                },
+                headers=_chat_stream_headers(
+                    reasoning_settings,
+                    context_preparation,
+                ),
             )
 
         if backend == "vllm_multimodal" and media.has_any:
@@ -885,12 +920,10 @@ async def create_chat_completion(request: ChatCompletionRequest):
                         reasoning_settings,
                     )),
                     media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no",
-                        **reasoning_settings.response_headers(),
-                    },
+                    headers=_chat_stream_headers(
+                        reasoning_settings,
+                        context_preparation,
+                    ),
                 )
 
             return StreamingResponse(
@@ -903,12 +936,10 @@ async def create_chat_completion(request: ChatCompletionRequest):
                     reasoning_settings,
                 )),
                 media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                    **reasoning_settings.response_headers(),
-                },
+                headers=_chat_stream_headers(
+                    reasoning_settings,
+                    context_preparation,
+                ),
             )
 
         if tools and is_vllm_backend:
@@ -924,12 +955,10 @@ async def create_chat_completion(request: ChatCompletionRequest):
                     reasoning_settings=reasoning_settings,
                 )),
                 media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                    **reasoning_settings.response_headers(),
-                },
+                headers=_chat_stream_headers(
+                    reasoning_settings,
+                    context_preparation,
+                ),
             )
 
         if tools:
@@ -944,12 +973,10 @@ async def create_chat_completion(request: ChatCompletionRequest):
                     reasoning_settings,
                 )),
                 media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                    **reasoning_settings.response_headers(),
-                },
+                headers=_chat_stream_headers(
+                    reasoning_settings,
+                    context_preparation,
+                ),
             )
 
         if is_vllm_backend:
@@ -963,12 +990,10 @@ async def create_chat_completion(request: ChatCompletionRequest):
                     reasoning_settings=reasoning_settings,
                 )),
                 media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                    **reasoning_settings.response_headers(),
-                },
+                headers=_chat_stream_headers(
+                    reasoning_settings,
+                    context_preparation,
+                ),
             )
 
         return StreamingResponse(
@@ -980,12 +1005,10 @@ async def create_chat_completion(request: ChatCompletionRequest):
                 reasoning_settings,
             )),
             media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-                **reasoning_settings.response_headers(),
-            },
+            headers=_chat_stream_headers(
+                reasoning_settings,
+                context_preparation,
+            ),
         )
 
     if backend == "python":
@@ -1086,4 +1109,5 @@ async def create_chat_completion(request: ChatCompletionRequest):
         ],
         "usage": usage,
         "reasoning_status": reasoning_settings.response_status(),
+        "context_status": context_preparation.response_status(),
     }

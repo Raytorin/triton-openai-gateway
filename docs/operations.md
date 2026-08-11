@@ -115,6 +115,21 @@ finish reason. It does not log prompts or tool results. Enable
 `DEBUG_LOG_PAYLOADS=true` only for controlled diagnostics because payload
 previews may contain sensitive user data.
 
+### Context Compaction Validation
+
+Use the focused evaluator after changing a summarization model or compaction
+policy. It forces compaction and checks whether exact identifiers, paths,
+corrected values, and tool results survive:
+
+```bash
+python scripts/evaluate-context-memory.py \
+  --model MODEL_NAME \
+  --strict
+```
+
+This is a functional retention check, not a quality benchmark. Run it against
+the same model and `gateway.json` that will be deployed.
+
 ## Tracing
 
 The Helm chart can enable Triton OpenTelemetry export:

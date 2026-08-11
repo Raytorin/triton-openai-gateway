@@ -17,7 +17,10 @@
     "summary_timeout_seconds": 120,
     "summary_temperature": 0.0,
     "cache_size": 256,
-    "version": "1",
-    "safety_margin_tokens": 64
+    "version": "structured-memory-v2",
+    "safety_margin_tokens": 64,
+    "trigger_ratio": 0.8,
+    "target_ratio": 0.6,
+    "evidence_max_tokens": 384
   }
 }

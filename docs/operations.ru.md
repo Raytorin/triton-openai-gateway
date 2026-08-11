@@ -117,6 +117,21 @@ counts и finish reason. Prompt и tool results не логируются. Вк�
 `DEBUG_LOG_PAYLOADS=true` только для контролируемой диагностики: preview может
 содержать чувствительные данные пользователя.
 
+### Проверка сжатия контекста
+
+После изменения summary-модели или политики сжатия запустите целевой evaluator.
+Он принудительно вызывает compaction и проверяет сохранность точных
+идентификаторов, путей, исправленных значений и результатов tools:
+
+```bash
+python scripts/evaluate-context-memory.py \
+  --model MODEL_NAME \
+  --strict
+```
+
+Это функциональная проверка сохранения фактов, а не benchmark качества. Её
+нужно выполнять с той же моделью и `gateway.json`, которые пойдут в deployment.
+
 ## Tracing
 
 Helm chart может включить экспорт OpenTelemetry из Triton:

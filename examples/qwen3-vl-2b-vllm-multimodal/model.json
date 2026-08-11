@@ -1,0 +1,15 @@
+{
+  "model": "/models/Qwen3-VL-2B-Instruct",
+  "gpu_memory_utilization": 0.75,
+  "max_model_len": 8192,
+  "tensor_parallel_size": 1,
+  "dtype": "auto",
+  "max_num_seqs": 4,
+  "max_num_batched_tokens": 8192,
+  "enable_chunked_prefill": true,
+  "enable_prefix_caching": true,
+  "limit_mm_per_prompt": {
+    "image": 8,
+    "video": 1
+  }
+}

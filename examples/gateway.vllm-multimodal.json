@@ -21,6 +21,23 @@
       "queue_timeout_seconds": 30
     }
   },
+  "context_compression": {
+    "mode": "summarize",
+    "fallback_mode": "truncate",
+    "summary_model": "",
+    "summary_max_tokens": 256,
+    "summary_input_max_tokens": 4096,
+    "preserve_recent_messages": 4,
+    "max_summary_calls": 4,
+    "summary_timeout_seconds": 120,
+    "summary_temperature": 0.0,
+    "cache_size": 256,
+    "version": "vllm-multimodal-structured-memory-v2",
+    "safety_margin_tokens": 128,
+    "trigger_ratio": 0.8,
+    "target_ratio": 0.6,
+    "evidence_max_tokens": 512
+  },
   "vllm_multimodal": {
     "media_history_mode": "latest",
     "reset_history_on_new_media": false,

@@ -181,18 +181,29 @@ watcher запишет путь до конкретного файла.
     "preserve_recent_messages": 4,
     "max_summary_calls": 4,
     "summary_timeout_seconds": 120,
+    "summary_temperature": 0.0,
     "cache_size": 256,
-    "version": "1",
-    "safety_margin_tokens": 64
+    "version": "structured-memory-v2",
+    "safety_margin_tokens": 64,
+    "trigger_ratio": 0.8,
+    "target_ratio": 0.6,
+    "evidence_max_tokens": 384
   }
 }
 ```
 
-Summarization запускается только тогда, когда сформированный prompt не
-помещается. Пустой `summary_model` использует запрошенную chat-модель; иначе
-нужно указать другую загруженную chat-модель. Внутренние summary-вызовы
-учитываются отдельными Prometheus-метриками и не добавляются в `usage` ответа
-клиенту.
+В режиме `summarize` сжатие начинается, когда сформированный prompt достигает
+`trigger_ratio` доступного бюджета, и стремится уменьшить его до
+`target_ratio`. Такой запас не позволяет каждому следующему сообщению сразу
+запускать новое summary. `evidence_max_tokens` резервирует дословные, очищенные
+от секретов доказательства для важных путей, идентификаторов, чисел, результатов
+tools и исправленных значений, которые может потерять абстрактивное summary.
+
+Пустой `summary_model` использует запрошенную chat-модель; иначе нужно указать
+другую загруженную chat-модель. Внутренние summary-вызовы учитываются отдельными
+Prometheus-метриками и не добавляются в `usage` ответа клиенту. Обычный ответ
+содержит `context_status`, а streaming-ответ передаёт эквивалентные заголовки
+`X-Context-*`.
 
 Распространённые параметры приведены в
 [`examples/gateway.context-compression.json`](../examples/gateway.context-compression.json).
