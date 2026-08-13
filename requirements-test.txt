@@ -16,7 +16,7 @@ pip-audit==2.10.1
 prometheus-client==0.26.0
 protobuf==6.33.6
 pydantic==2.10.6
-pymupdf==1.28.0
+pymupdf==1.28.2
 pytest==9.1.1
 pytest-cov==7.1.0
 python-rapidjson==1.23
