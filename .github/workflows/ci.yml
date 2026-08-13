@@ -41,7 +41,7 @@ jobs:
       - name: Install test dependencies
         run: |
           python -m pip install --requirement requirements-test.txt
-          python -m pip check
+          python scripts/check_python_environment.py
 
       - name: Audit Python dependencies
         run: |
