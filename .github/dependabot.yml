@@ -4,43 +4,48 @@
 version: 2
 updates:
   - package-ecosystem: pip
-    directory: /
+    directories:
+      - /
+      - /docker
     schedule:
       interval: monthly
+    target-branch: dev
     open-pull-requests-limit: 10
-    labels:
-      - dependencies
-      - runtime
     groups:
-      gateway-web-stack:
-        patterns:
-          - fastapi
-          - pydantic
-          - starlette
-          - uvicorn
+      python-dependencies:
+        group-by: dependency-name
     ignore:
-      # This version is coupled to the vLLM build in the NVIDIA base image.
+      # These packages are part of the digest-pinned NVIDIA runtime matrix.
+      - dependency-name: fastapi
+      - dependency-name: pydantic
+      - dependency-name: starlette
+      - dependency-name: uvicorn
+      - dependency-name: httpx
+      - dependency-name: numpy
+      - dependency-name: sentencepiece
       - dependency-name: compressed-tensors
-      # Triton client 2.70 requires protobuf >=6.30,<7.0.
+      - dependency-name: pillow
+      - dependency-name: prometheus-client
+      - dependency-name: uvloop
+      - dependency-name: opentelemetry-api
+      - dependency-name: opentelemetry-sdk
+      - dependency-name: opentelemetry-exporter-otlp-proto-http
+      # Triton client follows the Triton release and currently requires protobuf < 7.
+      - dependency-name: tritonclient
+      - dependency-name: grpcio
       - dependency-name: protobuf
-        update-types:
-          - version-update:semver-major
 
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: monthly
-    labels:
-      - dependencies
-      - runtime
+    target-branch: dev
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
-    labels:
-      - dependencies
-      - ci
+    target-branch: dev
     groups:
       github-actions:
         patterns:

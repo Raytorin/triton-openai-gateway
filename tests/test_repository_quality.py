@@ -22,6 +22,7 @@ LANGUAGE_PAIRS = (
     ("helm/dcgm-exporter/README.md", "helm/dcgm-exporter/README.ru.md"),
 )
 MARKDOWN_LINK = re.compile(r"!?\[[^\]]*]\(([^)]+)\)")
+COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
 
 
 def test_local_markdown_links_resolve():
@@ -86,3 +87,25 @@ def test_shared_test_and_runtime_requirement_pins_match():
         if test_requirements[package] != runtime_requirements[package]
     }
     assert not mismatches, f"Test and runtime pins differ: {mismatches}"
+
+
+def test_external_github_actions_are_pinned_to_commit_shas():
+    unpinned = []
+    for workflow in (ROOT / ".github" / "workflows").glob("*.y*ml"):
+        for line_number, line in enumerate(
+            workflow.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            stripped = line.strip()
+            if not stripped.startswith("uses:"):
+                continue
+
+            action = stripped.split("#", 1)[0].split(":", 1)[1].strip()
+            if action.startswith("./"):
+                continue
+            _, separator, reference = action.rpartition("@")
+            if not separator or not COMMIT_SHA.fullmatch(reference):
+                unpinned.append(f"{workflow.relative_to(ROOT)}:{line_number}: {action}")
+
+    assert not unpinned, "GitHub Actions must use immutable commit SHAs:\n" + "\n".join(
+        unpinned
+    )
