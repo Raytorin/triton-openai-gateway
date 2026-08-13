@@ -19,10 +19,10 @@ BASE_IMAGE_VERSIONS = {
 
 # Compatibility-sensitive overlay packages are intentionally duplicated here.
 # Dependabot must not advance one of them without a complete runtime review.
-# FastAPI 0.136.1 is the newest release in vLLM's supported >=0.133,<0.137
+# FastAPI 0.136.3 is the newest release in vLLM's supported >=0.133,<0.137
 # range. Pydantic stays at 2.10.6 because Triton frontend 2.71 pins it exactly.
 LOCKED_OVERLAY_VERSIONS = {
-    "fastapi": "0.136.1",
+    "fastapi": "0.136.3",
     "grpcio": "1.67.1",
     "httpx": "0.27.2",
     "numpy": "1.26.4",
