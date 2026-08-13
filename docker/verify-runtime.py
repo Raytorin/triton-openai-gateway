@@ -7,8 +7,7 @@ from pathlib import Path
 
 REQUIREMENTS_FILE = Path(__file__).with_name("triton-chat-gateway-requirements.txt")
 
-# These packages are part of one tested NVIDIA/vLLM runtime and must move with
-# the base image, not through independent dependency updates.
+# These packages are supplied by the NVIDIA image and must move with it.
 BASE_IMAGE_VERSIONS = {
     "compressed-tensors": "0.17.0",
     "flashinfer-python": "0.6.14+d0510b70.nv26.7.cu.59527636",
@@ -16,6 +15,29 @@ BASE_IMAGE_VERSIONS = {
     "transformers": "5.6.1",
     "tritonserver": "2.71.0",
     "vllm": "0.24.0+092c4842.nv26.7.59534043",
+}
+
+# Compatibility-sensitive overlay packages are intentionally duplicated here.
+# Dependabot must not advance one of them without a complete runtime review.
+# FastAPI 0.136.1 is the newest release in vLLM's supported >=0.133,<0.137
+# range. Pydantic stays at 2.10.6 because Triton frontend 2.71 pins it exactly.
+LOCKED_OVERLAY_VERSIONS = {
+    "fastapi": "0.136.1",
+    "grpcio": "1.67.1",
+    "httpx": "0.27.2",
+    "numpy": "1.26.4",
+    "opentelemetry-api": "1.44.0",
+    "opentelemetry-exporter-otlp-proto-http": "1.44.0",
+    "opentelemetry-sdk": "1.44.0",
+    "pillow": "12.3.0",
+    "prometheus-client": "0.26.0",
+    "protobuf": "6.33.6",
+    "pydantic": "2.10.6",
+    "sentencepiece": "0.2.2",
+    "starlette": "1.3.1",
+    "tritonclient": "2.71.0",
+    "uvicorn": "0.51.0",
+    "uvloop": "0.22.1",
 }
 
 
@@ -41,17 +63,18 @@ def read_pinned_requirements(requirements_file: Path) -> dict[str, str]:
 
 def expected_versions(requirements_file: Path = REQUIREMENTS_FILE) -> dict[str, str]:
     requirements = read_pinned_requirements(requirements_file)
+    runtime_policy = BASE_IMAGE_VERSIONS | LOCKED_OVERLAY_VERSIONS
     conflicts = {
         package: (requirements[package], expected)
-        for package, expected in BASE_IMAGE_VERSIONS.items()
+        for package, expected in runtime_policy.items()
         if package in requirements and requirements[package] != expected
     }
     if conflicts:
         raise ValueError(
-            "Runtime pins conflict with the NVIDIA base image: "
+            "Runtime pins conflict with the tested runtime policy: "
             f"{conflicts}"
         )
-    return requirements | BASE_IMAGE_VERSIONS
+    return requirements | runtime_policy
 
 
 EXPECTED_VERSIONS = expected_versions()
