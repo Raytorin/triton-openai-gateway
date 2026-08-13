@@ -26,6 +26,32 @@ curl -s "$GATEWAY_URL/v1/chat/completions" \
   }' | jq
 ```
 
+## Reasoning-модели
+
+Серверная policy задаётся в `gateway.json` модели. При
+`reasoning.mode=separate` рассуждение возвращается в
+`message.reasoning_content`, а итоговый ответ остаётся в
+`message.content`:
+
+```bash
+curl -sS "$GATEWAY_URL/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "'"$MODEL"'",
+    "messages": [
+      {"role": "user", "content": "Вычисли 37 * 48 и дай краткий ответ."}
+    ],
+    "max_tokens": 1024
+  }' | jq '{
+    reasoning: .choices[0].message.reasoning_content,
+    answer: .choices[0].message.content,
+    status: .reasoning_status
+  }'
+```
+
+Передайте `"include_reasoning": false`, чтобы скрыть reasoning в одном
+запросе, не меняя серверную policy.
+
 ## Image: base64/data URL
 
 ```bash

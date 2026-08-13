@@ -10,15 +10,15 @@ separate prevents gateway-only keys from being passed to vLLM engine arguments.
 
 ## Runtime Compatibility
 
-The Dockerfile pins the NVIDIA Triton `26.06-vllm-python-py3` base image by
-digest. The build verifies Triton client `2.70.0`, vLLM `0.22.1`, Transformers
-`5.6.0`, Torch, and all added media/runtime dependencies. Changing the base
+The Dockerfile pins the NVIDIA Triton `26.07-vllm-python-py3` base image by
+digest. The build verifies Triton client `2.71.0`, vLLM `0.24.0`, Transformers
+`5.6.1`, Torch, FlashInfer, and all added media/runtime dependencies. Changing the base
 image is an explicit compatibility migration, not a routine package upgrade.
 
 Build with the pinned default:
 
 ```bash
-docker build -f Dockerfile.triton-gateway -t triton-openai-gateway:26.06 .
+docker build -f Dockerfile.triton-gateway -t triton-openai-gateway:26.07 .
 ```
 
 Override the base only when you have validated the complete runtime matrix:
@@ -49,7 +49,9 @@ MODEL_NAME/
 
 The gateway reads tokenizer and model metadata from the active numeric version.
 For the S3 repository flow, the watcher creates a stable link under
-`/tmp/models-active/MODEL_NAME` after Triton has materialized the version.
+`<watcher-root>/models-active/MODEL_NAME` after Triton has materialized the
+version. The root follows `WATCHER_MODEL_DIR`, `TMP_ROOT`, Triton's
+`TMPDIR`, then `/tmp`, in that order.
 
 ## `config.pbtxt`
 
@@ -152,10 +154,127 @@ Important groups:
 | `video_*` | Sampling FPS, frame count, pixel budget, and chunk size |
 | `audio_*` | Local ASR model, device, and chunk overlap |
 | `max_remote_media_bytes` | Download limit for remote content |
+| `context_compression` | Context overflow, rolling-summary, and fallback policy |
+| `rerank` | Named post-score selection strategies and optional SQLite source |
+| `reasoning` | Thinking mode, output parser, and OpenAI-compatible response field |
 
 The `pdf_rag.embedding_model` value must name an embedding model already loaded
 in the same Triton server. Retrieval is used only when enough text can be
 extracted from the PDF.
+
+### Context Compression
+
+Context handling is configured per chat model. The default `truncate` mode
+preserves the previous behavior; `disabled` returns HTTP `400` on overflow;
+`summarize` replaces the oldest complete turns with a rolling summary while
+preserving system messages, recent turns, and the current user request.
+
+```json
+{
+  "context_compression": {
+    "mode": "summarize",
+    "fallback_mode": "truncate",
+    "summary_model": "",
+    "summary_max_tokens": 256,
+    "summary_input_max_tokens": 4096,
+    "preserve_recent_messages": 4,
+    "max_summary_calls": 4,
+    "summary_timeout_seconds": 120,
+    "summary_temperature": 0.0,
+    "cache_size": 256,
+    "version": "structured-memory-v2",
+    "safety_margin_tokens": 64,
+    "trigger_ratio": 0.8,
+    "target_ratio": 0.6,
+    "evidence_max_tokens": 384
+  }
+}
+```
+
+In `summarize` mode, compaction starts when the rendered prompt reaches
+`trigger_ratio` of the available prompt budget and aims for `target_ratio`.
+This proactive margin prevents every subsequent turn from immediately invoking
+another summary. `evidence_max_tokens` reserves verbatim, redacted evidence for
+important paths, identifiers, numbers, tool results, and corrected values that
+an abstractive summary could lose.
+
+An empty `summary_model` uses the requested chat model; otherwise it must name
+another loaded chat model. Internal summary calls have separate Prometheus
+counters and are not added to the client response's `usage`. Non-streaming
+responses expose `context_status`; streaming responses expose equivalent
+`X-Context-*` headers.
+
+See
+[`examples/gateway.context-compression.json`](../examples/gateway.context-compression.json)
+for all commonly used settings.
+
+### Rerank Selection
+
+The rerank model always scores every supplied document first. The gateway then
+sorts the scores and applies the selected post-processing strategy. Existing
+requests without `selection` retain the `top_n` behavior.
+
+```json
+{
+  "rerank": {
+    "default_strategy": "top_n",
+    "strategies": {
+      "strict": {
+        "method": "top_n_and_threshold",
+        "parameters": {
+          "score_threshold": 0.5,
+          "top_n": 5
+        },
+        "allow_request_parameters": ["top_n"],
+        "version": "1"
+      }
+    }
+  }
+}
+```
+
+Clients select a named policy with
+`"selection": {"strategy": "strict", "parameters": {"top_n": 2}}`.
+Built-in methods include `top_n`, `score_threshold`,
+`top_n_and_threshold`, `metadata_filter`, and `diversity`. Strategies can
+also be refreshed from a read-only SQLite database configured under
+`rerank.database`; clients cannot submit executable code or SQL.
+
+See [`examples/gateway.rerank.json`](../examples/gateway.rerank.json) for the
+complete static and SQLite configuration.
+
+### Reasoning Output
+
+Reasoning policy is disabled by default and configured per model:
+
+```json
+{
+  "reasoning": {
+    "mode": "separate",
+    "parser": "auto",
+    "response_field": "reasoning_content"
+  }
+}
+```
+
+`disabled` requests a non-thinking chat template and strips accidental
+reasoning blocks. `hidden` allows model thinking but omits the text from the
+client response. `separate` returns reasoning independently from final
+`content` in both JSON and SSE. A client may downgrade `separate` to
+`hidden` for one request with `"include_reasoning": false`, but cannot
+elevate a stricter server policy.
+
+Hiding reasoning does not stop the model from generating it. Reasoning and the
+final answer share `max_tokens`; if the model consumes the complete budget
+before producing final content, the gateway returns empty `content` with
+`finish_reason: "length"`.
+
+`parser: "auto"` detects supported Qwen chat templates. Explicit
+`qwen3` and `think_tags` parsers are also available. Use
+`response_field: "reasoning_content"` for LiteLLM/OpenAI-compatible clients or
+`"reasoning"` for clients following the vLLM schema.
+
+See [`examples/gateway.reasoning.json`](../examples/gateway.reasoning.json).
 
 ## Environment Variables
 
@@ -168,7 +287,10 @@ set the corresponding environment variables.
 | --- | --- | --- |
 | `TRITON_BASE_URL` | `http://127.0.0.1:8000` | Triton HTTP endpoint |
 | `TRITON_GRPC_URL` | `127.0.0.1:8001` | Triton gRPC endpoint |
-| `MODELS_ACTIVE_DIR` | `/tmp/models-active` | Stable active-model links |
+| `WATCHER_MODEL_DIR` | unset | Explicit local directory containing Triton's temporary `folder*` checkouts |
+| `TMP_ROOT` | unset | Backward-compatible watcher root alias |
+| `TMPDIR` | system value | Triton temporary directory and automatic watcher fallback |
+| `MODELS_ACTIVE_DIR` | `<watcher-root>/models-active` | Stable active-model links |
 | `GATEWAY_PORT` | `8080` | FastAPI listen port |
 | `REQUEST_TIMEOUT_SECONDS` | `600` | Upstream request timeout |
 | `GATEWAY_MAX_REQUEST_BODY_BYTES` | `268435456` | Maximum HTTP request body |

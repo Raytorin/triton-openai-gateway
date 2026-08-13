@@ -26,15 +26,16 @@ Gateway-to-Triton traffic stays on loopback by default.
 
 1. A client sends `POST /v1/chat/completions` with OpenAI-style `messages`.
 2. Admission control reserves a slot or places the request in a bounded queue.
-3. The registry resolves `/tmp/models-active/<model>`.
+3. The registry resolves `<watcher-root>/models-active/<model>`.
 4. The gateway loads or reuses the model tokenizer.
 5. `tokenizer.apply_chat_template(...)` renders the prompt, tools, and tool
    history in the model's native format.
-6. Context-window handling removes the oldest eligible turns if the prompt plus
-   requested output cannot fit in `max_model_len`.
+6. Context-window policy keeps the prompt unchanged, summarizes old complete
+   turns, truncates them, or rejects the request according to `gateway.json`.
 7. The gateway opens a decoupled Triton gRPC stream for the vLLM model.
 8. Triton/vLLM performs scheduling and generation.
-9. The gateway converts the result to an OpenAI response or SSE stream.
+9. The gateway separates configured reasoning text, normalizes tool calls, and
+   converts the result to an OpenAI response or SSE stream.
 10. Client disconnects cancel the corresponding Triton stream and release the
     admission slot.
 
@@ -135,13 +136,15 @@ retain safely in memory.
 ## Model Discovery
 
 Triton's S3 repository agent materializes a model version into a temporary path
-such as `/tmp/folderAbCd/1`. The watcher:
+such as `<watcher-root>/folderAbCd/1`. The watcher root is selected from
+`WATCHER_MODEL_DIR`, the compatibility alias `TMP_ROOT`, Triton's `TMPDIR`,
+or `/tmp`. The watcher:
 
 1. waits for a numeric version containing `model.json` or `model.py`;
 2. rewrites the temporary `model.json` model path to that real directory;
 3. points GGUF models to the actual `.gguf` file;
 4. removes engine arguments known to be incompatible with the pinned vLLM;
-5. creates `/tmp/models-active/<model>` for tokenizer and gateway config access;
+5. creates `<watcher-root>/models-active/<model>` for tokenizer and gateway config access;
 6. removes stale links after unload.
 
 The source model repository is never modified. Only Triton's temporary checkout

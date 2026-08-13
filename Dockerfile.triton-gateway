@@ -1,12 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Raytorin
 # SPDX-License-Identifier: Apache-2.0
 
-ARG BASE_IMAGE=nvcr.io/nvidia/tritonserver:26.06-vllm-python-py3@sha256:a080eaace14725e9d740eb909e2fe6bfc56e611385900aeb8dc3a04f32ec2bc6
+ARG BASE_IMAGE=nvcr.io/nvidia/tritonserver:26.07-vllm-python-py3@sha256:31e20bfbc65055d6b85553a00d45342a62c506874aa996c11ae53650151f05b1
 FROM ${BASE_IMAGE}
+
+ARG GATEWAY_VERSION=0.2.0
 
 LABEL org.opencontainers.image.title="Triton OpenAI Gateway" \
       org.opencontainers.image.description="OpenAI-compatible APIs and multimodal orchestration for NVIDIA Triton and vLLM" \
-      org.opencontainers.image.version="0.1.0" \
+      org.opencontainers.image.version="${GATEWAY_VERSION}" \
       org.opencontainers.image.authors="Raytorin" \
       org.opencontainers.image.source="https://github.com/Raytorin/triton-openai-gateway" \
       org.opencontainers.image.licenses="Apache-2.0" \

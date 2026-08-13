@@ -172,12 +172,14 @@ def render_chat_prompt(
     tokenizer,
     conversation: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
+    *,
+    enable_thinking: bool = False,
 ) -> str:
     attempts: list[dict[str, Any]] = [
         {
             "tokenize": False,
             "add_generation_prompt": True,
-            "enable_thinking": False,
+            "enable_thinking": enable_thinking,
             **({"tools": tools} if tools else {}),
         },
         {
@@ -217,32 +219,29 @@ def fit_conversation_to_context(
     max_completion_tokens: int,
     reserved_media_tokens: int = 0,
     safety_margin_tokens: int = 64,
+    enable_thinking: bool = False,
 ) -> tuple[list[dict[str, Any]], str, int, int]:
-    prompt_limit = (
-        int(max_model_len)
-        - max(int(max_completion_tokens), 1)
-        - max(int(reserved_media_tokens), 0)
-        - max(int(safety_margin_tokens), 0)
+    prompt_limit = context_prompt_limit(
+        max_model_len,
+        max_completion_tokens,
+        reserved_media_tokens,
+        safety_margin_tokens,
     )
-    if prompt_limit <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Requested output and media reserve leave no room for the input prompt: "
-                f"max_model_len={max_model_len}, max_tokens={max_completion_tokens}, "
-                f"media_reserve={reserved_media_tokens}."
-            ),
-        )
 
     fitted = [dict(message) for message in conversation]
     dropped_messages = 0
     while True:
-        prompt = render_chat_prompt(tokenizer, fitted, tools)
-        prompt_tokens = _prompt_token_count(tokenizer, prompt)
+        prompt = render_chat_prompt(
+            tokenizer,
+            fitted,
+            tools,
+            enable_thinking=enable_thinking,
+        )
+        prompt_tokens = prompt_token_count(tokenizer, prompt)
         if prompt_tokens <= prompt_limit:
             return fitted, prompt, prompt_tokens, dropped_messages
 
-        removable = _oldest_removable_turn(fitted)
+        removable = oldest_removable_turn(fitted)
         if not removable:
             raise HTTPException(
                 status_code=400,
@@ -259,14 +258,38 @@ def fit_conversation_to_context(
         dropped_messages += len(removable)
 
 
-def _prompt_token_count(tokenizer, prompt: str) -> int:
+def context_prompt_limit(
+    max_model_len: int,
+    max_completion_tokens: int,
+    reserved_media_tokens: int = 0,
+    safety_margin_tokens: int = 64,
+) -> int:
+    prompt_limit = (
+        int(max_model_len)
+        - max(int(max_completion_tokens), 1)
+        - max(int(reserved_media_tokens), 0)
+        - max(int(safety_margin_tokens), 0)
+    )
+    if prompt_limit <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Requested output and media reserve leave no room for the input prompt: "
+                f"max_model_len={max_model_len}, max_tokens={max_completion_tokens}, "
+                f"media_reserve={reserved_media_tokens}."
+            ),
+        )
+    return prompt_limit
+
+
+def prompt_token_count(tokenizer, prompt: str) -> int:
     try:
         return len(tokenizer.encode(prompt, add_special_tokens=False))
     except TypeError:
         return len(tokenizer.encode(prompt))
 
 
-def _oldest_removable_turn(conversation: list[dict[str, Any]]) -> list[int]:
+def oldest_removable_turn(conversation: list[dict[str, Any]]) -> list[int]:
     latest_user_index = next(
         (
             index
@@ -339,11 +362,40 @@ def normalize_triton_stop_sequence(stop: str | list[str] | None) -> str | None:
     return TRITON_DEFAULT_STOP_SEQUENCE
 
 
-def build_usage(tokenizer, prompt: str, generated_text: str) -> dict[str, int]:
+def build_usage(
+    tokenizer,
+    prompt: str,
+    generated_text: str,
+    *,
+    reasoning_text: str = "",
+) -> dict[str, Any]:
     prompt_tokens = len(tokenizer(prompt, add_special_tokens=False).input_ids)
     completion_tokens = len(tokenizer(generated_text, add_special_tokens=False).input_ids)
-    return {
+    usage: dict[str, Any] = {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": prompt_tokens + completion_tokens,
     }
+    if reasoning_text:
+        usage["completion_tokens_details"] = {
+            "reasoning_tokens": len(
+                tokenizer(reasoning_text, add_special_tokens=False).input_ids
+            ),
+        }
+    from .generation_telemetry import observe_generation_usage
+
+    observe_generation_usage(usage)
+    return usage
+
+
+def completion_reached_token_limit(
+    usage: dict[str, Any],
+    sampling_parameters: dict[str, Any],
+) -> bool:
+    """Best-effort length detection for Triton backends returning only text."""
+    try:
+        limit = int(sampling_parameters.get("max_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+    except (TypeError, ValueError):
+        return False
+    return limit > 0 and completion_tokens >= limit

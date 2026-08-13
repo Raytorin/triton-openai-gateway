@@ -32,6 +32,7 @@ import json
 import os
 import queue
 import threading
+import time
 import traceback
 from collections import Counter
 from typing import Dict, List
@@ -602,6 +603,13 @@ class TritonPythonModel:
         return None
 
     async def _infer(self, request):
+        started_at = time.monotonic()
+        first_output_at = None
+        request_status = "success"
+        request_task_name = "unknown"
+        request_id = get_triton_request_id(request)
+        engine_request_id = ""
+        stream = False
         response_sender = request.get_response_sender()
         response_state = {
             "response_sender": response_sender,
@@ -645,10 +653,16 @@ class TritonPythonModel:
                     f"VLLM backend does not support '{request_task_name}' request"
                 )
 
+            request_id = request.request_id
+            engine_request_id = request.id
+            stream = bool(request.stream)
+
             response_iterator = request.execute()
 
             request_output_state = {}
             async for request_output in response_iterator:
+                if first_output_at is None:
+                    first_output_at = time.monotonic()
                 token_accumulator.observe(request_output)
                 # Cancellation state will be checked by the response loop and written to
                 # the response state if streaming. If not streaming, cancellation state
@@ -657,6 +671,7 @@ class TritonPythonModel:
                 if not request.stream:
                     is_cancelled = response_sender.is_cancelled()
                 if is_cancelled:
+                    request_status = "cancelled"
                     log_event(
                         self.logger,
                         "request.cancelling",
@@ -723,6 +738,7 @@ class TritonPythonModel:
                 )
 
         except Exception as e:
+            request_status = "error"
             request_id = getattr(request, "request_id", "") or get_triton_request_id(
                 getattr(request, "triton_request", request)
             )
@@ -754,6 +770,30 @@ class TritonPythonModel:
                     token_accumulator.prompt_tokens,
                     token_accumulator.generation_tokens,
                 )
+            finished_at = time.monotonic()
+            log_event(
+                self.logger,
+                "request.telemetry_completed",
+                level=(
+                    "error"
+                    if request_status == "error"
+                    else "warning" if request_status == "cancelled" else "info"
+                ),
+                model=self.args.get("model_name", ""),
+                request_id=request_id,
+                engine_request_id=engine_request_id,
+                task=request_task_name,
+                stream=stream,
+                status=request_status,
+                duration_ms=round((finished_at - started_at) * 1000, 3),
+                first_output_ms=(
+                    round((first_output_at - started_at) * 1000, 3)
+                    if first_output_at is not None
+                    else None
+                ),
+                prompt_tokens=token_accumulator.prompt_tokens,
+                generation_tokens=token_accumulator.generation_tokens,
+            )
             if decrement_ongoing_request_count:
                 self._ongoing_request_count -= 1
 

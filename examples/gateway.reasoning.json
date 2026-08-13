@@ -1,0 +1,7 @@
+{
+  "reasoning": {
+    "mode": "separate",
+    "parser": "auto",
+    "response_field": "reasoning_content"
+  }
+}

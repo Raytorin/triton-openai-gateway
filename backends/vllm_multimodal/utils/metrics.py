@@ -136,6 +136,76 @@ class TritonMetrics:
             description="Histogram of the n request parameter.",
             kind=pb_utils.MetricFamily.HISTOGRAM,
         )
+        self.gauge_running_requests_family = pb_utils.MetricFamily(
+            name="vllm:num_requests_running",
+            description="Number of requests currently running in the vLLM scheduler.",
+            kind=pb_utils.MetricFamily.GAUGE,
+        )
+        self.gauge_waiting_requests_family = pb_utils.MetricFamily(
+            name="vllm:num_requests_waiting",
+            description="Number of requests currently waiting in the vLLM scheduler.",
+            kind=pb_utils.MetricFamily.GAUGE,
+        )
+        self.gauge_kv_cache_usage_family = pb_utils.MetricFamily(
+            name="vllm:kv_cache_usage_ratio",
+            description="Fraction of the vLLM KV cache currently in use.",
+            kind=pb_utils.MetricFamily.GAUGE,
+        )
+        self.counter_prefix_cache_queries_family = pb_utils.MetricFamily(
+            name="vllm:prefix_cache_queries_total",
+            description="Prompt tokens queried in the vLLM prefix cache.",
+            kind=pb_utils.MetricFamily.COUNTER,
+        )
+        self.counter_prefix_cache_hits_family = pb_utils.MetricFamily(
+            name="vllm:prefix_cache_hits_total",
+            description="Prompt tokens served from the vLLM prefix cache.",
+            kind=pb_utils.MetricFamily.COUNTER,
+        )
+        self.counter_preemptions_family = pb_utils.MetricFamily(
+            name="vllm:preemptions_total",
+            description="Requests preempted by the vLLM scheduler.",
+            kind=pb_utils.MetricFamily.COUNTER,
+        )
+        self.counter_kv_cache_evictions_family = pb_utils.MetricFamily(
+            name="vllm:kv_cache_evictions_total",
+            description="KV cache eviction events reported by vLLM.",
+            kind=pb_utils.MetricFamily.COUNTER,
+        )
+        self.counter_mm_cache_queries_family = pb_utils.MetricFamily(
+            name="vllm:mm_cache_queries_total",
+            description="Items queried in the vLLM multimodal cache.",
+            kind=pb_utils.MetricFamily.COUNTER,
+        )
+        self.counter_mm_cache_hits_family = pb_utils.MetricFamily(
+            name="vllm:mm_cache_hits_total",
+            description="Items served from the vLLM multimodal cache.",
+            kind=pb_utils.MetricFamily.COUNTER,
+        )
+        self.histogram_queue_time_family = pb_utils.MetricFamily(
+            name="vllm:request_queue_time_seconds",
+            description="Time requests spent queued in the vLLM scheduler.",
+            kind=pb_utils.MetricFamily.HISTOGRAM,
+        )
+        self.histogram_prefill_time_family = pb_utils.MetricFamily(
+            name="vllm:request_prefill_time_seconds",
+            description="Time vLLM spent prefilling finished requests.",
+            kind=pb_utils.MetricFamily.HISTOGRAM,
+        )
+        self.histogram_decode_time_family = pb_utils.MetricFamily(
+            name="vllm:request_decode_time_seconds",
+            description="Time vLLM spent decoding finished requests.",
+            kind=pb_utils.MetricFamily.HISTOGRAM,
+        )
+        self.histogram_inference_time_family = pb_utils.MetricFamily(
+            name="vllm:request_inference_time_seconds",
+            description="Total scheduled inference time for finished requests.",
+            kind=pb_utils.MetricFamily.HISTOGRAM,
+        )
+        self.histogram_cached_prompt_tokens_family = pb_utils.MetricFamily(
+            name="vllm:request_cached_prompt_tokens",
+            description="Prompt tokens reused from prefix cache per finished request.",
+            kind=pb_utils.MetricFamily.HISTOGRAM,
+        )
 
         # Initialize metrics
         # Iteration stats
@@ -213,6 +283,68 @@ class TritonMetrics:
             labels=labels,
             buckets=[1, 2, 5, 10, 20],
         )
+        self.gauge_running_requests = self.gauge_running_requests_family.Metric(
+            labels=labels
+        )
+        self.gauge_waiting_requests = self.gauge_waiting_requests_family.Metric(
+            labels=labels
+        )
+        self.gauge_kv_cache_usage = self.gauge_kv_cache_usage_family.Metric(
+            labels=labels
+        )
+        self.counter_prefix_cache_queries = (
+            self.counter_prefix_cache_queries_family.Metric(labels=labels)
+        )
+        self.counter_prefix_cache_hits = self.counter_prefix_cache_hits_family.Metric(
+            labels=labels
+        )
+        self.counter_preemptions = self.counter_preemptions_family.Metric(labels=labels)
+        self.counter_kv_cache_evictions = (
+            self.counter_kv_cache_evictions_family.Metric(labels=labels)
+        )
+        self.counter_mm_cache_queries = self.counter_mm_cache_queries_family.Metric(
+            labels=labels
+        )
+        self.counter_mm_cache_hits = self.counter_mm_cache_hits_family.Metric(
+            labels=labels
+        )
+        latency_buckets = [
+            0.001,
+            0.005,
+            0.01,
+            0.025,
+            0.05,
+            0.1,
+            0.25,
+            0.5,
+            1.0,
+            2.5,
+            5.0,
+            10.0,
+            30.0,
+            60.0,
+            120.0,
+            300.0,
+            600.0,
+        ]
+        self.histogram_queue_time = self.histogram_queue_time_family.Metric(
+            labels=labels, buckets=latency_buckets
+        )
+        self.histogram_prefill_time = self.histogram_prefill_time_family.Metric(
+            labels=labels, buckets=latency_buckets
+        )
+        self.histogram_decode_time = self.histogram_decode_time_family.Metric(
+            labels=labels, buckets=latency_buckets
+        )
+        self.histogram_inference_time = self.histogram_inference_time_family.Metric(
+            labels=labels, buckets=latency_buckets
+        )
+        self.histogram_cached_prompt_tokens = (
+            self.histogram_cached_prompt_tokens_family.Metric(
+                labels=labels,
+                buckets=build_1_2_5_buckets(max_model_len),
+            )
+        )
 
 
 # Create a partially initialized callable that adapts VllmStatLogger to StatLoggerFactory interface
@@ -286,6 +418,9 @@ class VllmStatLogger(StatLoggerBase):
         for datum in data:
             self._enqueue_metric((histogram, "observe", datum))
 
+    def _set_gauge(self, gauge, value: Union[int, float]) -> None:
+        self._enqueue_metric((gauge, "set", value))
+
     def _enqueue_metric(self, item) -> None:
         try:
             self._logger_queue.put_nowait(item)
@@ -314,6 +449,43 @@ class VllmStatLogger(StatLoggerBase):
         Returns:
             None
         """
+        if scheduler_stats is not None:
+            self._set_gauge(
+                self.metrics.gauge_running_requests,
+                scheduler_stats.num_running_reqs,
+            )
+            self._set_gauge(
+                self.metrics.gauge_waiting_requests,
+                scheduler_stats.num_waiting_reqs,
+            )
+            self._set_gauge(
+                self.metrics.gauge_kv_cache_usage,
+                scheduler_stats.kv_cache_usage,
+            )
+            prefix_stats = scheduler_stats.prefix_cache_stats
+            self._log_counter(
+                self.metrics.counter_prefix_cache_queries,
+                prefix_stats.queries,
+            )
+            self._log_counter(
+                self.metrics.counter_prefix_cache_hits,
+                prefix_stats.hits,
+            )
+            self._log_counter(
+                self.metrics.counter_kv_cache_evictions,
+                len(scheduler_stats.kv_cache_eviction_events),
+            )
+
+        if mm_cache_stats is not None:
+            self._log_counter(
+                self.metrics.counter_mm_cache_queries,
+                mm_cache_stats.queries,
+            )
+            self._log_counter(
+                self.metrics.counter_mm_cache_hits,
+                mm_cache_stats.hits,
+            )
+
         if iteration_stats is None:
             return
 
@@ -321,10 +493,20 @@ class VllmStatLogger(StatLoggerBase):
         e2e_latency: List[float] = []
         num_prompt_tokens: List[int] = []
         num_generation_tokens: List[int] = []
+        queue_times: List[float] = []
+        prefill_times: List[float] = []
+        decode_times: List[float] = []
+        inference_times: List[float] = []
+        cached_prompt_tokens: List[int] = []
         for finished_req in iteration_stats.finished_requests:
             e2e_latency.append(finished_req.e2e_latency)
             num_prompt_tokens.append(finished_req.num_prompt_tokens)
             num_generation_tokens.append(finished_req.num_generation_tokens)
+            queue_times.append(finished_req.queued_time)
+            prefill_times.append(finished_req.prefill_time)
+            decode_times.append(finished_req.decode_time)
+            inference_times.append(finished_req.inference_time)
+            cached_prompt_tokens.append(finished_req.num_cached_tokens)
 
         # The list of vLLM metrics reporting to Triton is also documented here.
         # https://github.com/triton-inference-server/vllm_backend/blob/main/README.md#triton-metrics
@@ -334,6 +516,7 @@ class VllmStatLogger(StatLoggerBase):
                 self.metrics.counter_generation_tokens,
                 iteration_stats.num_generation_tokens,
             ),
+            (self.metrics.counter_preemptions, iteration_stats.num_preempted_reqs),
         ]
         histogram_metrics = [
             (
@@ -354,6 +537,11 @@ class VllmStatLogger(StatLoggerBase):
                 num_generation_tokens,
             ),
             (self.metrics.histogram_n_request, iteration_stats.n_params_iter),
+            (self.metrics.histogram_queue_time, queue_times),
+            (self.metrics.histogram_prefill_time, prefill_times),
+            (self.metrics.histogram_decode_time, decode_times),
+            (self.metrics.histogram_inference_time, inference_times),
+            (self.metrics.histogram_cached_prompt_tokens, cached_prompt_tokens),
         ]
         for metric, data in counter_metrics:
             self._log_counter(metric, data)
@@ -374,6 +562,8 @@ class VllmStatLogger(StatLoggerBase):
                 metric.increment(data)
             elif command == "observe":
                 metric.observe(data)
+            elif command == "set":
+                metric.set(data)
             else:
                 self.log_logger.log_error(f"Undefined command name: {command}")
 

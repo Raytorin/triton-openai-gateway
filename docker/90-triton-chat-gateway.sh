@@ -5,7 +5,8 @@
 set -euo pipefail
 
 export TRITON_BASE_URL="${TRITON_BASE_URL:-http://127.0.0.1:8000}"
-export MODELS_ACTIVE_DIR="${MODELS_ACTIVE_DIR:-/tmp/models-active}"
+gateway_model_root="${WATCHER_MODEL_DIR:-${TMP_ROOT:-${TMPDIR:-/tmp}}}"
+export MODELS_ACTIVE_DIR="${MODELS_ACTIVE_DIR:-${gateway_model_root%/}/models-active}"
 export GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 log_level="${LOG_LEVEL:-INFO}"
 log_level="${log_level,,}"

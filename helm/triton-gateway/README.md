@@ -31,7 +31,7 @@ Create an environment-specific values file:
 ```yaml
 image:
   repository: registry.example.com/ml/triton-openai-gateway
-  tag: "26.06"
+  tag: "26.07"
 
 triton:
   modelRepository: s3://object-store.example.com/models/triton
@@ -137,6 +137,12 @@ modelStorage:
 
 Use `ReadWriteMany` storage or one PVC per pod before increasing
 `replicaCount`.
+
+By default the watcher follows Triton's temporary directory and creates
+`models-active` below it. Set `gateway.watcherModelDir` only when temporary
+`folder*` checkouts are materialized elsewhere; set
+`gateway.modelsActiveDir` only when active links need a separate path.
+`gateway.tmpRoot` remains a compatibility alias.
 
 ## Temporary Media Storage
 
@@ -254,6 +260,15 @@ The chart dependency archive is committed, so installation does not require
 ## OpenTelemetry
 
 ```yaml
+gateway:
+  observability:
+    generationTelemetry: true
+    otel:
+      enabled: true
+      endpoint: http://otel-collector.observability.svc:4318/v1/traces
+      sampleRatio: "0.05"
+      serviceName: triton-openai-gateway
+
 triton:
   tracing:
     enabled: true
@@ -264,7 +279,10 @@ triton:
     serviceName: triton-inference-server
 ```
 
-With `rate: 0`, only requests carrying trace context are traced.
+The gateway creates the root span and propagates W3C `traceparent` to Triton.
+With `rate: 0`, Triton only traces requests selected by the gateway sampler.
+Prompts, media, generated text, tool results, and reasoning content are not
+exported.
 
 ## Validate
 

@@ -45,7 +45,7 @@ class _BoundedGate:
         self._inflight = 0
         self._queued = 0
 
-    async def acquire(self) -> None:
+    async def acquire(self) -> float:
         started_at = time.monotonic()
         async with self._condition:
             if self._inflight >= self.policy.max_inflight:
@@ -68,9 +68,9 @@ class _BoundedGate:
 
             self._inflight += 1
             self._set_metrics()
-        ADMISSION_WAIT.labels(self.scope, self.route, self.model).observe(
-            time.monotonic() - started_at
-        )
+        wait_seconds = time.monotonic() - started_at
+        ADMISSION_WAIT.labels(self.scope, self.route, self.model).observe(wait_seconds)
+        return wait_seconds
 
     async def release(self) -> None:
         async with self._condition:
@@ -105,8 +105,9 @@ class _BoundedGate:
 
 
 class AdmissionLease:
-    def __init__(self, gates: list[_BoundedGate]):
+    def __init__(self, gates: list[_BoundedGate], wait_seconds: float = 0.0):
         self._gates = gates
+        self.wait_seconds = max(float(wait_seconds), 0.0)
         self._released = False
         self._lock = asyncio.Lock()
 
@@ -141,16 +142,17 @@ class AdmissionController:
             policy.model_gate,
         )
         acquired: list[_BoundedGate] = []
+        wait_seconds = 0.0
         try:
-            await global_gate.acquire()
+            wait_seconds += await global_gate.acquire()
             acquired.append(global_gate)
-            await model_gate.acquire()
+            wait_seconds += await model_gate.acquire()
             acquired.append(model_gate)
         except BaseException:
             for gate in reversed(acquired):
                 await gate.release()
             raise
-        return AdmissionLease(acquired)
+        return AdmissionLease(acquired, wait_seconds)
 
     async def _gate(
         self,

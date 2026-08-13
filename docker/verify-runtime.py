@@ -2,33 +2,82 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 
 
-EXPECTED_VERSIONS = {
-    "accelerate": "1.14.0",
-    "av": "17.1.0",
-    "compressed-tensors": "0.15.0.1",
-    "decord": "0.6.0",
-    "fastapi": "0.139.2",
+REQUIREMENTS_FILE = Path(__file__).with_name("triton-chat-gateway-requirements.txt")
+
+# These packages are supplied by the NVIDIA image and must move with it.
+BASE_IMAGE_VERSIONS = {
+    "compressed-tensors": "0.17.0",
+    "flashinfer-python": "0.6.14+d0510b70.nv26.7.cu.59527636",
+    "torch": "2.13.0a0+9186a08b2c.nv26.7.59513937",
+    "transformers": "5.6.1",
+    "tritonserver": "2.71.0",
+    "vllm": "0.24.0+092c4842.nv26.7.59534043",
+}
+
+# Compatibility-sensitive overlay packages are intentionally duplicated here.
+# Dependabot must not advance one of them without a complete runtime review.
+# FastAPI 0.136.3 is the newest release in vLLM's supported >=0.133,<0.137
+# range. Pydantic stays at 2.10.6 because Triton frontend 2.71 pins it exactly.
+LOCKED_OVERLAY_VERSIONS = {
+    "fastapi": "0.136.3",
     "grpcio": "1.67.1",
     "httpx": "0.27.2",
     "numpy": "1.26.4",
+    "opentelemetry-api": "1.44.0",
+    "opentelemetry-exporter-otlp-proto-http": "1.44.0",
+    "opentelemetry-sdk": "1.44.0",
     "pillow": "12.3.0",
+    "prometheus-client": "0.26.0",
     "protobuf": "6.33.6",
     "pydantic": "2.10.6",
-    "pymupdf": "1.28.0",
-    "prometheus-client": "0.25.0",
-    "python-rapidjson": "1.23",
-    "qwen-vl-utils": "0.0.14",
-    "sentencepiece": "0.2.1",
+    "sentencepiece": "0.2.2",
     "starlette": "1.3.1",
-    "torch": "2.13.0a0+8145d630e8.nv26.6.54250401",
-    "transformers": "5.6.0",
-    "tritonclient": "2.70.0",
-    "uvicorn": "0.49.0",
+    "tritonclient": "2.71.0",
+    "uvicorn": "0.51.0",
     "uvloop": "0.22.1",
-    "vllm": "0.22.1+7b9cb5b7.nv26.6.55098374",
 }
+
+
+def read_pinned_requirements(requirements_file: Path) -> dict[str, str]:
+    pins = {}
+    for raw_line in requirements_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if "==" not in line:
+            raise ValueError(f"Runtime dependency must use an exact pin: {raw_line!r}")
+
+        package, expected = line.split("==", 1)
+        package = package.split("[", 1)[0].strip().lower().replace("_", "-")
+        expected = expected.strip()
+        if not package or not expected:
+            raise ValueError(f"Invalid runtime dependency pin: {raw_line!r}")
+        if package in pins and pins[package] != expected:
+            raise ValueError(f"Conflicting runtime pins for {package}")
+        pins[package] = expected
+    return pins
+
+
+def expected_versions(requirements_file: Path = REQUIREMENTS_FILE) -> dict[str, str]:
+    requirements = read_pinned_requirements(requirements_file)
+    runtime_policy = BASE_IMAGE_VERSIONS | LOCKED_OVERLAY_VERSIONS
+    conflicts = {
+        package: (requirements[package], expected)
+        for package, expected in runtime_policy.items()
+        if package in requirements and requirements[package] != expected
+    }
+    if conflicts:
+        raise ValueError(
+            "Runtime pins conflict with the tested runtime policy: "
+            f"{conflicts}"
+        )
+    return requirements | runtime_policy
+
+
+EXPECTED_VERSIONS = expected_versions()
 
 
 def main() -> None:

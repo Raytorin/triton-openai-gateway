@@ -1,0 +1,54 @@
+{
+  "admission": {
+    "chat": {
+      "max_inflight": 4,
+      "max_queue": 16,
+      "queue_timeout_seconds": 60
+    },
+    "media": {
+      "max_inflight": 2,
+      "max_queue": 8,
+      "queue_timeout_seconds": 60
+    }
+  },
+  "context_compression": {
+    "mode": "summarize",
+    "fallback_mode": "truncate",
+    "summary_model": "",
+    "summary_max_tokens": 256,
+    "summary_input_max_tokens": 2048,
+    "preserve_recent_messages": 4,
+    "max_summary_calls": 6,
+    "summary_timeout_seconds": 120,
+    "summary_temperature": 0.0,
+    "cache_size": 128,
+    "version": "qwen3-vl-2b-structured-memory-v2",
+    "safety_margin_tokens": 128,
+    "trigger_ratio": 0.8,
+    "target_ratio": 0.6,
+    "evidence_max_tokens": 384
+  },
+  "vllm_multimodal": {
+    "media_history_mode": "latest",
+    "reset_history_on_new_media": false,
+    "focus_current_media": true,
+    "media_history_max_tokens": 384,
+    "pdf_chunk_pages": 2,
+    "pdf_dpi": 144,
+    "pdf_max_pixels": 262144,
+    "pdf_text_mode": "auto",
+    "video_fps": 1.0,
+    "video_max_frames": 24,
+    "video_chunk_frames": 2,
+    "video_max_pixels": 262144,
+    "image_max_pixels": 262144,
+    "text_chunk_chars": 5000,
+    "summary_max_tokens": 256,
+    "reduce_group_size": 4,
+    "final_summary_limit": 6,
+    "map_concurrency": 1,
+    "max_remote_media_bytes": 104857600,
+    "remote_media_timeout": 60,
+    "audio_asr_model": ""
+  }
+}

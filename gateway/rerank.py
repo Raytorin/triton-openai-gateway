@@ -5,6 +5,10 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from .rerank_strategies import (
+    RerankStrategy,
+    apply_rerank_strategy,
+)
 from .schemas import RerankRequest
 
 
@@ -38,6 +42,7 @@ def build_rerank_response(
     request: RerankRequest,
     documents: list[str],
     scores: list[float],
+    strategy: RerankStrategy | None = None,
 ) -> dict[str, Any]:
     if len(scores) != len(documents):
         raise HTTPException(
@@ -61,7 +66,9 @@ def build_rerank_response(
         reverse=True,
     )
 
-    if request.top_n is not None:
+    if strategy is not None:
+        ranked = apply_rerank_strategy(strategy, ranked, request.documents)
+    elif request.top_n is not None:
         if request.top_n <= 0:
             raise HTTPException(status_code=400, detail="top_n must be greater than 0")
         ranked = ranked[: request.top_n]
@@ -70,12 +77,21 @@ def build_rerank_response(
         for item in ranked:
             item.pop("document", None)
 
+    meta: dict[str, Any] = {
+        "api_version": {
+            "version": "1",
+        }
+    }
+    if strategy is not None:
+        meta["selection"] = {
+            "strategy": strategy.name,
+            "method": strategy.method,
+            "source": strategy.source,
+            "version": strategy.version,
+        }
+
     return {
         "id": "rerank",
         "results": ranked,
-        "meta": {
-            "api_version": {
-                "version": "1",
-            }
-        },
+        "meta": meta,
     }

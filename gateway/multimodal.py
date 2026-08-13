@@ -276,7 +276,7 @@ def focus_current_media_context(
     conversation: list[dict[str, Any]],
     tokenizer: Any,
     media: MediaPayloads,
-    history_max_tokens: int,
+    history_max_tokens: int | None,
 ) -> tuple[list[dict[str, Any]], int, int]:
     latest_user_index = next(
         (
@@ -302,16 +302,18 @@ def focus_current_media_context(
     active_tail = conversation[latest_user_index:]
     history, _ = _neutralize_historical_media_turns(history)
 
-    remaining = max(int(history_max_tokens), 0)
-    selected_reversed: list[dict[str, Any]] = []
-    for message in reversed(history):
-        cost = _history_message_token_cost(tokenizer, message)
-        if cost > remaining:
-            break
-        selected_reversed.append(message)
-        remaining -= cost
-
-    selected_history = list(reversed(selected_reversed))
+    if history_max_tokens is None:
+        selected_history = history
+    else:
+        remaining = max(int(history_max_tokens), 0)
+        selected_reversed: list[dict[str, Any]] = []
+        for message in reversed(history):
+            cost = _history_message_token_cost(tokenizer, message)
+            if cost > remaining:
+                break
+            selected_reversed.append(message)
+            remaining -= cost
+        selected_history = list(reversed(selected_reversed))
     dropped_count = len(history) - len(selected_history)
     instruction = _current_media_instruction(media)
     if system_messages:

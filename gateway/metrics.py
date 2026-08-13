@@ -107,6 +107,98 @@ PDF_EMBEDDING_CACHE = Counter(
     "In-memory PDF embedding cache lookups.",
     ("model", "result"),
 )
+RERANK_STRATEGY_SELECTIONS = Counter(
+    "triton_gateway_rerank_strategy_selections_total",
+    "Resolved rerank selection strategies.",
+    ("model", "strategy", "method", "source"),
+)
+CONTEXT_COMPRESSION_REQUESTS = Counter(
+    "triton_gateway_context_compression_total",
+    "Context preparation results.",
+    ("model", "mode", "action"),
+)
+CONTEXT_COMPRESSION_DURATION = Histogram(
+    "triton_gateway_context_compression_duration_seconds",
+    "Duration of context fitting, truncation or summarization.",
+    ("model", "mode", "action"),
+)
+CONTEXT_COMPRESSION_MESSAGES = Histogram(
+    "triton_gateway_context_compression_messages",
+    "Number of historical messages removed or summarized.",
+    ("model", "action"),
+    buckets=(1, 2, 4, 8, 16, 32, 64, 128, 256),
+)
+CONTEXT_SUMMARY_CACHE = Counter(
+    "triton_gateway_context_summary_cache_total",
+    "Process-local rolling summary cache lookups.",
+    ("model", "result"),
+)
+CONTEXT_SUMMARY_CALLS = Counter(
+    "triton_gateway_context_summary_calls_total",
+    "Internal context summarization model calls.",
+    ("model", "summary_model", "status"),
+)
+CONTEXT_SUMMARY_TOKENS = Counter(
+    "triton_gateway_context_summary_tokens_total",
+    "Tokens processed by internal context summarization calls.",
+    ("model", "summary_model", "direction"),
+)
+REASONING_REQUESTS = Counter(
+    "triton_gateway_reasoning_requests_total",
+    "Chat responses processed by the configured reasoning policy.",
+    ("model", "mode", "parser", "result"),
+)
+REASONING_TOKENS = Counter(
+    "triton_gateway_reasoning_tokens_total",
+    "Estimated reasoning and final-content tokens returned by chat models.",
+    ("model", "mode", "kind"),
+)
+GENERATION_REQUESTS = Counter(
+    "triton_gateway_generation_requests_total",
+    "Completed inference requests observed by the gateway telemetry lifecycle.",
+    ("route", "model", "status"),
+)
+GENERATION_STAGE_DURATION = Histogram(
+    "triton_gateway_generation_stage_duration_seconds",
+    "Request duration split into non-overlapping gateway and Triton stages.",
+    ("route", "model", "stage"),
+    buckets=(
+        0.001,
+        0.005,
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1.0,
+        2.5,
+        5.0,
+        10.0,
+        30.0,
+        60.0,
+        120.0,
+        300.0,
+        600.0,
+    ),
+)
+GENERATION_TOKENS = Counter(
+    "triton_gateway_generation_tokens_total",
+    "Input, output and reasoning tokens reported for inference requests.",
+    ("route", "model", "kind"),
+)
+GENERATION_TTFT = Histogram(
+    "triton_gateway_generation_time_to_first_token_seconds",
+    "Gateway-observed time from the first Triton call to the first streamed output.",
+    ("route", "model", "transport"),
+    buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
+)
+GENERATION_OUTPUT_THROUGHPUT = Histogram(
+    "triton_gateway_generation_output_tokens_per_second",
+    "Output token throughput derived from gateway-observed streaming decode time.",
+    ("route", "model"),
+    buckets=(1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000),
+)
 
 
 _KNOWN_PATHS = {
@@ -134,6 +226,15 @@ def metrics_response() -> Response:
 def triton_call(operation: str, model: str, transport: str) -> Iterator[None]:
     labels = (operation, model, transport)
     started_at = time.monotonic()
+    # Keep metric definitions independent from request-local context state.
+    from .generation_telemetry import get_generation_telemetry
+
+    telemetry = get_generation_telemetry()
+    observation = (
+        telemetry.begin_triton_call(operation, model, transport)
+        if telemetry is not None
+        else None
+    )
     TRITON_REQUESTS_INFLIGHT.labels(*labels).inc()
     status = "success"
     try:
@@ -141,10 +242,14 @@ def triton_call(operation: str, model: str, transport: str) -> Iterator[None]:
     except (asyncio.CancelledError, GeneratorExit):
         status = "cancelled"
         raise
-    except BaseException:
+    except BaseException as exc:
         status = "error"
+        if telemetry is not None:
+            telemetry.fail(exc)
         raise
     finally:
+        if telemetry is not None and observation is not None:
+            telemetry.finish_triton_call(observation, status)
         TRITON_REQUESTS_INFLIGHT.labels(*labels).dec()
         TRITON_REQUEST_DURATION.labels(*labels).observe(time.monotonic() - started_at)
         TRITON_REQUESTS.labels(operation, model, transport, status).inc()

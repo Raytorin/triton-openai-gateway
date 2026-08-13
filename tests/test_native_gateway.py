@@ -91,6 +91,32 @@ class NativeGatewayTests(unittest.TestCase):
         self.assertEqual(2, len(focused))
         self.assertEqual("system", focused[0]["role"])
 
+    def test_current_media_focus_can_defer_history_limit_to_compressor(self):
+        conversation = [
+            {"role": "user", "content": "Старый вопрос " * 20},
+            {"role": "assistant", "content": "Старый ответ " * 20},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Что на фото?"},
+                    {"type": "image", "image": "aW1hZ2U="},
+                ],
+            },
+        ]
+        media = extract_media_payloads(conversation)
+
+        focused, kept, dropped = focus_current_media_context(
+            conversation,
+            FakeTokenizer(),
+            media,
+            history_max_tokens=None,
+        )
+
+        self.assertEqual(2, kept)
+        self.assertEqual(0, dropped)
+        self.assertIn("Старый вопрос", focused[1]["content"])
+        self.assertEqual("Что на фото?", focused[-1]["content"][0]["text"])
+
     def test_current_media_focus_preserves_tool_result_after_latest_user(self):
         conversation = [
             {

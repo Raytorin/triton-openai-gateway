@@ -11,15 +11,15 @@
 ## Совместимость runtime
 
 Dockerfile закрепляет базовый образ NVIDIA Triton
-`26.06-vllm-python-py3` по digest. При сборке проверяются Triton client `2.70.0`,
-vLLM `0.22.1`, Transformers `5.6.0`, Torch и все добавленные зависимости для
-media и runtime. Замена базового образа является отдельной миграцией
+`26.07-vllm-python-py3` по digest. При сборке проверяются Triton client `2.71.0`,
+vLLM `0.24.0`, Transformers `5.6.1`, Torch, FlashInfer и все добавленные
+зависимости для media и runtime. Замена базового образа является отдельной миграцией
 совместимости, а не обычным обновлением пакета.
 
 Сборка с закреплённым образом:
 
 ```bash
-docker build -f Dockerfile.triton-gateway -t triton-openai-gateway:26.06 .
+docker build -f Dockerfile.triton-gateway -t triton-openai-gateway:26.07 .
 ```
 
 Меняйте базовый образ только после проверки полной матрицы runtime:
@@ -49,8 +49,10 @@ MODEL_NAME/
 ```
 
 Gateway читает tokenizer и metadata модели из активной числовой версии. В S3
-сценарии watcher создаёт стабильную ссылку `/tmp/models-active/MODEL_NAME` после
-того, как Triton материализовал версию.
+сценарии watcher создаёт стабильную ссылку
+`<watcher-root>/models-active/MODEL_NAME` после того, как Triton
+материализовал версию. Корень выбирается по приоритету `WATCHER_MODEL_DIR`,
+`TMP_ROOT`, `TMPDIR` Triton, затем `/tmp`.
 
 ## `config.pbtxt`
 
@@ -153,10 +155,126 @@ watcher запишет путь до конкретного файла.
 | `video_*` | FPS, число кадров, pixel budget и размер чанка |
 | `audio_*` | Локальная ASR-модель, device и overlap чанков |
 | `max_remote_media_bytes` | Лимит скачивания remote content |
+| `context_compression` | Политика переполнения контекста, rolling summary и fallback |
+| `rerank` | Именованные стратегии отбора после scoring и опциональный SQLite source |
+| `reasoning` | Режим thinking, parser ответа и OpenAI-совместимое поле |
 
 `pdf_rag.embedding_model` должен содержать имя embedding-модели, уже загруженной
 в том же Triton. Retrieval используется только для PDF, из которых удалось
 извлечь достаточный объём текста.
+
+### Сжатие контекста
+
+Обработка истории настраивается для каждой chat-модели. Режим `truncate` по
+умолчанию сохраняет прежнее поведение; `disabled` возвращает HTTP `400` при
+переполнении; `summarize` заменяет старейшие полные turn-ы rolling summary,
+сохраняя system messages, недавнюю историю и текущий запрос пользователя.
+
+```json
+{
+  "context_compression": {
+    "mode": "summarize",
+    "fallback_mode": "truncate",
+    "summary_model": "",
+    "summary_max_tokens": 256,
+    "summary_input_max_tokens": 4096,
+    "preserve_recent_messages": 4,
+    "max_summary_calls": 4,
+    "summary_timeout_seconds": 120,
+    "summary_temperature": 0.0,
+    "cache_size": 256,
+    "version": "structured-memory-v2",
+    "safety_margin_tokens": 64,
+    "trigger_ratio": 0.8,
+    "target_ratio": 0.6,
+    "evidence_max_tokens": 384
+  }
+}
+```
+
+В режиме `summarize` сжатие начинается, когда сформированный prompt достигает
+`trigger_ratio` доступного бюджета, и стремится уменьшить его до
+`target_ratio`. Такой запас не позволяет каждому следующему сообщению сразу
+запускать новое summary. `evidence_max_tokens` резервирует дословные, очищенные
+от секретов доказательства для важных путей, идентификаторов, чисел, результатов
+tools и исправленных значений, которые может потерять абстрактивное summary.
+
+Пустой `summary_model` использует запрошенную chat-модель; иначе нужно указать
+другую загруженную chat-модель. Внутренние summary-вызовы учитываются отдельными
+Prometheus-метриками и не добавляются в `usage` ответа клиенту. Обычный ответ
+содержит `context_status`, а streaming-ответ передаёт эквивалентные заголовки
+`X-Context-*`.
+
+Распространённые параметры приведены в
+[`examples/gateway.context-compression.json`](../examples/gateway.context-compression.json).
+
+### Отбор результатов rerank
+
+Rerank-модель сначала оценивает каждый переданный документ. Затем gateway
+сортирует score и применяет выбранную стратегию постобработки. Запросы без
+`selection` сохраняют прежнее поведение `top_n`.
+
+```json
+{
+  "rerank": {
+    "default_strategy": "top_n",
+    "strategies": {
+      "strict": {
+        "method": "top_n_and_threshold",
+        "parameters": {
+          "score_threshold": 0.5,
+          "top_n": 5
+        },
+        "allow_request_parameters": ["top_n"],
+        "version": "1"
+      }
+    }
+  }
+}
+```
+
+Клиент выбирает именованную политику через
+`"selection": {"strategy": "strict", "parameters": {"top_n": 2}}`.
+Встроены методы `top_n`, `score_threshold`,
+`top_n_and_threshold`, `metadata_filter` и `diversity`. Стратегии также
+можно обновлять из read-only SQLite, настроенной в `rerank.database`; клиент
+не может передать исполняемый код или SQL.
+
+Полный статический и SQLite-пример:
+[`examples/gateway.rerank.json`](../examples/gateway.rerank.json).
+
+### Вывод reasoning
+
+По умолчанию reasoning выключен и настраивается для каждой модели:
+
+```json
+{
+  "reasoning": {
+    "mode": "separate",
+    "parser": "auto",
+    "response_field": "reasoning_content"
+  }
+}
+```
+
+`disabled` запрашивает chat template без thinking и удаляет случайно
+возвращённые reasoning blocks. `hidden` разрешает модели рассуждать, но не
+возвращает текст клиенту. `separate` отделяет reasoning от итогового
+`content` в JSON и SSE. Клиент может понизить `separate` до `hidden` для
+одного запроса через `"include_reasoning": false`, но не может ослабить более
+строгую серверную политику.
+
+Скрытие reasoning не останавливает его генерацию моделью. Рассуждение и итоговый
+ответ используют общий `max_tokens`; если модель исчерпала бюджет до
+формирования ответа, gateway возвращает пустой `content` и
+`finish_reason: "length"`.
+
+`parser: "auto"` определяет поддерживаемые Qwen chat templates. Также
+доступны явные parser-ы `qwen3` и `think_tags`. Для LiteLLM и
+OpenAI-совместимых клиентов используйте
+`response_field: "reasoning_content"`, а для схемы vLLM — `"reasoning"`.
+
+Пример: [`examples/gateway.reasoning.json`](../examples/gateway.reasoning.json).
 
 ## Переменные окружения
 
@@ -169,7 +287,10 @@ watcher запишет путь до конкретного файла.
 | --- | --- | --- |
 | `TRITON_BASE_URL` | `http://127.0.0.1:8000` | Triton HTTP endpoint |
 | `TRITON_GRPC_URL` | `127.0.0.1:8001` | Triton gRPC endpoint |
-| `MODELS_ACTIVE_DIR` | `/tmp/models-active` | Стабильные ссылки активных моделей |
+| `WATCHER_MODEL_DIR` | не задано | Явная локальная директория временных checkout `folder*` Triton |
+| `TMP_ROOT` | не задано | Обратно совместимый alias корня watcher |
+| `TMPDIR` | системное значение | Временная директория Triton и автоматический fallback watcher |
+| `MODELS_ACTIVE_DIR` | `<watcher-root>/models-active` | Стабильные ссылки активных моделей |
 | `GATEWAY_PORT` | `8080` | Порт FastAPI |
 | `REQUEST_TIMEOUT_SECONDS` | `600` | Таймаут upstream-запроса |
 | `GATEWAY_MAX_REQUEST_BODY_BYTES` | `268435456` | Максимальный размер HTTP request body |

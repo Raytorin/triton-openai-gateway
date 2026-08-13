@@ -1,0 +1,46 @@
+{
+  "admission": {
+    "rerank": {
+      "max_inflight": 64,
+      "max_queue": 256,
+      "queue_timeout_seconds": 30
+    }
+  },
+  "rerank": {
+    "default_strategy": "top_n",
+    "strategies": {
+      "strict": {
+        "method": "top_n_and_threshold",
+        "parameters": {
+          "score_threshold": 0.5,
+          "top_n": 5
+        },
+        "allow_request_parameters": [
+          "top_n"
+        ],
+        "version": "1"
+      },
+      "russian_documents": {
+        "method": "metadata_filter",
+        "parameters": {
+          "filters": {
+            "language": "ru"
+          },
+          "top_n": 10
+        },
+        "allow_request_parameters": [
+          "top_n"
+        ],
+        "version": "1"
+      }
+    },
+    "database": {
+      "enabled": false,
+      "driver": "sqlite",
+      "path": "rerank-strategies.db",
+      "table": "rerank_strategies",
+      "refresh_seconds": 30,
+      "required": false
+    }
+  }
+}

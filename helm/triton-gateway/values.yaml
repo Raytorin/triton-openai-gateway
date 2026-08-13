@@ -13,7 +13,7 @@ updateStrategy:
 
 image:
   repository: example.registry.local/nvidia/tritonserver
-  tag: 26.06-vllm-gateway
+  tag: 26.07-vllm-gateway
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -100,9 +100,19 @@ gateway:
     debugLogPayloads: false
     debugPreviewChars: "2000"
     uvicornAccessLog: false
+    generationTelemetry: true
+    otel:
+      enabled: false
+      endpoint: http://otel-collector.observability.svc:4318/v1/traces
+      sampleRatio: "0.05"
+      serviceName: triton-openai-gateway
   tokenizerTrustRemoteCode: true
-  modelsActiveDir: /tmp/models-active
-  tmpRoot: /tmp
+  # Leave empty to create <watcherModelDir|TMP_ROOT|TMPDIR|/tmp>/models-active.
+  modelsActiveDir: ""
+  # Leave empty to use Triton's TMPDIR, then /tmp.
+  watcherModelDir: ""
+  # Deprecated release 5 alias. Used only when watcherModelDir is empty.
+  tmpRoot: ""
   nativeBackend:
     # Maximum decoded size of one image/video/audio/PDF item.
     maxMediaBytes: "268435456"

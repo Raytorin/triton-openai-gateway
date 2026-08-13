@@ -3,7 +3,7 @@
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ChatMessage(BaseModel):
@@ -27,6 +27,7 @@ class ChatCompletionRequest(BaseModel):
     repetition_penalty: float | None = None
     stream: bool = False
     debug: bool = False
+    include_reasoning: bool | None = None
 
     model_config = {"extra": "allow"}
 
@@ -40,6 +41,13 @@ class EmbeddingsRequest(BaseModel):
     model_config = {"extra": "allow"}
 
 
+class RerankSelectionRequest(BaseModel):
+    strategy: str
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"extra": "forbid"}
+
+
 class RerankRequest(BaseModel):
     model: str
     query: str
@@ -49,5 +57,7 @@ class RerankRequest(BaseModel):
     max_length: int | None = None
     batch_size: int | None = None
     normalize: bool | None = True
+    selection: RerankSelectionRequest | str | None = None
+    custom_top: RerankSelectionRequest | str | None = None
 
     model_config = {"extra": "allow"}

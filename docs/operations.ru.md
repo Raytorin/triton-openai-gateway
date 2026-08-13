@@ -60,13 +60,23 @@ curl -fsS -X POST \
 - admission inflight, queue, rejected и wait time;
 - Triton calls, duration и активных streams;
 - загрузки tokenizer и поведения cache;
-- media preprocessing и PDF embedding cache.
+- media preprocessing и PDF embedding cache;
+- context compression, внутренних summary-вызовов, выбора rerank-стратегий и
+  числа reasoning tokens;
+- стадий generation lifecycle (`queue`, `preprocessing`, `triton`,
+  `postprocessing`, `total`), TTFT, числа токенов и output throughput.
+
+Успешные inference-ответы также содержат header `Server-Timing`. Для
+сэмплированной трассы gateway возвращает `X-Trace-ID`, связывающий логи и trace.
 
 ### Triton и vLLM
 
 `http://HOST:8002/metrics` публикует model metrics Triton. Встроенный backend
 `vllm_multimodal` по умолчанию отправляет custom vLLM metrics. Добавьте
 `REPORT_CUSTOM_METRICS=true` в `config.pbtxt`, чтобы явно закрепить это поведение.
+Series показывают состояние scheduler, running/waiting requests, заполнение
+KV-cache, prefix cache, число prefill/decode tokens, TTFT и end-to-end latency.
+Они дополняют timings gateway, а не заменяют их.
 
 ### GPU и MIG
 
@@ -115,11 +125,36 @@ counts и finish reason. Prompt и tool results не логируются. Вк�
 `DEBUG_LOG_PAYLOADS=true` только для контролируемой диагностики: preview может
 содержать чувствительные данные пользователя.
 
+### Проверка сжатия контекста
+
+После изменения summary-модели или политики сжатия запустите целевой evaluator.
+Он принудительно вызывает compaction и проверяет сохранность точных
+идентификаторов, путей, исправленных значений и результатов tools:
+
+```bash
+python scripts/evaluate-context-memory.py \
+  --model MODEL_NAME \
+  --strict
+```
+
+Это функциональная проверка сохранения фактов, а не benchmark качества. Её
+нужно выполнять с той же моделью и `gateway.json`, которые пойдут в deployment.
+
 ## Tracing
 
-Helm chart может включить экспорт OpenTelemetry из Triton:
+Helm chart может отправлять сэмплированный span gateway и соответствующую trace
+Triton в один OpenTelemetry collector:
 
 ```yaml
+gateway:
+  observability:
+    generationTelemetry: true
+    otel:
+      enabled: true
+      endpoint: http://otel-collector.observability.svc:4318/v1/traces
+      sampleRatio: "0.05"
+      serviceName: triton-openai-gateway
+
 triton:
   tracing:
     enabled: true
@@ -129,22 +164,31 @@ triton:
     count: -1
 ```
 
-При `rate: 0` Triton трассирует запросы, содержащие W3C trace context. Включайте
-положительный sampling rate только с учётом объёма traces и нагрузки на
-collector. Для анализа ёмкости и насыщения основным источником остаются метрики.
+Gateway передаёт W3C `traceparent` в Triton. При `rate: 0` Triton трассирует
+только запросы, выбранные sampler gateway: оба span остаются в одной trace, без
+независимого двойного sampling. Телеметрия содержит timings, counters, имена
+модели/backend и типы исключений, но не отправляет prompts, media, ответы,
+результаты tools или reasoning content.
+
+Для анализа ёмкости и насыщения основным источником остаются метрики.
+OpenTelemetry показывает маршрут и задержки отдельных сэмплированных запросов.
+Ни метрики, ни traces не показывают скрытые активации или семантический ход
+«мыслей» модели. Для анализа GPU kernels и collectives используйте ограниченные
+по времени сессии Nsight Systems или Nsight Compute в тестовой среде, а не
+постоянный profiling в production.
 
 ## Типовые ошибки
 
 | Симптом | Возможная причина | Действие |
 | --- | --- | --- |
-| Модель есть в Triton, но gateway сообщает `not found` | Не создана активная symlink | Проверьте watcher logs, числовую версию и права записи в `TMP_ROOT` |
+| Модель есть в Triton, но gateway сообщает `not found` | Не создана активная symlink | Проверьте watcher logs, числовую версию и права записи в выбранный корень watcher |
 | `AsyncEngineArgs` отклоняет ключ | `model.json` содержит аргумент, которого нет в закреплённом vLLM | Удалите или переименуйте ключ; настройки gateway храните в `gateway.json` |
 | `KIND_GPU is currently for single-GPU models` | Tensor-parallel engine использует Triton `KIND_GPU` | Используйте один `KIND_MODEL` и назначьте ему нужные devices |
 | Shared memory pool не увеличивается | Контейнеру не хватает `/dev/shm` | Увеличьте Docker `--shm-size` или memory volume `/dev/shm` в pod |
 | Prompt превышает context | Text, media tokens и output reserve больше `max_model_len` | Уменьшите resolution, chunk, history или output; увеличивайте context только при наличии памяти |
 | VL-модель отклоняет аудио | Архитектура не поддерживает аудио и ASR не настроен | Настройте локальную ASR-модель или используйте audio-capable модель |
 | На `:8002` нет GPU series | Не инициализировался встроенный DCGM | Используйте root builtin mode или внешний DCGM Exporter |
-| `pip` сообщает о конфликтах vLLM для `apache-tvm-ffi`, `openai` или `pydantic` при сборке образа | Закреплённый базовый образ NVIDIA `26.06` уже содержит эти расхождения package metadata | Сохраняйте проверенные digest и версии; не обновляйте core-зависимости vLLM независимо |
+| `pip` сообщает о конфликтах vLLM для `apache-tvm-ffi`, `openai` или `pydantic` при сборке образа | Закреплённый базовый образ NVIDIA `26.07` уже содержит эти расхождения package metadata | Сохраняйте проверенные digest и версии; не обновляйте core-зависимости vLLM независимо |
 | Gateway возвращает `429` | Заполнены inflight и queue | Повторите с backoff или настройте проверенные admission limits |
 | Gateway возвращает `413` | Превышен лимит body, media, страниц, pixels, кадров или длительности | Уменьшите input либо поднимите конкретный лимит после нагрузочного теста |
 

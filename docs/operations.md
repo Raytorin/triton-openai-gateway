@@ -59,13 +59,24 @@ removed.
 - admission in-flight, queued, rejected, and wait time;
 - Triton calls, duration, and active streams;
 - tokenizer loading and cache behavior;
-- media preprocessing and PDF embedding cache activity.
+- media preprocessing and PDF embedding cache activity;
+- context compression, internal summary calls, rerank strategy selection, and
+  reasoning token counts;
+- generation lifecycle stages (`queue`, `preprocessing`, `triton`,
+  `postprocessing`, and `total`), TTFT, token counts, and output throughput.
+
+Successful inference responses also include a `Server-Timing` header. When a
+sampled trace exists, the gateway returns `X-Trace-ID` for log-to-trace
+correlation.
 
 ### Triton And vLLM
 
 `http://HOST:8002/metrics` exposes Triton model metrics. The included
 `vllm_multimodal` backend reports custom vLLM metrics by default; set
 `REPORT_CUSTOM_METRICS=true` in `config.pbtxt` to make the intent explicit.
+These series expose scheduler state, running and waiting requests, KV-cache
+occupancy, prefix-cache behavior, prefill/decode token counts, TTFT, and
+end-to-end latency. They complement gateway timings rather than replace them.
 
 ### GPU And MIG
 
@@ -113,11 +124,36 @@ finish reason. It does not log prompts or tool results. Enable
 `DEBUG_LOG_PAYLOADS=true` only for controlled diagnostics because payload
 previews may contain sensitive user data.
 
+### Context Compaction Validation
+
+Use the focused evaluator after changing a summarization model or compaction
+policy. It forces compaction and checks whether exact identifiers, paths,
+corrected values, and tool results survive:
+
+```bash
+python scripts/evaluate-context-memory.py \
+  --model MODEL_NAME \
+  --strict
+```
+
+This is a functional retention check, not a quality benchmark. Run it against
+the same model and `gateway.json` that will be deployed.
+
 ## Tracing
 
-The Helm chart can enable Triton OpenTelemetry export:
+The Helm chart can export a sampled gateway span and the matching Triton trace
+to the same OpenTelemetry collector:
 
 ```yaml
+gateway:
+  observability:
+    generationTelemetry: true
+    otel:
+      enabled: true
+      endpoint: http://otel-collector.observability.svc:4318/v1/traces
+      sampleRatio: "0.05"
+      serviceName: triton-openai-gateway
+
 triton:
   tracing:
     enabled: true
@@ -127,22 +163,31 @@ triton:
     count: -1
 ```
 
-With `rate: 0`, Triton traces requests carrying a W3C trace context. Use a
-positive sampling rate only after considering trace volume and collector load.
+The gateway propagates W3C `traceparent` to Triton. With `rate: 0`, Triton only
+traces requests selected by the gateway sampler, which keeps both spans in one
+trace and prevents independent double sampling. Telemetry records timings,
+counts, model/backend names, and exception types; it does not export prompts,
+media, generated text, tool results, or reasoning content.
+
 Metrics remain the primary source for capacity and saturation analysis.
+OpenTelemetry explains the path and latency of individual sampled requests.
+Neither mechanism exposes hidden activations or a semantic view of model
+"thoughts". For GPU kernel and collective analysis, use bounded Nsight Systems
+or Nsight Compute sessions in a test environment instead of continuous
+production profiling.
 
 ## Common Failures
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
-| Model exists in Triton but gateway says not found | Active symlink was not created | Check watcher logs, numeric version layout, and writable `TMP_ROOT` |
+| Model exists in Triton but gateway says not found | Active symlink was not created | Check watcher logs, numeric version layout, and write access to the selected watcher root |
 | `AsyncEngineArgs` rejects a key | `model.json` contains an argument unsupported by pinned vLLM | Remove or rename the key; keep gateway settings in `gateway.json` |
 | `KIND_GPU is currently for single-GPU models` | A tensor-parallel engine uses Triton `KIND_GPU` | Use one `KIND_MODEL` instance and assign the required devices |
 | Shared memory pool cannot grow | Container `/dev/shm` is too small | Increase Docker `--shm-size` or pod `/dev/shm` memory volume |
 | Prompt exceeds context | Text plus media tokens plus output reservation exceed `max_model_len` | Reduce media resolution/chunk size, history, or requested output; increase context only if memory permits |
 | Audio is rejected by a VL model | The architecture has no audio modality and no ASR is configured | Configure a local ASR model or use an audio-capable model |
 | GPU series are absent on `:8002` | Embedded DCGM could not initialize | Use root built-in mode or an external DCGM Exporter |
-| `pip` reports vLLM conflicts for `apache-tvm-ffi`, `openai`, or `pydantic` during the image build | The pinned NVIDIA `26.06` base image already contains these package-metadata mismatches | Keep the tested base digest and verified versions; do not upgrade core vLLM dependencies independently |
+| `pip` reports vLLM conflicts for `apache-tvm-ffi`, `openai`, or `pydantic` during the image build | The pinned NVIDIA `26.07` base image already contains these package-metadata mismatches | Keep the tested base digest and verified versions; do not upgrade core vLLM dependencies independently |
 | Gateway returns `429` | In-flight and queue capacity are full | Retry with backoff or tune tested admission limits |
 | Gateway returns `413` | Request body, media item, pages, pixels, frames, or audio duration exceeds a hard limit | Reduce the input or raise a specific limit after capacity testing |
 
