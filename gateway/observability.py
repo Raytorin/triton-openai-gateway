@@ -15,6 +15,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from . import __version__
 from .metrics import (
     HTTP_REQUEST_BODY_BYTES,
     HTTP_REQUEST_DURATION,
@@ -34,7 +35,7 @@ REQUEST_ID_HEADER = b"x-request-id"
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:/-]{1,160}$")
 CEF_VENDOR = "ML Platform AI"
 CEF_PRODUCT = "Triton OpenAI Gateway"
-CEF_VERSION = "0.1.0"
+CEF_VERSION = __version__
 MAX_REQUEST_BODY_BYTES = int(
     os.environ.get("GATEWAY_MAX_REQUEST_BODY_BYTES", str(256 * 1024 * 1024))
 )

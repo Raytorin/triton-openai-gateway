@@ -17,6 +17,8 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 from opentelemetry.trace import SpanKind, Status, StatusCode
 
+from . import __version__
+
 
 logger = logging.getLogger("triton-chat-gateway")
 OTEL_ENABLED = os.environ.get("GATEWAY_OTEL_ENABLED", "false").lower() in {
@@ -32,7 +34,10 @@ OTEL_SERVICE_NAME = os.environ.get(
     "GATEWAY_OTEL_SERVICE_NAME",
     "triton-openai-gateway",
 )
-OTEL_SERVICE_VERSION = os.environ.get("GATEWAY_OTEL_SERVICE_VERSION", "0.1.0")
+DEFAULT_OTEL_SERVICE_VERSION = __version__
+OTEL_SERVICE_VERSION = os.environ.get(
+    "GATEWAY_OTEL_SERVICE_VERSION", DEFAULT_OTEL_SERVICE_VERSION
+)
 OTEL_SAMPLE_RATIO = min(
     max(float(os.environ.get("GATEWAY_OTEL_SAMPLE_RATIO", "0.05")), 0.0),
     1.0,

@@ -2,7 +2,7 @@ apiVersion: v2
 name: triton-gateway
 description: NVIDIA Triton 26.07 with the OpenAI-compatible Triton gateway
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "26.07"
 annotations:
   io.github.raytorin/provenance: "urn:uuid:0ce7364a-f483-5a7d-be30-7b536427a0d0"

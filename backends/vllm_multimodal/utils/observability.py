@@ -12,7 +12,8 @@ from typing import Any
 
 CEF_VENDOR = "ML Platform AI"
 CEF_PRODUCT = "Triton vLLM Multimodal Backend"
-CEF_VERSION = "0.1.0"
+BACKEND_VERSION = "0.2.0"
+CEF_VERSION = BACKEND_VERSION
 
 
 def get_triton_request_id(request: Any) -> str:

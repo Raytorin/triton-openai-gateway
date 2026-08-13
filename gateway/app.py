@@ -17,7 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from . import __author__, __repository__
+from . import __author__, __repository__, __version__
 from .admission import AdmissionController, AdmissionLease
 from .context_compression import (
     ContextCompressionSettings,
@@ -148,7 +148,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="Triton OpenAI Gateway",
     description="OpenAI-compatible API and multimodal orchestration for NVIDIA Triton.",
-    version="0.1.0",
+    version=__version__,
     contact={"name": __author__, "url": __repository__},
     license_info={
         "name": "Apache-2.0",
