@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Raytorin
 # SPDX-License-Identifier: Apache-2.0
 
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -264,34 +265,35 @@ class RerankStrategyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             model_path = Path(directory)
             database_path = model_path / "strategies.db"
-            with sqlite3.connect(database_path) as connection:
-                connection.execute(
-                    """
-                    CREATE TABLE rerank_strategies (
-                        model TEXT NOT NULL,
-                        name TEXT NOT NULL,
-                        method TEXT NOT NULL,
-                        parameters_json TEXT NOT NULL,
-                        allowed_request_parameters_json TEXT NOT NULL,
-                        version TEXT NOT NULL,
-                        enabled INTEGER NOT NULL
+            with closing(sqlite3.connect(database_path)) as connection:
+                with connection:
+                    connection.execute(
+                        """
+                        CREATE TABLE rerank_strategies (
+                            model TEXT NOT NULL,
+                            name TEXT NOT NULL,
+                            method TEXT NOT NULL,
+                            parameters_json TEXT NOT NULL,
+                            allowed_request_parameters_json TEXT NOT NULL,
+                            version TEXT NOT NULL,
+                            enabled INTEGER NOT NULL
+                        )
+                        """
                     )
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO rerank_strategies VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        "reranker",
-                        "database-strict",
-                        "score_threshold",
-                        '{"score_threshold":0.75}',
-                        '["top_n"]',
-                        "db-1",
-                        1,
-                    ),
-                )
+                    connection.execute(
+                        """
+                        INSERT INTO rerank_strategies VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "reranker",
+                            "database-strict",
+                            "score_threshold",
+                            '{"score_threshold":0.75}',
+                            '["top_n"]',
+                            "db-1",
+                            1,
+                        ),
+                    )
             (model_path / "gateway.json").write_text(
                 json.dumps(
                     {
@@ -315,20 +317,21 @@ class RerankStrategyTests(unittest.TestCase):
                 top_n=1,
             )
             response = self._response(request, model_path, [0.8, 0.9])
-            with sqlite3.connect(database_path) as connection:
-                connection.execute(
-                    """
-                    UPDATE rerank_strategies
-                    SET parameters_json = ?, version = ?
-                    WHERE model = ? AND name = ?
-                    """,
-                    (
-                        '{"score_threshold":0.95}',
-                        "db-2",
-                        "reranker",
-                        "database-strict",
-                    ),
-                )
+            with closing(sqlite3.connect(database_path)) as connection:
+                with connection:
+                    connection.execute(
+                        """
+                        UPDATE rerank_strategies
+                        SET parameters_json = ?, version = ?
+                        WHERE model = ? AND name = ?
+                        """,
+                        (
+                            '{"score_threshold":0.95}',
+                            "db-2",
+                            "reranker",
+                            "database-strict",
+                        ),
+                    )
             time.sleep(0.02)
             updated_response = self._response(request, model_path, [0.8, 0.9])
 

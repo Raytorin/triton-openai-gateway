@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import closing
 from dataclasses import dataclass
 from functools import lru_cache
 import json
@@ -459,7 +460,7 @@ def _read_sqlite_strategies(
 ) -> tuple[dict[str, Any], ...]:
     del modified_ns, wal_modified_ns, refresh_bucket
     uri = f"{Path(database_path).resolve().as_uri()}?mode=ro"
-    with sqlite3.connect(uri, uri=True, timeout=2.0) as connection:
+    with closing(sqlite3.connect(uri, uri=True, timeout=2.0)) as connection:
         connection.row_factory = sqlite3.Row
         rows = connection.execute(
             f"""
