@@ -20,7 +20,7 @@ opentelemetry-exporter-otlp-proto-http==1.44.0
 # Critical transitive dependencies are pinned as well. In particular,
 # tritonclient 2.71.0 requires grpcio < 1.68 and protobuf < 7. These two
 # packages intentionally differ from the versions in the NVIDIA base image.
-av==17.1.0
+av==18.0.0
 decord==0.6.0
 grpcio==1.67.1
 protobuf==6.33.6
