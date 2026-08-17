@@ -35,6 +35,9 @@ for chat and non-chat models.
 > include model weights, execute external tools, or provide user
 > authentication.
 
+> **Found this project useful?** Consider giving it a GitHub Star. It helps
+> other developers discover the project and supports its continued development.
+
 ## At A Glance
 
 | Area | Included |
