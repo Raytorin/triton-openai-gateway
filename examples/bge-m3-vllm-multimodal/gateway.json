@@ -1,0 +1,18 @@
+{
+  "embeddings": {
+    "hybrid": {
+      "enabled": true,
+      "output_types": ["dense", "sparse"],
+      "max_batch_size": 32,
+      "default_sparse_top_k": null,
+      "max_sparse_top_k": 8192
+    }
+  },
+  "admission": {
+    "embeddings": {
+      "max_inflight": 8,
+      "max_queue": 128,
+      "queue_timeout_seconds": 30
+    }
+  }
+}

@@ -47,6 +47,24 @@ devices must agree with vLLM parallelism in `model.json`.
 
 Complete model files are available in [`examples/`](../../examples/).
 
+## Native BGE-M3 Pooling
+
+For `BAAI/bge-m3`, the backend can produce dense, lexical sparse, or combined
+embeddings without a separate Transformers process. Configure vLLM with
+`runner: "pooling"` and override `architectures` to
+`BgeM3EmbeddingModel`. The backend maps requests to these tasks:
+
+| Requested output | vLLM pooling task |
+| --- | --- |
+| Dense | `embed` |
+| Sparse | `token_classify` |
+| Dense and sparse | `embed&token_classify` |
+
+Sparse token weights are mapped back to token IDs, duplicate IDs retain their
+maximum weight, special tokens are removed, and optional `sparse_top_k` is
+applied before the response crosses the Triton boundary. See the complete
+[BGE-M3 profile](../../examples/bge-m3-vllm-multimodal/README.md).
+
 ## Input Contract
 
 The backend keeps the standard `text_input`, `stream`, and generation inputs and
@@ -129,6 +147,8 @@ Custom vLLM metrics are enabled by default. Override them with
 - Direct large-PDF inference is context-bound; use the gateway endpoint for
   bounded text/vision map-reduce.
 - Temporary video files are removed after decoding and are not persisted.
+- Native sparse pooling is currently limited to vLLM's
+  `BgeM3EmbeddingModel`; the stock Triton `vllm` adapter remains dense-only.
 
 ## License
 

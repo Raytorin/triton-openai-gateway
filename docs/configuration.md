@@ -181,10 +181,64 @@ Important groups:
 | `context_compression` | Context overflow, rolling-summary, and fallback policy |
 | `rerank` | Execution limits, post-score strategies, and optional SQLite source |
 | `reasoning` | Thinking mode, output parser, and OpenAI-compatible response field |
+| `embeddings.hybrid` | Dense/sparse output types, batch limit, and sparse-vector limits |
 
 The `pdf_rag.embedding_model` value must name an embedding model already loaded
 in the same Triton server. Retrieval is used only when enough text can be
 extracted from the PDF.
+
+### Hybrid And Sparse Embeddings
+
+The standard `POST /v1/embeddings` contract remains unchanged and returns a
+dense vector. A model explicitly enables lexical sparse or combined output in
+its `gateway.json`:
+
+```json
+{
+  "embeddings": {
+    "hybrid": {
+      "enabled": true,
+      "output_types": ["dense", "sparse"],
+      "max_batch_size": 32,
+      "default_sparse_top_k": null,
+      "max_sparse_top_k": 8192
+    }
+  }
+}
+```
+
+Use `POST /v1/hybrid_embeddings` with `output_types: ["dense", "sparse"]`.
+The response keeps the dense vector in `embedding` and returns a compact sparse
+vector as parallel `sparse_embedding.indices` and
+`sparse_embedding.values` arrays. `sparse_top_k` can cap its non-zero entries.
+The gateway rejects this route for the stock Triton `vllm` backend because its
+request adapter returns dense vectors only. The bundled `vllm_multimodal`
+backend supports BGE-M3 natively and selects vLLM `embed`, `token_classify`, or
+`embed&token_classify` pooling for each request.
+
+The legacy `/v1/embeddings/hybrid` alias remains available for direct gateway
+clients. Do not use it as a LiteLLM pass-through target: LiteLLM 1.97 treats
+URLs containing `/v1/embed` as Cohere routes while processing background logs.
+
+The recommended
+[`vllm_multimodal` profile](../examples/bge-m3-vllm-multimodal/README.md)
+uses vLLM scheduling and loads `sparse_linear.pt` and `colbert_linear.pt`
+through its native `BgeM3EmbeddingModel`. Its `model.json` must set
+`runner: "pooling"` and override the upstream architecture name. Do not fix a
+single `pooler_config.task`, because the backend chooses the task per request.
+
+The separate [Python fallback](../examples/bge-m3-hybrid/README.md) loads the
+same local encoder and sparse head with Transformers. Both profiles are fully
+offline and do not contact Hugging Face at runtime.
+
+An offline LiteLLM deployment can expose the custom route with the exact
+`pass_through_endpoints` entry in
+[`examples/litellm.config.yaml`](../examples/litellm.config.yaml). LiteLLM
+authenticates the request and forwards its JSON and response without converting
+the sparse payload. Internet access is not involved. An OpenAI Python client
+configured with the LiteLLM `base_url` continues to work for dense
+`embeddings.create()` calls; its typed embeddings method always targets the
+standard endpoint, so call the custom hybrid route with an ordinary HTTP POST.
 
 ### Context Compression
 

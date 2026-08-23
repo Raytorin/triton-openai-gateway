@@ -182,10 +182,66 @@ Triton 26.07/vLLM `structured_outputs` для backend `vllm` и
 | `context_compression` | Политика переполнения контекста, rolling summary и fallback |
 | `rerank` | Лимиты выполнения, стратегии после scoring и опциональный SQLite source |
 | `reasoning` | Режим thinking, parser ответа и OpenAI-совместимое поле |
+| `embeddings.hybrid` | Типы dense/sparse результата, batch limit и лимиты sparse-вектора |
 
 `pdf_rag.embedding_model` должен содержать имя embedding-модели, уже загруженной
 в том же Triton. Retrieval используется только для PDF, из которых удалось
 извлечь достаточный объём текста.
+
+### Гибридные и sparse embeddings
+
+Стандартный контракт `POST /v1/embeddings` не меняется и возвращает dense-вектор.
+Лексический sparse либо комбинированный результат модель включает явно в своём
+`gateway.json`:
+
+```json
+{
+  "embeddings": {
+    "hybrid": {
+      "enabled": true,
+      "output_types": ["dense", "sparse"],
+      "max_batch_size": 32,
+      "default_sparse_top_k": null,
+      "max_sparse_top_k": 8192
+    }
+  }
+}
+```
+
+В `POST /v1/hybrid_embeddings` передаётся
+`output_types: ["dense", "sparse"]`. Dense-вектор находится в `embedding`, а
+компактный sparse-вектор возвращается параллельными массивами
+`sparse_embedding.indices` и `sparse_embedding.values`. Параметр
+`sparse_top_k` ограничивает число ненулевых элементов. Для штатного Triton
+backend `vllm` gateway отклоняет этот маршрут, поскольку его request adapter
+возвращает только dense-вектор. Встроенный `vllm_multimodal` поддерживает
+BGE-M3 нативно и выбирает pooling-задачу vLLM `embed`, `token_classify` или
+`embed&token_classify` для каждого запроса.
+
+Старый alias `/v1/embeddings/hybrid` остаётся доступен для прямых клиентов
+gateway. Не используйте его как target pass-through в LiteLLM: LiteLLM 1.97
+считает URL с подстрокой `/v1/embed` маршрутом Cohere при фоновом логировании.
+
+Рекомендуемый
+[профиль `vllm_multimodal`](../examples/bge-m3-vllm-multimodal/README.ru.md)
+использует scheduling vLLM и загружает `sparse_linear.pt` и
+`colbert_linear.pt` через нативный `BgeM3EmbeddingModel`. В `model.json` нужно
+указать `runner: "pooling"` и переопределить исходное имя архитектуры. Не
+фиксируйте один `pooler_config.task`: backend выбирает задачу для каждого
+запроса.
+
+Отдельный [Python fallback](../examples/bge-m3-hybrid/README.ru.md) загружает
+локальный encoder и sparse-head через Transformers. Оба профиля полностью
+офлайн и не обращаются к Hugging Face во время запуска.
+
+В закрытом контуре LiteLLM публикует этот маршрут через точную настройку
+`pass_through_endpoints` из
+[`examples/litellm.config.yaml`](../examples/litellm.config.yaml). LiteLLM
+проверяет авторизацию и без преобразования перенаправляет JSON и ответ;
+доступ в интернет для этого не нужен. `OpenAI` Python client с `base_url`
+LiteLLM продолжает работать для dense-вызовов `embeddings.create()`. Его
+типизированный embeddings-метод всегда обращается к стандартному endpoint,
+поэтому hybrid route вызывается обычным HTTP POST.
 
 ### Сжатие контекста
 

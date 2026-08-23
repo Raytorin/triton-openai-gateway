@@ -88,6 +88,8 @@ or image content part to be routed correctly.
 - Audio is passed as a waveform only when the model architecture supports audio.
 - Direct Triton PDF calls render pages; the OpenAI endpoint still uses gateway
   map/reduce so large documents do not have to fit in one engine request.
+- BGE-M3 pooling can return dense, sparse, or combined vectors in one encoder
+  pass through the custom hybrid endpoint.
 
 Remote URLs are fetched and validated by the gateway. The backend itself does
 not access the network.

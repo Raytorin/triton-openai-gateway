@@ -440,6 +440,76 @@ curl -s "$GATEWAY_URL/v1/embeddings" \
   }' | jq
 ```
 
+## Hybrid and sparse embeddings
+
+`BAAI/bge-m3` can return a dense vector, lexical sparse weights, or both from
+the dedicated endpoint. Use the native
+[`vllm_multimodal` profile](bge-m3-vllm-multimodal/README.md) or the
+[`Python fallback`](bge-m3-hybrid/README.md).
+
+```bash
+export EMBEDDING_MODEL="bge-m3"
+
+curl -s "$GATEWAY_URL/v1/hybrid_embeddings" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "'"$EMBEDDING_MODEL"'",
+    "input": [
+      "First text",
+      "Second text"
+    ],
+    "output_types": ["dense", "sparse"]
+  }' | jq
+```
+
+Through LiteLLM, configure the exact pass-through route from
+[`litellm.config.yaml`](litellm.config.yaml), then use the same request body:
+
+```bash
+curl -s "$LITELLM_URL/v1/hybrid_embeddings" \
+  -H "Authorization: Bearer $LITELLM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bge-m3",
+    "input": "Text for lexical retrieval",
+    "output_types": ["sparse"],
+    "sparse_top_k": 256
+  }' | jq
+```
+
+`return_sparse: true` is accepted as a compatibility alias for
+`output_types: ["dense", "sparse"]`. `output_type` accepts `dense`, `sparse`,
+or `hybrid`. Send these extensions to the hybrid endpoint, not to the standard
+`/v1/embeddings` route; the latter deliberately remains dense-only.
+
+The OpenAI Python package does not contact OpenAI when `base_url` points to the
+local LiteLLM proxy. Its regular method remains suitable for dense output. Use
+the low-level client method for the custom hybrid response:
+
+```python
+import os
+from typing import Any
+
+from openai import OpenAI
+
+client = OpenAI(
+    base_url=os.environ["LITELLM_URL"].rstrip("/") + "/v1",
+    api_key=os.environ["LITELLM_TOKEN"],
+)
+
+dense = client.embeddings.create(model="bge-m3", input="Dense text")
+hybrid = client.post(
+    "/hybrid_embeddings",
+    cast_to=dict[str, Any],
+    body={
+        "model": "bge-m3",
+        "input": "Text for hybrid retrieval",
+        "output_types": ["dense", "sparse"],
+        "sparse_top_k": 256,
+    },
+)
+```
+
 ## Rerank
 
 ```bash
