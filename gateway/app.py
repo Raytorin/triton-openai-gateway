@@ -59,6 +59,7 @@ from .multimodal import (
     strip_gateway_metadata,
 )
 from .observability import RequestContextMiddleware, log_event, set_request_model
+from .openai_contract import normalize_system_messages
 from .prompt import (
     add_system_instruction,
     build_conversation,
@@ -597,6 +598,18 @@ async def create_chat_completion(request: ChatCompletionRequest):
     tool_parser = registry.get_tool_parser(request.model) if tools else None
     sampling_parameters = build_sampling_parameters(request)
     conversation = build_conversation(request.messages)
+    conversation, system_message_count, moved_system_messages = (
+        normalize_system_messages(conversation)
+    )
+    if system_message_count > 1 or moved_system_messages:
+        log_event(
+            logger,
+            "chat.system_messages_normalized",
+            "System messages merged into one leading instruction",
+            model=request.model,
+            system_message_count=system_message_count,
+            moved_system_message_count=moved_system_messages,
+        )
     log_chat_request_debug(request, conversation, tools, tool_parser)
     media_settings = load_vllm_media_settings(model_path)
     context_settings = load_context_compression_settings(model_path)

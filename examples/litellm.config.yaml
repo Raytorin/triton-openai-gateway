@@ -1,0 +1,15 @@
+# Example LiteLLM route to the gateway. Replace the model name and endpoint.
+model_list:
+  - model_name: Qwen3-Example
+    litellm_params:
+      model: openai/Qwen3-Example
+      api_base: http://triton-inference-server:8080/v1
+      api_key: dummy
+      timeout: 300
+
+litellm_settings:
+  # Keep OpenAI response_format, seed, and other supported parameters.
+  drop_params: false
+
+general_settings:
+  disable_error_logs: false

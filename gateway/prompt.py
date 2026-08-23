@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from .multimodal import normalize_message_content
+from .openai_contract import structured_outputs_parameter
 from .schemas import ChatCompletionRequest, ChatMessage
 from .settings import TRITON_DEFAULT_STOP_SEQUENCE, logger
 from .tool_parsers import normalize_tool_calls_for_template
@@ -194,20 +195,33 @@ def render_chat_prompt(
             return tokenizer.apply_chat_template(conversation, **kwargs)
         except TypeError:
             continue
+        except Exception as exc:
+            raise _chat_template_error(exc) from exc
 
-    if not tools:
+    try:
+        if not tools:
+            return tokenizer.apply_chat_template(
+                conversation,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+
+        # Some tokenizers do not expose a tools= argument even when the model can
+        # follow the standard Qwen tool-call XML convention.
         return tokenizer.apply_chat_template(
-            conversation,
+            _tool_prompt_fallback_conversation(conversation, tools),
             tokenize=False,
             add_generation_prompt=True,
         )
+    except Exception as exc:
+        raise _chat_template_error(exc) from exc
 
-    # Some tokenizers do not expose a tools= argument even when the model can
-    # follow the standard Qwen tool-call XML convention.
-    return tokenizer.apply_chat_template(
-        _tool_prompt_fallback_conversation(conversation, tools),
-        tokenize=False,
-        add_generation_prompt=True,
+
+def _chat_template_error(exc: Exception) -> HTTPException:
+    detail = str(exc).strip() or type(exc).__name__
+    return HTTPException(
+        status_code=400,
+        detail=f"Messages are incompatible with the model chat template: {detail}",
     )
 
 
@@ -341,6 +355,13 @@ def build_sampling_parameters(request: ChatCompletionRequest) -> dict[str, Any]:
 
     if request.repetition_penalty is not None:
         sampling["repetition_penalty"] = float(request.repetition_penalty)
+
+    if request.seed is not None:
+        sampling["seed"] = int(request.seed)
+
+    structured_outputs = structured_outputs_parameter(request.response_format)
+    if structured_outputs is not None:
+        sampling["structured_outputs"] = structured_outputs
 
     return sampling
 

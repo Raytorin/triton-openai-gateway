@@ -91,6 +91,7 @@ protocol, prompt rendering, media orchestration, and request controls.
 ## Features
 
 - `POST /v1/chat/completions`, including SSE streaming and client cancellation.
+- OpenAI `response_format` with JSON object and strict JSON Schema output.
 - OpenAI function calling with JSON and Qwen3-Coder XML response parsing.
 - `POST /v1/embeddings` for vLLM pooling models.
 - `POST /rerank`, `/v1/rerank`, and `/v2/rerank` for Triton rerank models.
@@ -115,6 +116,7 @@ message.
 | Capability | Triton `vllm` | Included `vllm_multimodal` | Python backend |
 | --- | --- | --- | --- |
 | Text chat and streaming | Yes | Yes | Model-specific |
+| Structured JSON output | Yes | Yes | Model-specific |
 | Tool calling | Gateway layer | Gateway layer | Model-specific |
 | Images | Native vLLM input | Native vLLM input | Model-specific |
 | Video | Gateway samples and summarizes frames | Native when the model supports video | Model-specific |

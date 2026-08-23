@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Raytorin
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ChatMessage(BaseModel):
@@ -12,6 +12,30 @@ class ChatMessage(BaseModel):
     content: Any | None = None
 
     model_config = {"extra": "allow"}
+
+
+class JsonSchemaResponseFormat(BaseModel):
+    name: str
+    description: str | None = None
+    json_schema: dict[str, Any] = Field(alias="schema")
+    strict: bool | None = None
+
+    model_config = {"extra": "forbid", "populate_by_name": True}
+
+
+class ResponseFormat(BaseModel):
+    type: Literal["text", "json_object", "json_schema"] = "text"
+    json_schema: JsonSchemaResponseFormat | None = None
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def validate_json_schema(self):
+        if self.type == "json_schema" and self.json_schema is None:
+            raise ValueError(
+                "response_format.json_schema is required when type is json_schema"
+            )
+        return self
 
 
 class ChatCompletionRequest(BaseModel):
@@ -25,6 +49,12 @@ class ChatCompletionRequest(BaseModel):
     top_p: float | None = None
     stop: str | list[str] | None = None
     repetition_penalty: float | None = None
+    seed: int | None = Field(
+        default=None,
+        ge=-(2**63),
+        le=2**63 - 1,
+    )
+    response_format: ResponseFormat | None = None
     stream: bool = False
     debug: bool = False
     include_reasoning: bool | None = None

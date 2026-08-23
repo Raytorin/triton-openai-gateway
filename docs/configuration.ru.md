@@ -113,6 +113,30 @@ watcher запишет путь до конкретного файла.
 `max_num_seqs` и мультимодальные лимиты под реалистичной нагрузкой, а не
 копируйте пример без изменений.
 
+### Structured Output
+
+Клиент запрашивает ограниченный JSON через OpenAI-поле `response_format`.
+Gateway переводит `json_object` и `json_schema` в сериализованный параметр
+Triton 26.07/vLLM `structured_outputs` для backend `vllm` и
+`vllm_multimodal`.
+
+Для штатного образа дополнительная настройка engine не нужна. В vLLM `0.24.0`
+по умолчанию используется backend `auto`, а в закреплённом образе Triton уже
+есть `xgrammar`. При необходимости выбор можно явно указать в `model.json`:
+
+```json
+{
+  "structured_outputs_config": {
+    "backend": "auto"
+  }
+}
+```
+
+Чтобы зафиксировать встроенную реализацию, используйте
+`"backend": "xgrammar"`. Не добавляйте удалённый request-параметр
+`guided_decoding_backend` и не выбирайте `guidance`, если собственный образ с
+этой зависимостью не был отдельно собран и проверен.
+
 ## `gateway.json`
 
 Опциональный `gateway.json` находится рядом с `model.json`. Полный пример:

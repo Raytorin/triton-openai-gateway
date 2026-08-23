@@ -112,6 +112,30 @@ Engine capacity values are model- and hardware-specific. Validate
 `max_num_seqs`, and multimodal limits under representative load rather than
 copying the example unchanged.
 
+### Structured Output
+
+Clients request constrained JSON through the OpenAI `response_format` field.
+The gateway translates `json_object` and `json_schema` into Triton 26.07's
+serialized vLLM `structured_outputs` parameter for both `vllm` and
+`vllm_multimodal` backends.
+
+No extra engine setting is required in the stock image. vLLM `0.24.0` uses the
+`auto` backend by default and the pinned Triton image includes `xgrammar`. To
+make the selection explicit, add one of these blocks to `model.json`:
+
+```json
+{
+  "structured_outputs_config": {
+    "backend": "auto"
+  }
+}
+```
+
+Use `"backend": "xgrammar"` to force the bundled implementation. Do not add
+the removed request option `guided_decoding_backend`, and do not select
+`guidance` unless you build and validate a custom image containing that
+dependency.
+
 ## `gateway.json`
 
 `gateway.json` is optional and belongs next to `model.json`. The complete

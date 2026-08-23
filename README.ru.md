@@ -92,6 +92,7 @@ continuous batching и параллелизм остаются внутри Trit
 ## Возможности
 
 - `POST /v1/chat/completions` с SSE streaming и отменой при отключении клиента.
+- OpenAI `response_format` для JSON object и строгого JSON Schema output.
 - OpenAI function calling с разбором JSON и XML Qwen3-Coder.
 - `POST /v1/embeddings` для pooling-моделей vLLM.
 - `POST /rerank`, `/v1/rerank` и `/v2/rerank` для Triton rerank-моделей.
@@ -116,6 +117,7 @@ Gateway **не выполняет tools самостоятельно**. Прил
 | Возможность | Triton `vllm` | Встроенный `vllm_multimodal` | Python backend |
 | --- | --- | --- | --- |
 | Текстовый чат и streaming | Да | Да | Зависит от модели |
+| Structured JSON output | Да | Да | Зависит от модели |
 | Tool calling | На уровне gateway | На уровне gateway | Зависит от модели |
 | Изображения | Нативный input vLLM | Нативный input vLLM | Зависит от модели |
 | Видео | Gateway извлекает и суммирует кадры | Нативно, если модель поддерживает видео | Зависит от модели |

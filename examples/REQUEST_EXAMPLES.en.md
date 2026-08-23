@@ -25,6 +25,40 @@ curl -s "$GATEWAY_URL/v1/chat/completions" \
   }' | jq
 ```
 
+## Structured JSON Output
+
+`json_schema` is forwarded as constrained decoding, not only as a prompt
+instruction. The response content is still a JSON string and can be decoded
+with `jq -r ... | fromjson`:
+
+```bash
+curl -s "$GATEWAY_URL/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "'"$MODEL"'",
+    "messages": [
+      {"role": "user", "content": "Return the city and temperature: Moscow, 18 C."}
+    ],
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+        "name": "weather",
+        "strict": true,
+        "schema": {
+          "type": "object",
+          "properties": {
+            "city": {"type": "string"},
+            "temperature_c": {"type": "number"}
+          },
+          "required": ["city", "temperature_c"],
+          "additionalProperties": false
+        }
+      }
+    },
+    "max_tokens": 128
+  }' | jq -r '.choices[0].message.content | fromjson'
+```
+
 ## Reasoning Models
 
 The server-side policy is configured in the model's `gateway.json`. With
