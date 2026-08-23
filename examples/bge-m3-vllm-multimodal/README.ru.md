@@ -40,6 +40,10 @@ bge-m3/
 Matryoshka truncation, поэтому `dimensions` следует опустить либо указать
 нативное значение `1024`.
 
+В консервативном профиле chunked prefill выключен. Включайте его только после
+GPU load test для dense, sparse и комбинированного pooling на настроенной
+максимальной длине последовательности.
+
 Требуется закреплённый runtime Triton 26.07/vLLM 0.24. Перед production
 проведите GPU smoke test и сравните dense/sparse результаты с
 [Python fallback](../bge-m3-hybrid/README.ru.md) на репрезентативных

@@ -101,6 +101,34 @@ class VllmHybridPoolingTests(unittest.TestCase):
         self.assertEqual([10, 20], result["sparse"]["indices"])
         self.assertEqual([0.9, 0.7], result["sparse"]["values"])
 
+    def test_sparse_only_output_is_mapped_to_prompt_tokens(self):
+        spec = parse_embedding_output_spec(
+            {"pooling_params": {}, "output_types": ["sparse"]}
+        )
+
+        result = serialize_pooling_output(
+            [0.5, 0.9, 0.7],
+            [0, 10, 10, 20, 2],
+            spec,
+            self.metadata,
+        )
+
+        self.assertEqual([10, 20], result["sparse"]["indices"])
+        self.assertEqual([0.9, 0.7], result["sparse"]["values"])
+
+    def test_sparse_output_length_mismatch_is_rejected(self):
+        spec = parse_embedding_output_spec(
+            {"pooling_params": {}, "output_types": ["sparse"]}
+        )
+
+        with self.assertRaisesRegex(ValueError, "does not match prompt tokens"):
+            serialize_pooling_output(
+                [0.5],
+                [0, 10, 20, 2],
+                spec,
+                self.metadata,
+            )
+
     def test_sparse_output_requires_bge_m3_architecture(self):
         spec = parse_embedding_output_spec(
             {"pooling_params": {}, "output_types": ["sparse"]}

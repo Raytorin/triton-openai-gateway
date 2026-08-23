@@ -311,6 +311,20 @@ class HybridEmbeddingExampleTests(unittest.TestCase):
         )
         self.assertNotIn("/v1/embeddings/hybrid", source)
 
+    def test_vllm_multimodal_example_selects_native_bge_architecture(self):
+        root = Path(__file__).resolve().parents[1]
+        example = root / "examples" / "bge-m3-vllm-multimodal"
+        model_config = json.loads((example / "model.json").read_text())
+        triton_config = (example / "config.pbtxt").read_text(encoding="utf-8")
+
+        self.assertEqual("pooling", model_config["runner"])
+        self.assertEqual(
+            ["BgeM3EmbeddingModel"],
+            model_config["hf_overrides"]["architectures"],
+        )
+        self.assertFalse(model_config["enable_chunked_prefill"])
+        self.assertIn('backend: "vllm_multimodal"', triton_config)
+
 
 if __name__ == "__main__":
     unittest.main()
