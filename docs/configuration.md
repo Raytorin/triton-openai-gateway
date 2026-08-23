@@ -179,7 +179,7 @@ Important groups:
 | `audio_*` | Local ASR model, device, and chunk overlap |
 | `max_remote_media_bytes` | Download limit for remote content |
 | `context_compression` | Context overflow, rolling-summary, and fallback policy |
-| `rerank` | Named post-score selection strategies and optional SQLite source |
+| `rerank` | Execution limits, post-score strategies, and optional SQLite source |
 | `reasoning` | Thinking mode, output parser, and OpenAI-compatible response field |
 
 The `pdf_rag.embedding_model` value must name an embedding model already loaded
@@ -242,6 +242,14 @@ requests without `selection` retain the `top_n` behavior.
 {
   "rerank": {
     "default_strategy": "top_n",
+    "execution": {
+      "max_documents_per_request": 256,
+      "default_batch_size": 4,
+      "max_batch_size": 8,
+      "max_batch_tokens": 8192,
+      "default_max_length": 512,
+      "max_length": 8192
+    },
     "strategies": {
       "strict": {
         "method": "top_n_and_threshold",
@@ -256,6 +264,18 @@ requests without `selection` retain the `top_n` behavior.
   }
 }
 ```
+
+The `execution` block bounds peak reranker memory. The gateway splits one
+request into sequential micro-batches, preserves document indices, and merges
+all scores before sorting. Effective batch size is also bounded by
+`max_batch_tokens / max_length`, so longer pairs automatically reduce GPU
+concurrency.
+
+Client values above `max_batch_size` or `max_length` return HTTP `400`; more
+than `max_documents_per_request` documents returns HTTP `413`. The default
+rerank admission policy allows one active request and 64 queued requests per
+model. Increase `admission.rerank.max_inflight` only after validating the
+specific reranker, GPU, and Triton model instance count under load.
 
 Clients select a named policy with
 `"selection": {"strategy": "strict", "parameters": {"top_n": 2}}`.

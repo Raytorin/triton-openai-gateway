@@ -180,7 +180,7 @@ Triton 26.07/vLLM `structured_outputs` для backend `vllm` и
 | `audio_*` | Локальная ASR-модель, device и overlap чанков |
 | `max_remote_media_bytes` | Лимит скачивания remote content |
 | `context_compression` | Политика переполнения контекста, rolling summary и fallback |
-| `rerank` | Именованные стратегии отбора после scoring и опциональный SQLite source |
+| `rerank` | Лимиты выполнения, стратегии после scoring и опциональный SQLite source |
 | `reasoning` | Режим thinking, parser ответа и OpenAI-совместимое поле |
 
 `pdf_rag.embedding_model` должен содержать имя embedding-модели, уже загруженной
@@ -242,6 +242,14 @@ Rerank-модель сначала оценивает каждый переда�
 {
   "rerank": {
     "default_strategy": "top_n",
+    "execution": {
+      "max_documents_per_request": 256,
+      "default_batch_size": 4,
+      "max_batch_size": 8,
+      "max_batch_tokens": 8192,
+      "default_max_length": 512,
+      "max_length": 8192
+    },
     "strategies": {
       "strict": {
         "method": "top_n_and_threshold",
@@ -256,6 +264,18 @@ Rerank-модель сначала оценивает каждый переда�
   }
 }
 ```
+
+Блок `execution` ограничивает пиковую память reranker. Gateway разбивает один
+запрос на последовательные micro-batch, сохраняет индексы документов и
+объединяет все score перед сортировкой. Фактический batch дополнительно
+ограничивается значением `max_batch_tokens / max_length`, поэтому длинные пары
+автоматически уменьшают одновременную нагрузку на GPU.
+
+Значения клиента выше `max_batch_size` или `max_length` возвращают HTTP `400`,
+а превышение `max_documents_per_request` возвращает HTTP `413`. По умолчанию
+admission допускает один активный rerank-запрос и очередь из 64 запросов на
+модель. Увеличивайте `admission.rerank.max_inflight` только после нагрузочной
+проверки конкретного reranker, GPU и числа model instance Triton.
 
 Клиент выбирает именованную политику через
 `"selection": {"strategy": "strict", "parameters": {"top_n": 2}}`.

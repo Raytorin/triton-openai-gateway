@@ -1,13 +1,21 @@
 {
   "admission": {
     "rerank": {
-      "max_inflight": 64,
-      "max_queue": 256,
+      "max_inflight": 1,
+      "max_queue": 64,
       "queue_timeout_seconds": 30
     }
   },
   "rerank": {
     "default_strategy": "top_n",
+    "execution": {
+      "max_documents_per_request": 256,
+      "default_batch_size": 4,
+      "max_batch_size": 8,
+      "max_batch_tokens": 8192,
+      "default_max_length": 512,
+      "max_length": 8192
+    },
     "strategies": {
       "strict": {
         "method": "top_n_and_threshold",

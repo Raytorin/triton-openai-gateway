@@ -79,7 +79,12 @@ from .reasoning import (
     reasoning_message_fields,
     split_reasoning_output,
 )
-from .rerank import build_rerank_documents, build_rerank_response
+from .rerank import (
+    build_rerank_documents,
+    build_rerank_response,
+    iter_rerank_batches,
+    plan_rerank_execution,
+)
 from .rerank_strategies import resolve_rerank_strategy
 from .sanitizer import sanitize_generated_text, strip_prompt_echo
 from .schemas import ChatCompletionRequest, EmbeddingsRequest, RerankRequest
@@ -428,6 +433,7 @@ async def create_embeddings(request: EmbeddingsRequest):
 async def rerank(request: RerankRequest):
     documents = build_rerank_documents(request)
     model_path = registry.resolve(request.model)
+    execution = plan_rerank_execution(request, documents, model_path)
     strategy = resolve_rerank_strategy(request, model_path)
     RERANK_STRATEGY_SELECTIONS.labels(
         request.model,
@@ -447,17 +453,30 @@ async def rerank(request: RerankRequest):
         strategy_source=strategy.source,
         strategy_version=strategy.version,
         candidate_count=len(documents),
+        batch_size=execution.batch_size,
+        batch_count=execution.batch_count,
+        max_length=execution.max_length,
     )
 
-    scores = await call_triton_rerank(
-        request.model,
-        request.query,
+    scores: list[float] = []
+    for document_batch in iter_rerank_batches(documents, execution):
+        scores.extend(
+            await call_triton_rerank(
+                request.model,
+                request.query,
+                document_batch,
+                execution.max_length,
+                min(execution.batch_size, len(document_batch)),
+                bool(request.normalize),
+            )
+        )
+    return build_rerank_response(
+        request,
         documents,
-        request.max_length,
-        request.batch_size,
-        bool(request.normalize),
+        scores,
+        strategy,
+        execution,
     )
-    return build_rerank_response(request, documents, scores, strategy)
 
 
 async def _generate_context_summary(
