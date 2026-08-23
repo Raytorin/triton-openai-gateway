@@ -14,6 +14,7 @@ EXPECTED_OPERATIONS = {
     "/metrics": {"get"},
     "/v1/models": {"get"},
     "/v1/embeddings": {"post"},
+    "/v1/hybrid_embeddings": {"post"},
     "/rerank": {"post"},
     "/v1/rerank": {"post"},
     "/v2/rerank": {"post"},

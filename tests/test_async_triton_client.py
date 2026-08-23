@@ -4,7 +4,11 @@ from unittest.mock import AsyncMock, patch
 
 import numpy as np
 
-from gateway.triton_client import _stream_grpc_results, call_triton_embeddings
+from gateway.triton_client import (
+    _stream_grpc_results,
+    call_triton_embeddings,
+    call_triton_hybrid_embeddings,
+)
 
 
 class _Result:
@@ -73,6 +77,43 @@ class AsyncTritonClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(prompt_tokens, 3)
         self.assertFalse(client.iterator.cancelled)
         to_thread.assert_not_called()
+
+    async def test_hybrid_embeddings_decode_dense_and_sparse_output(self):
+        result = _Result(
+            {
+                "text_output": np.asarray(
+                    [
+                        json.dumps(
+                            {
+                                "dense": [0.1, 0.2],
+                                "sparse": {
+                                    "indices": [42],
+                                    "values": [0.9],
+                                },
+                            }
+                        ).encode("utf-8")
+                    ],
+                    dtype=np.object_,
+                ),
+                "num_input_tokens": np.asarray([3], dtype=np.uint32),
+            }
+        )
+        client = _Client([(result, None)])
+        with patch(
+            "gateway.triton_client.get_grpc_client",
+            new=AsyncMock(return_value=client),
+        ):
+            embedding, prompt_tokens = await call_triton_hybrid_embeddings(
+                "bge-m3",
+                "query",
+                None,
+                ["dense", "sparse"],
+                128,
+            )
+
+        self.assertEqual(embedding["dense"], [0.1, 0.2])
+        self.assertEqual(embedding["sparse"]["indices"], [42])
+        self.assertEqual(prompt_tokens, 3)
 
     async def test_early_consumer_close_cancels_triton_stream(self):
         result = _Result({"text_output": np.asarray([b"partial"], dtype=np.object_)})

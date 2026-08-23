@@ -1,0 +1,57 @@
+name: "bge-m3"
+backend: "python"
+
+max_batch_size: 0
+
+input [
+  {
+    name: "embedding_request"
+    data_type: TYPE_STRING
+    dims: [ 1 ]
+  },
+  {
+    name: "return_num_input_tokens"
+    data_type: TYPE_BOOL
+    dims: [ 1 ]
+    optional: true
+  },
+  {
+    name: "return_num_output_tokens"
+    data_type: TYPE_BOOL
+    dims: [ 1 ]
+    optional: true
+  }
+]
+
+output [
+  {
+    name: "text_output"
+    data_type: TYPE_STRING
+    dims: [ 1 ]
+  },
+  {
+    name: "num_input_tokens"
+    data_type: TYPE_UINT32
+    dims: [ 1 ]
+  },
+  {
+    name: "num_output_tokens"
+    data_type: TYPE_UINT32
+    dims: [ 1 ]
+  }
+]
+
+instance_group [
+  {
+    kind: KIND_GPU
+    count: 1
+    gpus: [ 0 ]
+  }
+]
+
+parameters [
+  {
+    key: "MAX_LENGTH"
+    value: { string_value: "8192" }
+  }
+]

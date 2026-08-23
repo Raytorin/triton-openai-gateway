@@ -13,3 +13,12 @@ litellm_settings:
 
 general_settings:
   disable_error_logs: false
+  # Exact pass-through keeps the custom sparse response intact. Clients still
+  # authenticate with their normal LiteLLM virtual key.
+  pass_through_endpoints:
+    - path: /v1/hybrid_embeddings
+      target: http://triton-inference-server:8080/v1/hybrid_embeddings
+      methods: [POST]
+      auth: true
+      include_subpath: false
+      timeout: 300

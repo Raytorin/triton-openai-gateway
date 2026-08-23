@@ -32,7 +32,14 @@ from .debug import (
     log_chat_request_debug,
     log_chat_response_debug,
 )
-from .embeddings import build_embedding_inputs, encode_embedding, tokenize_embedding_inputs
+from .embeddings import (
+    build_embedding_inputs,
+    encode_embedding,
+    load_hybrid_embedding_settings,
+    reject_hybrid_options_on_dense_endpoint,
+    tokenize_embedding_inputs,
+    validate_hybrid_embedding_request,
+)
 from .generation_telemetry import (
     configure_generation_telemetry,
     get_generation_telemetry,
@@ -48,6 +55,7 @@ from .metrics import (
     EMBEDDING_BATCH_SIZE,
     MEDIA_PROCESSING,
     RERANK_STRATEGY_SELECTIONS,
+    SPARSE_EMBEDDING_SIZE,
     metrics_response,
 )
 from .multimodal import (
@@ -87,7 +95,12 @@ from .rerank import (
 )
 from .rerank_strategies import resolve_rerank_strategy
 from .sanitizer import sanitize_generated_text, strip_prompt_echo
-from .schemas import ChatCompletionRequest, EmbeddingsRequest, RerankRequest
+from .schemas import (
+    ChatCompletionRequest,
+    EmbeddingsRequest,
+    HybridEmbeddingsRequest,
+    RerankRequest,
+)
 from .settings import (
     EMBEDDING_MAX_CONCURRENCY,
     LOG_PROMPT_PREVIEW,
@@ -98,6 +111,7 @@ from .tool_parsers import extract_tool_calls
 from .triton_client import (
     call_triton,
     call_triton_embeddings,
+    call_triton_hybrid_embeddings,
     call_triton_multimodal,
     call_triton_native_multimodal,
     call_triton_python_chat,
@@ -362,6 +376,7 @@ async def list_models():
 @app.post("/v1/embeddings")
 @admitted("embeddings")
 async def create_embeddings(request: EmbeddingsRequest):
+    reject_hybrid_options_on_dense_endpoint(request)
     backend = registry.get_backend(request.model)
     model_inputs = build_embedding_inputs(request)
     encoding_format = request.encoding_format or "float"
@@ -422,6 +437,93 @@ async def create_embeddings(request: EmbeddingsRequest):
         "object": "list",
         "data": data,
         "model": request.model,
+        "usage": usage,
+    }
+
+
+@app.post("/v1/embeddings/hybrid", include_in_schema=False)
+@app.post("/v1/hybrid_embeddings")
+@admitted("embeddings")
+async def create_hybrid_embeddings(request: HybridEmbeddingsRequest):
+    backend = registry.get_backend(request.model)
+    model_path = registry.resolve(request.model)
+    settings = load_hybrid_embedding_settings(model_path)
+    model_inputs = build_embedding_inputs(request)
+    sparse_top_k = validate_hybrid_embedding_request(
+        request,
+        settings,
+        len(model_inputs),
+    )
+
+    if backend in {"vllm", "vllm_multimodal"}:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "/v1/hybrid_embeddings requires an embedding backend that returns "
+                "dense/sparse payloads; the vLLM pooling backend returns dense vectors only"
+            ),
+        )
+
+    output_types = list(request.output_types)
+    encoding_format = request.encoding_format or "float"
+    log_event(
+        logger,
+        "hybrid_embeddings.routed",
+        "Routing hybrid embeddings request",
+        model=request.model,
+        backend=backend or "unknown",
+        transport="grpc",
+        output_types=output_types,
+        sparse_top_k=sparse_top_k,
+        input_count=len(model_inputs),
+    )
+    EMBEDDING_BATCH_SIZE.labels(request.model).observe(len(model_inputs))
+    semaphore = asyncio.Semaphore(EMBEDDING_MAX_CONCURRENCY)
+
+    async def embed(index: int, model_input):
+        async with semaphore:
+            result, prompt_tokens = await call_triton_hybrid_embeddings(
+                request.model,
+                model_input,
+                request.dimensions,
+                output_types,
+                sparse_top_k,
+            )
+        return index, result, prompt_tokens
+
+    results = await asyncio.gather(
+        *(embed(index, model_input) for index, model_input in enumerate(model_inputs))
+    )
+    results.sort(key=lambda item: item[0])
+    total_prompt_tokens = sum(item[2] for item in results)
+    data = []
+    for index, result, _ in results:
+        item: dict[str, Any] = {
+            "object": "hybrid_embedding",
+            "index": index,
+        }
+        if "dense" in result:
+            item["embedding"] = encode_embedding(
+                result["dense"],
+                encoding_format,
+            )
+        if "sparse" in result:
+            item["sparse_embedding"] = result["sparse"]
+            SPARSE_EMBEDDING_SIZE.labels(request.model).observe(
+                len(result["sparse"]["indices"])
+            )
+        data.append(item)
+
+    usage = {
+        "prompt_tokens": total_prompt_tokens,
+        "total_tokens": total_prompt_tokens,
+    }
+    observe_generation_usage(usage)
+    return {
+        "object": "hybrid_embedding.list",
+        "data": data,
+        "model": request.model,
+        "output_types": output_types,
         "usage": usage,
     }
 
