@@ -36,8 +36,6 @@ import triton_python_backend_utils as pb_utils
 from vllm.inputs import TokensPrompt
 from vllm.lora.request import LoRARequest
 from vllm.outputs import (
-    EmbeddingOutput,
-    EmbeddingRequestOutput,
     PoolingRequestOutput,
     RequestOutput,
 )
@@ -45,6 +43,12 @@ from vllm.pooling_params import PoolingParams
 from vllm.utils import random_uuid
 
 from utils.vllm_backend_utils import TritonSamplingParams
+from utils.hybrid_embeddings import (
+    EmbeddingOutputSpec,
+    PoolingModelMetadata,
+    parse_embedding_output_spec,
+    serialize_pooling_output,
+)
 from utils.media import build_multimodal_prompt, parse_media_parameters
 from utils.observability import get_triton_request_id, log_event
 
@@ -438,8 +442,17 @@ class EmbedRequest(RequestBase):
         output_dtype: np.dtype,
         logger,
         model_name: str = "",
+        pooling_model_metadata: PoolingModelMetadata | None = None,
     ):
         super().__init__(request, executor_callback, output_dtype, logger, model_name)
+        self.pooling_model_metadata = pooling_model_metadata or PoolingModelMetadata()
+        self.output_spec = EmbeddingOutputSpec(
+            output_types=("dense",),
+            task="embed",
+            dimensions=None,
+            sparse_top_k=None,
+            explicit_output_types=False,
+        )
 
     def _get_input_tensors(self):
         embedding_request = pb_utils.get_input_tensor_by_name(
@@ -488,7 +501,7 @@ class EmbedRequest(RequestBase):
             model=self.model_name,
             request_id=self.request_id,
             engine_request_id=self.id,
-            task="embed",
+            task=self.output_spec.task,
         )
         # Create PoolingParams for embeddings
         response_iterator = self.executor_callback(prompt, pooling_params, self.id)
@@ -509,7 +522,7 @@ class EmbedRequest(RequestBase):
                 model=self.model_name,
                 request_id=self.request_id,
                 engine_request_id=self.id,
-                task="embed",
+                task=self.output_spec.task,
                 error_type=type(exc).__name__,
                 error=str(exc),
             )
@@ -528,31 +541,36 @@ class EmbedRequest(RequestBase):
                 model=self.model_name,
                 request_id=self.request_id,
                 engine_request_id=self.id,
-                task="embed",
+                task=self.output_spec.task,
                 status=status,
                 duration_ms=round((time.monotonic() - started_at) * 1000, 3),
             )
 
     def _to_pooling_params(self, embedding_request: dict):
-        pooling_params_dict = embedding_request.get("pooling_params", {})
+        self.output_spec = parse_embedding_output_spec(embedding_request)
+        if self.output_spec.dimensions is None:
+            return PoolingParams(task=self.output_spec.task)
+        return PoolingParams(
+            task=self.output_spec.task,
+            dimensions=self.output_spec.dimensions,
+        )
 
-        pooling_params = PoolingParams(task="embed")
-        dims = None
-        if "dimensions" in pooling_params_dict:
-            dims = pooling_params_dict["dimensions"][0]
-            pooling_params = PoolingParams(dimensions=dims, task="embed")
-        return pooling_params
-
-    def create_response(self, request_output: PoolingRequestOutput[EmbeddingOutput]):
+    def create_response(self, request_output: PoolingRequestOutput):
         output_tensors = []
-        request_output = EmbeddingRequestOutput.from_base(request_output)
-
-        # Extract embedding list from output
-        embedding: list[float] = request_output.outputs.embedding
+        data = request_output.outputs.data.detach().float().cpu().reshape(-1)
+        output_payload = serialize_pooling_output(
+            data.tolist(),
+            request_output.prompt_token_ids,
+            self.output_spec,
+            self.pooling_model_metadata,
+        )
         output_tensors.append(
             pb_utils.Tensor(
                 "text_output",
-                np.asarray([json.dumps(embedding)], dtype=self.output_dtype),
+                np.asarray(
+                    [json.dumps(output_payload, ensure_ascii=False)],
+                    dtype=self.output_dtype,
+                ),
             )
         )
 

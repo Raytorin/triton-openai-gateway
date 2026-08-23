@@ -212,7 +212,11 @@ class HybridEmbeddingEndpointTests(unittest.IsolatedAsyncioTestCase):
             )
 
             with (
-                patch.object(gateway_app.registry, "get_backend", return_value="python"),
+                patch.object(
+                    gateway_app.registry,
+                    "get_backend",
+                    return_value="vllm_multimodal",
+                ),
                 patch.object(gateway_app.registry, "resolve", return_value=model_path),
                 patch.object(
                     gateway_app,

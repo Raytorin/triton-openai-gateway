@@ -455,12 +455,13 @@ async def create_hybrid_embeddings(request: HybridEmbeddingsRequest):
         len(model_inputs),
     )
 
-    if backend in {"vllm", "vllm_multimodal"}:
+    if backend == "vllm":
         raise HTTPException(
             status_code=400,
             detail=(
-                "/v1/hybrid_embeddings requires an embedding backend that returns "
-                "dense/sparse payloads; the vLLM pooling backend returns dense vectors only"
+                "/v1/hybrid_embeddings is not supported by the stock Triton vLLM "
+                "backend; use the bundled vllm_multimodal backend or the BGE-M3 "
+                "Python backend"
             ),
         )
 
