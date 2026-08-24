@@ -46,6 +46,7 @@ from utils.vllm_backend_utils import TritonSamplingParams
 from utils.hybrid_embeddings import (
     EmbeddingOutputSpec,
     PoolingModelMetadata,
+    build_pooling_params_kwargs,
     parse_embedding_output_spec,
     serialize_pooling_output,
 )
@@ -548,12 +549,7 @@ class EmbedRequest(RequestBase):
 
     def _to_pooling_params(self, embedding_request: dict):
         self.output_spec = parse_embedding_output_spec(embedding_request)
-        if self.output_spec.dimensions is None:
-            return PoolingParams(task=self.output_spec.task)
-        return PoolingParams(
-            task=self.output_spec.task,
-            dimensions=self.output_spec.dimensions,
-        )
+        return PoolingParams(**build_pooling_params_kwargs(self.output_spec))
 
     def create_response(self, request_output: PoolingRequestOutput):
         output_tensors = []

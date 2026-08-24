@@ -10,6 +10,7 @@ sys.path.insert(0, str(BACKEND_ROOT))
 
 from utils.hybrid_embeddings import (  # noqa: E402
     PoolingModelMetadata,
+    build_pooling_params_kwargs,
     build_sparse_embedding,
     load_pooling_model_metadata,
     parse_embedding_output_spec,
@@ -47,6 +48,23 @@ class VllmHybridPoolingTests(unittest.TestCase):
         self.assertEqual("embed&token_classify", hybrid.task)
         self.assertEqual(4, hybrid.dimensions)
         self.assertEqual(2, hybrid.sparse_top_k)
+
+    def test_hybrid_pooling_explicitly_enables_postprocessing(self):
+        spec = parse_embedding_output_spec(
+            {
+                "pooling_params": {"dimensions": [1024]},
+                "output_types": ["dense", "sparse"],
+            }
+        )
+
+        self.assertEqual(
+            {
+                "task": "embed&token_classify",
+                "use_activation": True,
+                "dimensions": 1024,
+            },
+            build_pooling_params_kwargs(spec),
+        )
 
     def test_invalid_sparse_options_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "sparse_top_k requires sparse"):

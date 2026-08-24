@@ -77,7 +77,7 @@ from utils.media import (  # noqa: E402
 )
 from utils.observability import log_event as backend_log_event  # noqa: E402
 from utils.device_config import local_parallel_world_size  # noqa: E402
-from utils.metrics import VllmStatLogger  # noqa: E402
+from utils.metrics import RequestTokenAccumulator, VllmStatLogger  # noqa: E402
 
 
 def _encoded_envelope(data: bytes, mime_type: str, media_format: str) -> bytes:
@@ -138,6 +138,38 @@ def _video_bytes() -> bytes:
 
 
 class MultimodalBackendTests(unittest.TestCase):
+    def test_pooling_output_is_safe_for_request_token_metrics(self):
+        accumulator = RequestTokenAccumulator()
+        pooling_output = SimpleNamespace(data=[0.1, 0.2, 0.3])
+        request_output = SimpleNamespace(
+            prompt_token_ids=[1, 2, 3, 4],
+            outputs=pooling_output,
+        )
+
+        accumulator.observe(request_output)
+
+        self.assertEqual(4, accumulator.prompt_tokens)
+        self.assertEqual(0, accumulator.generation_tokens)
+
+    def test_generation_output_still_counts_only_new_tokens(self):
+        accumulator = RequestTokenAccumulator()
+
+        accumulator.observe(
+            SimpleNamespace(
+                prompt_token_ids=[1, 2],
+                outputs=[SimpleNamespace(token_ids=[10, 11])],
+            )
+        )
+        accumulator.observe(
+            SimpleNamespace(
+                prompt_token_ids=[1, 2],
+                outputs=[SimpleNamespace(token_ids=[10, 11, 12])],
+            )
+        )
+
+        self.assertEqual(2, accumulator.prompt_tokens)
+        self.assertEqual(3, accumulator.generation_tokens)
+
     def test_vllm_scheduler_and_cache_stats_are_exported(self):
         stat_logger = object.__new__(VllmStatLogger)
         stat_logger.metrics = SimpleNamespace(

@@ -169,6 +169,21 @@ def parse_embedding_output_spec(payload: dict[str, Any]) -> EmbeddingOutputSpec:
     )
 
 
+def build_pooling_params_kwargs(spec: EmbeddingOutputSpec) -> dict[str, Any]:
+    """Build vLLM pooling parameters with BGE-M3 postprocessing enabled."""
+
+    params: dict[str, Any] = {
+        "task": spec.task,
+        # vLLM does not merge default activation settings for its custom
+        # embed&token_classify task. Set this explicitly so dense output is
+        # L2-normalized and sparse weights pass through the ReLU head.
+        "use_activation": True,
+    }
+    if spec.dimensions is not None:
+        params["dimensions"] = spec.dimensions
+    return params
+
+
 def serialize_pooling_output(
     data: Sequence[float],
     prompt_token_ids: Sequence[int],
