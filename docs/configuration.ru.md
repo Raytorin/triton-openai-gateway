@@ -120,6 +120,11 @@ Gateway переводит `json_object` и `json_schema` в сериализо�
 Triton 26.07/vLLM `structured_outputs` для backend `vllm` и
 `vllm_multimodal`.
 
+Для запроса со structured output gateway отключает thinking только на время
+этого запроса, чтобы схема ограничивала видимое поле `message.content`, а не
+внутренний reasoning block. Настроенная policy модели продолжает действовать
+для обычных chat-запросов.
+
 Для штатного образа дополнительная настройка engine не нужна. В vLLM `0.24.0`
 по умолчанию используется backend `auto`, а в закреплённом образе Triton уже
 есть `xgrammar`. При необходимости выбор можно явно указать в `model.json`:

@@ -735,10 +735,24 @@ async def create_chat_completion(request: ChatCompletionRequest):
     log_chat_request_debug(request, conversation, tools, tool_parser)
     media_settings = load_vllm_media_settings(model_path)
     context_settings = load_context_compression_settings(model_path)
+    structured_response = (
+        request.response_format is not None
+        and request.response_format.type in {"json_object", "json_schema"}
+    )
     reasoning_settings = load_reasoning_settings(
         model_path,
         include_reasoning=request.include_reasoning,
+        force_disable=structured_response,
     )
+    if structured_response and reasoning_settings.configured_mode != "disabled":
+        log_event(
+            logger,
+            "chat.reasoning_disabled_for_structured_output",
+            "Thinking disabled so structured output applies to visible content",
+            model=request.model,
+            configured_reasoning_mode=reasoning_settings.configured_mode,
+            response_format=request.response_format.type,
+        )
     conversation, removed_historical_media = scope_media_history(
         conversation,
         media_settings.media_history_mode,
