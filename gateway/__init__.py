@@ -3,7 +3,7 @@
 
 """OpenAI-compatible gateway for NVIDIA Triton Inference Server."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __author__ = "Raytorin"
 __copyright__ = "Copyright 2026 Raytorin"
 __license__ = "Apache-2.0"

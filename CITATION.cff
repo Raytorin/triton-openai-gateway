@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it using these metadata."
 title: "Triton OpenAI Gateway"
 type: software
-version: "0.2.0"
+version: "0.3.0"
 authors:
   - name: "Raytorin"
     website: "https://github.com/Raytorin"
