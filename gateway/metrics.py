@@ -97,6 +97,12 @@ EMBEDDING_BATCH_SIZE = Histogram(
     ("model",),
     buckets=(1, 2, 4, 8, 16, 32, 64, 128, 256),
 )
+SPARSE_EMBEDDING_SIZE = Histogram(
+    "triton_gateway_sparse_embedding_nonzero_values",
+    "Number of non-zero values returned in a sparse embedding.",
+    ("model",),
+    buckets=(1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192),
+)
 MEDIA_PROCESSING = Histogram(
     "triton_gateway_media_processing_duration_seconds",
     "Gateway-side media processing duration.",
@@ -207,6 +213,8 @@ _KNOWN_PATHS = {
     "/metrics",
     "/v1/models",
     "/v1/embeddings",
+    "/v1/hybrid_embeddings",
+    "/v1/embeddings/hybrid",
     "/rerank",
     "/v1/rerank",
     "/v2/rerank",

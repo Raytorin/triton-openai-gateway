@@ -78,6 +78,7 @@ def load_reasoning_settings(
     model_path: Path,
     *,
     include_reasoning: bool | None = None,
+    force_disable: bool = False,
 ) -> ReasoningSettings:
     config_path = model_path / "gateway.json"
     modified_ns = config_path.stat().st_mtime_ns if config_path.is_file() else 0
@@ -88,9 +89,14 @@ def load_reasoning_settings(
     )
 
     mode = configured.configured_mode
+    # OpenAI structured output constrains the visible assistant response. A
+    # thinking prompt would put the constrained JSON inside an unfinished
+    # reasoning block, leaving message.content empty after post-processing.
+    if force_disable:
+        mode = "disabled"
     # A caller may hide reasoning allowed by server policy, but cannot make a
     # hidden or disabled chain-of-thought visible.
-    if include_reasoning is False and mode == "separate":
+    elif include_reasoning is False and mode == "separate":
         mode = "hidden"
 
     if mode != "disabled" and not configured.supported:

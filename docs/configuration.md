@@ -112,6 +112,35 @@ Engine capacity values are model- and hardware-specific. Validate
 `max_num_seqs`, and multimodal limits under representative load rather than
 copying the example unchanged.
 
+### Structured Output
+
+Clients request constrained JSON through the OpenAI `response_format` field.
+The gateway translates `json_object` and `json_schema` into Triton 26.07's
+serialized vLLM `structured_outputs` parameter for both `vllm` and
+`vllm_multimodal` backends.
+
+For a structured-output request, the gateway disables model thinking for that
+request so the schema constrains the visible `message.content`, not an internal
+reasoning block. The model's configured reasoning policy remains unchanged for
+ordinary chat requests.
+
+No extra engine setting is required in the stock image. vLLM `0.24.0` uses the
+`auto` backend by default and the pinned Triton image includes `xgrammar`. To
+make the selection explicit, add one of these blocks to `model.json`:
+
+```json
+{
+  "structured_outputs_config": {
+    "backend": "auto"
+  }
+}
+```
+
+Use `"backend": "xgrammar"` to force the bundled implementation. Do not add
+the removed request option `guided_decoding_backend`, and do not select
+`guidance` unless you build and validate a custom image containing that
+dependency.
+
 ## `gateway.json`
 
 `gateway.json` is optional and belongs next to `model.json`. The complete
@@ -155,12 +184,66 @@ Important groups:
 | `audio_*` | Local ASR model, device, and chunk overlap |
 | `max_remote_media_bytes` | Download limit for remote content |
 | `context_compression` | Context overflow, rolling-summary, and fallback policy |
-| `rerank` | Named post-score selection strategies and optional SQLite source |
+| `rerank` | Execution limits, post-score strategies, and optional SQLite source |
 | `reasoning` | Thinking mode, output parser, and OpenAI-compatible response field |
+| `embeddings.hybrid` | Dense/sparse output types, batch limit, and sparse-vector limits |
 
 The `pdf_rag.embedding_model` value must name an embedding model already loaded
 in the same Triton server. Retrieval is used only when enough text can be
 extracted from the PDF.
+
+### Hybrid And Sparse Embeddings
+
+The standard `POST /v1/embeddings` contract remains unchanged and returns a
+dense vector. A model explicitly enables lexical sparse or combined output in
+its `gateway.json`:
+
+```json
+{
+  "embeddings": {
+    "hybrid": {
+      "enabled": true,
+      "output_types": ["dense", "sparse"],
+      "max_batch_size": 32,
+      "default_sparse_top_k": null,
+      "max_sparse_top_k": 8192
+    }
+  }
+}
+```
+
+Use `POST /v1/hybrid_embeddings` with `output_types: ["dense", "sparse"]`.
+The response keeps the dense vector in `embedding` and returns a compact sparse
+vector as parallel `sparse_embedding.indices` and
+`sparse_embedding.values` arrays. `sparse_top_k` can cap its non-zero entries.
+The gateway rejects this route for the stock Triton `vllm` backend because its
+request adapter returns dense vectors only. The bundled `vllm_multimodal`
+backend supports BGE-M3 natively and selects vLLM `embed`, `token_classify`, or
+`embed&token_classify` pooling for each request.
+
+The legacy `/v1/embeddings/hybrid` alias remains available for direct gateway
+clients. Do not use it as a LiteLLM pass-through target: LiteLLM 1.97 treats
+URLs containing `/v1/embed` as Cohere routes while processing background logs.
+
+The recommended
+[`vllm_multimodal` profile](../examples/bge-m3-vllm-multimodal/README.md)
+uses vLLM scheduling and loads `sparse_linear.pt` and `colbert_linear.pt`
+through its native `BgeM3EmbeddingModel`. Its `model.json` must set
+`runner: "pooling"` and override the upstream architecture name. Do not fix a
+single `pooler_config.task`, because the backend chooses the task per request.
+
+The separate [Python fallback](../examples/bge-m3-hybrid/README.md) loads the
+same local encoder and sparse head with Transformers. Both profiles are fully
+offline and do not contact Hugging Face at runtime.
+
+An offline LiteLLM deployment can expose the custom route with the exact
+`pass_through_endpoints` entry in
+[`examples/litellm.config.yaml`](../examples/litellm.config.yaml). LiteLLM
+authenticates the request and forwards its JSON and response without converting
+the sparse payload. Internet access is not involved. An OpenAI Python client
+configured with the LiteLLM `base_url` continues to work for dense
+`embeddings.create()` calls; its typed embeddings method always targets the
+standard endpoint, so call the custom hybrid route with an ordinary HTTP POST.
 
 ### Context Compression
 
@@ -218,6 +301,14 @@ requests without `selection` retain the `top_n` behavior.
 {
   "rerank": {
     "default_strategy": "top_n",
+    "execution": {
+      "max_documents_per_request": 256,
+      "default_batch_size": 4,
+      "max_batch_size": 8,
+      "max_batch_tokens": 8192,
+      "default_max_length": 512,
+      "max_length": 8192
+    },
     "strategies": {
       "strict": {
         "method": "top_n_and_threshold",
@@ -232,6 +323,18 @@ requests without `selection` retain the `top_n` behavior.
   }
 }
 ```
+
+The `execution` block bounds peak reranker memory. The gateway splits one
+request into sequential micro-batches, preserves document indices, and merges
+all scores before sorting. Effective batch size is also bounded by
+`max_batch_tokens / max_length`, so longer pairs automatically reduce GPU
+concurrency.
+
+Client values above `max_batch_size` or `max_length` return HTTP `400`; more
+than `max_documents_per_request` documents returns HTTP `413`. The default
+rerank admission policy allows one active request and 64 queued requests per
+model. Increase `admission.rerank.max_inflight` only after validating the
+specific reranker, GPU, and Triton model instance count under load.
 
 Clients select a named policy with
 `"selection": {"strategy": "strict", "parameters": {"top_n": 2}}`.

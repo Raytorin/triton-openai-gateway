@@ -6,10 +6,17 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from gateway.admission import AdmissionController
+from gateway.admission import AdmissionController, load_admission_policy
 
 
 class AdmissionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rerank_is_serialized_by_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            policy = load_admission_policy(Path(directory), "rerank")
+
+        self.assertEqual(1, policy.model_gate.max_inflight)
+        self.assertEqual(64, policy.model_gate.max_queue)
+
     async def test_full_model_queue_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             model_path = Path(directory)

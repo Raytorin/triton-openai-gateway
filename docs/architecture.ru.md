@@ -94,6 +94,8 @@ data URL и сигнатуре содержимого. Поэтому PDF или
 - Прямой Triton-запрос с PDF рендерит страницы; OpenAI endpoint всё равно
   использует map/reduce, чтобы большой документ не обязан был помещаться в один
   запрос engine.
+- Pooling BGE-M3 возвращает dense, sparse либо комбинированные вектора за один
+  проход encoder через отдельный hybrid endpoint.
 
 Remote URL скачивает и проверяет gateway. Сам backend не обращается в сеть.
 

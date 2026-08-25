@@ -184,8 +184,13 @@ def load_admission_policy(model_path: Path, route: str) -> AdmissionPolicy:
         queue_timeout_seconds=_env_float("GATEWAY_QUEUE_TIMEOUT_SECONDS", 30.0),
     )
     prefix = "MEDIA" if route == "media" else route.upper()
-    default_inflight = 4 if route == "media" else 64
-    default_queue = 16 if route == "media" else 256
+    if route == "media":
+        default_inflight, default_queue = 4, 16
+    elif route == "rerank":
+        # A Python reranker normally owns one GPU model instance.
+        default_inflight, default_queue = 1, 64
+    else:
+        default_inflight, default_queue = 64, 256
     model_policy = GatePolicy(
         max_inflight=_configured_int(
             route_config,

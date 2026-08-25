@@ -42,6 +42,7 @@ import triton_python_backend_utils as pb_utils
 from vllm.engine.arg_utils import AsyncEngineArgs
 
 from utils.device_config import local_parallel_world_size
+from utils.hybrid_embeddings import load_pooling_model_metadata
 from utils.metrics import (
     RequestTokenAccumulator,
     RequestTokenMetrics,
@@ -276,6 +277,10 @@ class TritonPythonModel:
         ), f"'{_VLLM_ENGINE_ARGS_FILENAME}' containing vllm engine args must be provided in '{pb_utils.get_model_dir()}'"
         with open(engine_args_filepath) as file:
             self.vllm_engine_config = json.load(file)
+        self.pooling_model_metadata = load_pooling_model_metadata(
+            self.vllm_engine_config,
+            model_dir=pb_utils.get_model_dir(),
+        )
 
         # Validate device and multi-processing settings are currently set based on model/configs.
         self._validate_device_config()
@@ -647,6 +652,7 @@ class TritonPythonModel:
                     self.output_dtype,
                     self.logger,
                     model_name=self.args.get("model_name", ""),
+                    pooling_model_metadata=self.pooling_model_metadata,
                 )
             else:
                 raise ValueError(

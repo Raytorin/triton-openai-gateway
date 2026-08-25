@@ -75,7 +75,12 @@ class RequestTokenAccumulator:
                 self.prompt_tokens = len(prompt_token_ids)
                 self._prompt_recorded = True
 
-        outputs = getattr(request_output, "outputs", None) or []
+        outputs = getattr(request_output, "outputs", None)
+        # Generation RequestOutput exposes a list of CompletionOutput objects,
+        # while pooling requests expose one PoolingOutput object. Pooling has
+        # no generated tokens and must not be treated as an iterable response.
+        if not isinstance(outputs, (list, tuple)):
+            return
         current_lengths = [
             len(getattr(output, "token_ids", None) or []) for output in outputs
         ]

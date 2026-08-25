@@ -168,6 +168,30 @@ class ReasoningSettingsTests(unittest.TestCase):
         self.assertEqual("hidden", loaded.mode)
         self.assertFalse(loaded.expose_reasoning)
 
+    def test_structured_output_can_force_thinking_off(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory)
+            (model_path / "config.json").write_text(
+                '{"model_type":"qwen3"}',
+                encoding="utf-8",
+            )
+            (model_path / "tokenizer_config.json").write_text(
+                '{"chat_template":"{% if enable_thinking %}<think>{% endif %}"}',
+                encoding="utf-8",
+            )
+            (model_path / "gateway.json").write_text(
+                '{"reasoning":{"mode":"separate"}}',
+                encoding="utf-8",
+            )
+            loaded = load_reasoning_settings(
+                model_path,
+                force_disable=True,
+            )
+
+        self.assertEqual("separate", loaded.configured_mode)
+        self.assertEqual("disabled", loaded.mode)
+        self.assertFalse(loaded.enable_thinking)
+
     def test_enabled_mode_without_supported_parser_is_operator_error(self):
         with tempfile.TemporaryDirectory() as directory:
             model_path = Path(directory)
@@ -410,6 +434,90 @@ class ReasoningEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("Final response.", message["content"])
         self.assertEqual("separate", response["reasoning_status"]["mode"])
         self.assertTrue(tokenizer.enable_thinking)
+
+    async def test_structured_output_is_returned_as_visible_content(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string"},
+                "retries": {"type": "integer"},
+            },
+            "required": ["status", "retries"],
+            "additionalProperties": False,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory)
+            (model_path / "model.json").write_text(
+                '{"max_model_len":1024}',
+                encoding="utf-8",
+            )
+            (model_path / "config.json").write_text(
+                '{"model_type":"qwen3"}',
+                encoding="utf-8",
+            )
+            (model_path / "tokenizer_config.json").write_text(
+                '{"chat_template":"{% if enable_thinking %}<think>{% endif %}"}',
+                encoding="utf-8",
+            )
+            (model_path / "gateway.json").write_text(
+                '{"reasoning":{"mode":"separate"}}',
+                encoding="utf-8",
+            )
+            tokenizer = FakeTokenizer()
+            request = ChatCompletionRequest.model_validate(
+                {
+                    "model": "qwen",
+                    "messages": [
+                        {"role": "user", "content": "Return structured JSON"}
+                    ],
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "pipeline_result",
+                            "strict": True,
+                            "schema": schema,
+                        },
+                    },
+                }
+            )
+            with (
+                patch.object(
+                    gateway_app.registry,
+                    "resolve",
+                    return_value=model_path,
+                ),
+                patch.object(gateway_app.registry, "validate_route"),
+                patch.object(
+                    gateway_app.registry,
+                    "get_backend",
+                    return_value="vllm",
+                ),
+                patch.object(
+                    gateway_app.registry,
+                    "get_tokenizer_async",
+                    new=AsyncMock(return_value=(tokenizer, model_path)),
+                ),
+                patch.object(
+                    gateway_app.admission,
+                    "acquire",
+                    new=AsyncMock(return_value=AdmissionLease([])),
+                ),
+                patch.object(
+                    gateway_app,
+                    "call_triton_multimodal",
+                    new=AsyncMock(return_value='{"status":"ok","retries":2}'),
+                ),
+            ):
+                response = await gateway_app.create_chat_completion(request)
+
+        message = response["choices"][0]["message"]
+        self.assertEqual(
+            {"status": "ok", "retries": 2},
+            json.loads(message["content"]),
+        )
+        self.assertNotIn("reasoning_content", message)
+        self.assertEqual("disabled", response["reasoning_status"]["mode"])
+        self.assertFalse(tokenizer.enable_thinking)
 
 
 if __name__ == "__main__":

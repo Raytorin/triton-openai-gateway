@@ -20,6 +20,11 @@ LANGUAGE_PAIRS = (
     ("backends/vllm_multimodal/README.md", "backends/vllm_multimodal/README.ru.md"),
     ("helm/triton-gateway/README.md", "helm/triton-gateway/README.ru.md"),
     ("helm/dcgm-exporter/README.md", "helm/dcgm-exporter/README.ru.md"),
+    ("examples/bge-m3-hybrid/README.md", "examples/bge-m3-hybrid/README.ru.md"),
+    (
+        "examples/bge-m3-vllm-multimodal/README.md",
+        "examples/bge-m3-vllm-multimodal/README.ru.md",
+    ),
 )
 MARKDOWN_LINK = re.compile(r"!?\[[^\]]*]\(([^)]+)\)")
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}")

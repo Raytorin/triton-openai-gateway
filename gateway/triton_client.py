@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -421,10 +422,18 @@ def _is_triton_final_response(result: grpcclient.InferResult) -> bool:
 def _build_grpc_embedding_inputs(
     model_input: str | list[int],
     dimensions: int | None,
+    *,
+    output_types: list[str] | None = None,
+    sparse_top_k: int | None = None,
 ) -> list[grpcclient.InferInput]:
     embedding_request: dict[str, Any] = {"input": model_input, "pooling_params": {}}
     if dimensions is not None:
         embedding_request["pooling_params"]["dimensions"] = [dimensions]
+    if output_types is not None:
+        embedding_request["output_types"] = output_types
+        embedding_request["sparse_format"] = "indices_values"
+    if sparse_top_k is not None:
+        embedding_request["sparse_top_k"] = sparse_top_k
 
     embedding_request_json = json.dumps(embedding_request, ensure_ascii=False)
 
@@ -582,6 +591,162 @@ async def call_triton_embeddings(
             status_code=502,
             detail=f"Triton embeddings gRPC request failed: {exc}",
         ) from exc
+
+
+async def call_triton_hybrid_embeddings(
+    model_name: str,
+    model_input: str | list[int],
+    dimensions: int | None,
+    output_types: list[str],
+    sparse_top_k: int | None,
+) -> tuple[dict[str, Any], int]:
+    inputs = _build_grpc_embedding_inputs(
+        model_input,
+        dimensions,
+        output_types=output_types,
+        sparse_top_k=sparse_top_k,
+    )
+    outputs = [
+        grpcclient.InferRequestedOutput("text_output"),
+        grpcclient.InferRequestedOutput("num_input_tokens"),
+        grpcclient.InferRequestedOutput("num_output_tokens"),
+    ]
+    try:
+        result: dict[str, Any] | None = None
+        prompt_tokens = 0
+        async for item in _stream_grpc_results(
+            "hybrid_embeddings",
+            model_name,
+            inputs,
+            outputs,
+        ):
+            embedding_json = _decode_numpy_first(item.as_numpy("text_output"))
+            if embedding_json is None:
+                continue
+            parsed = json.loads(str(embedding_json))
+            result = _validate_hybrid_embedding_payload(parsed, output_types)
+            prompt_tokens_value = _decode_numpy_first(
+                item.as_numpy("num_input_tokens")
+            )
+            prompt_tokens = int(prompt_tokens_value or 0)
+        if result is None:
+            raise HTTPException(
+                status_code=502,
+                detail="Triton hybrid embeddings response does not contain text_output",
+            )
+        return result, prompt_tokens
+    except HTTPException:
+        raise
+    except InferenceServerException as exc:
+        raise _triton_grpc_error("hybrid embeddings gRPC infer", exc) from exc
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Invalid hybrid embeddings payload from Triton: {exc}",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Triton hybrid embeddings gRPC request failed: {exc}",
+        ) from exc
+
+
+def _validate_hybrid_embedding_payload(
+    payload: Any,
+    output_types: list[str],
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Unexpected hybrid embeddings payload type from Triton: "
+                f"{type(payload).__name__}"
+            ),
+        )
+
+    result: dict[str, Any] = {}
+    if "dense" in output_types:
+        dense = payload.get("dense")
+        if not isinstance(dense, list):
+            raise HTTPException(
+                status_code=502,
+                detail="Hybrid embeddings response is missing dense output",
+            )
+        try:
+            normalized_dense = [float(value) for value in dense]
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="Hybrid embeddings dense output contains non-numeric values",
+            ) from exc
+        if not all(math.isfinite(value) for value in normalized_dense):
+            raise HTTPException(
+                status_code=502,
+                detail="Hybrid embeddings dense output contains non-finite values",
+            )
+        result["dense"] = normalized_dense
+
+    if "sparse" in output_types:
+        sparse = payload.get("sparse")
+        if not isinstance(sparse, dict):
+            raise HTTPException(
+                status_code=502,
+                detail="Hybrid embeddings response is missing sparse output",
+            )
+        indices = sparse.get("indices")
+        values = sparse.get("values")
+        if not isinstance(indices, list) or not isinstance(values, list):
+            raise HTTPException(
+                status_code=502,
+                detail="Sparse embedding must contain indices and values arrays",
+            )
+        if len(indices) != len(values):
+            raise HTTPException(
+                status_code=502,
+                detail="Sparse embedding indices and values lengths differ",
+            )
+        if not all(
+            isinstance(index, int) and not isinstance(index, bool)
+            for index in indices
+        ):
+            raise HTTPException(
+                status_code=502,
+                detail="Sparse embedding indices must be integers",
+            )
+        try:
+            normalized_indices = list(indices)
+            normalized_values = [float(value) for value in values]
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="Sparse embedding contains invalid index or weight values",
+            ) from exc
+        if any(index < 0 for index in normalized_indices):
+            raise HTTPException(
+                status_code=502,
+                detail="Sparse embedding indices must be non-negative",
+            )
+        if len(set(normalized_indices)) != len(normalized_indices):
+            raise HTTPException(
+                status_code=502,
+                detail="Sparse embedding indices must be unique",
+            )
+        if not all(math.isfinite(value) for value in normalized_values):
+            raise HTTPException(
+                status_code=502,
+                detail="Sparse embedding weights must be finite",
+            )
+        if any(value < 0 for value in normalized_values):
+            raise HTTPException(
+                status_code=502,
+                detail="Sparse embedding weights must be non-negative",
+            )
+        result["sparse"] = {
+            "indices": normalized_indices,
+            "values": normalized_values,
+        }
+
+    return result
 
 
 async def call_triton_multimodal(

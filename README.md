@@ -35,12 +35,15 @@ for chat and non-chat models.
 > include model weights, execute external tools, or provide user
 > authentication.
 
+> **Found this project useful?** Consider giving it a GitHub Star. It helps
+> other developers discover the project and supports its continued development.
+
 ## At A Glance
 
 | Area | Included |
 | --- | --- |
 | Client compatibility | OpenAI-style API for LiteLLM, LibreChat, SDKs, and internal clients |
-| Model roles | Text/VL chat, embeddings, and reranking |
+| Model roles | Text/VL chat, dense or hybrid embeddings, and reranking |
 | Multimodal inputs | Images, video, audio, and PDF with bounded preprocessing |
 | Runtime | NVIDIA Triton `26.07`, vLLM `0.24.0`, and Python `3.12` |
 | Operations | Admission queues, cancellation, structured logs, Prometheus metrics, and OTLP traces |
@@ -60,6 +63,7 @@ clients usually need additional protocol and orchestration behavior:
 | Long conversations exceed the model context | Per-model rolling summaries, deterministic truncation, or explicit rejection |
 | Rerank consumers need different cut-off rules | Named score, metadata, threshold, and diversity selection strategies |
 | Reasoning models mix thought and answer text | Configurable hidden or separate reasoning fields for JSON and SSE |
+| Retrieval may need lexical as well as dense vectors | A guarded BGE-M3 endpoint with native vLLM pooling and a Python fallback |
 | Unbounded client traffic can exhaust the pod | Per-route admission queues, timeouts, cancellation, and HTTP `429` |
 | Logs alone do not show the request path | Request IDs, structured logs, Prometheus metrics, and optional OTLP traces |
 | S3 repository agents materialize temporary paths | A watcher repairs vLLM model paths and maintains active model links |
@@ -88,8 +92,10 @@ protocol, prompt rendering, media orchestration, and request controls.
 ## Features
 
 - `POST /v1/chat/completions`, including SSE streaming and client cancellation.
+- OpenAI `response_format` with JSON object and strict JSON Schema output.
 - OpenAI function calling with JSON and Qwen3-Coder XML response parsing.
 - `POST /v1/embeddings` for vLLM pooling models.
+- `POST /v1/hybrid_embeddings` for guarded BGE-M3 dense and sparse output.
 - `POST /rerank`, `/v1/rerank`, and `/v2/rerank` for Triton rerank models.
 - Image, video, audio, and PDF content parts in OpenAI-style messages.
 - Long-document and long-video map/reduce with configurable limits.
@@ -112,12 +118,14 @@ message.
 | Capability | Triton `vllm` | Included `vllm_multimodal` | Python backend |
 | --- | --- | --- | --- |
 | Text chat and streaming | Yes | Yes | Model-specific |
+| Structured JSON output | Yes | Yes | Model-specific |
 | Tool calling | Gateway layer | Gateway layer | Model-specific |
 | Images | Native vLLM input | Native vLLM input | Model-specific |
 | Video | Gateway samples and summarizes frames | Native when the model supports video | Model-specific |
 | PDF | Gateway text/vision map-reduce | Gateway map-reduce; direct calls render pages | Model-specific |
 | Audio | Local ASR before chat | Native when the model supports audio | Model-specific |
-| Embeddings | Yes | Yes | Yes |
+| Dense embeddings | Yes | Yes | Yes |
+| Sparse/hybrid embeddings | No | Native BGE-M3 | BGE-M3 fallback |
 | Reranking | Model-specific | Model-specific | Yes |
 
 Native modality support still depends on the selected model architecture and
@@ -213,8 +221,9 @@ curl -sS http://127.0.0.1:8080/v1/chat/completions \
   }'
 ```
 
-Ready-to-run requests for tools, images, video, audio, PDF, embeddings, and
-reranking are in [API examples](examples/REQUEST_EXAMPLES.en.md).
+Ready-to-run requests for tools, images, video, audio, PDF, dense/hybrid
+embeddings, and reranking are in
+[API examples](examples/REQUEST_EXAMPLES.en.md).
 
 ## API Surface
 
@@ -227,6 +236,7 @@ reranking are in [API examples](examples/REQUEST_EXAMPLES.en.md).
 | `GET /v1/models` | Models known to the Triton repository |
 | `POST /v1/chat/completions` | Chat, tools, and multimodal requests |
 | `POST /v1/embeddings` | Text embeddings |
+| `POST /v1/hybrid_embeddings` | BGE-M3 dense and lexical sparse embeddings |
 | `POST /rerank`, `/v1/rerank`, `/v2/rerank` | Document reranking |
 
 Raw Triton HTTP, gRPC, and metrics remain available on ports `8000`, `8001`,

@@ -26,6 +26,40 @@ curl -s "$GATEWAY_URL/v1/chat/completions" \
   }' | jq
 ```
 
+## Structured JSON Output
+
+`json_schema` передаётся в constrained decoding, а не только добавляется в
+prompt как инструкция. Поле `message.content` остаётся JSON-строкой, которую
+можно разобрать через `jq`:
+
+```bash
+curl -s "$GATEWAY_URL/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "'"$MODEL"'",
+    "messages": [
+      {"role": "user", "content": "Верни город и температуру: Москва, 18 C."}
+    ],
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+        "name": "weather",
+        "strict": true,
+        "schema": {
+          "type": "object",
+          "properties": {
+            "city": {"type": "string"},
+            "temperature_c": {"type": "number"}
+          },
+          "required": ["city", "temperature_c"],
+          "additionalProperties": false
+        }
+      }
+    },
+    "max_tokens": 128
+  }' | jq -r '.choices[0].message.content | fromjson'
+```
+
 ## Reasoning-модели
 
 Серверная policy задаётся в `gateway.json` модели. При
@@ -393,6 +427,76 @@ curl -s "$GATEWAY_URL/v1/embeddings" \
       "Второй текст"
     ]
   }' | jq
+```
+
+## Гибридные и sparse embeddings
+
+`BAAI/bge-m3` может вернуть dense-вектор, лексические sparse-веса либо оба
+представления через отдельный endpoint. Используйте нативный
+[профиль `vllm_multimodal`](bge-m3-vllm-multimodal/README.ru.md) либо
+[Python fallback](bge-m3-hybrid/README.ru.md).
+
+```bash
+export EMBEDDING_MODEL="bge-m3"
+
+curl -s "$GATEWAY_URL/v1/hybrid_embeddings" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "'"$EMBEDDING_MODEL"'",
+    "input": [
+      "Первый текст",
+      "Второй текст"
+    ],
+    "output_types": ["dense", "sparse"]
+  }' | jq
+```
+
+Для вызова через LiteLLM настройте точный pass-through route из
+[`litellm.config.yaml`](litellm.config.yaml), затем отправьте тот же JSON:
+
+```bash
+curl -s "$LITELLM_URL/v1/hybrid_embeddings" \
+  -H "Authorization: Bearer $LITELLM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bge-m3",
+    "input": "Текст для лексического поиска",
+    "output_types": ["sparse"],
+    "sparse_top_k": 256
+  }' | jq
+```
+
+`return_sparse: true` поддерживается как совместимый alias для
+`output_types: ["dense", "sparse"]`. Поле `output_type` принимает `dense`,
+`sparse` или `hybrid`. Эти расширения передаются в hybrid endpoint, а не в
+стандартный `/v1/embeddings`, который намеренно остаётся dense-only.
+
+Пакет OpenAI Python не обращается к OpenAI, когда `base_url` указывает на
+локальный LiteLLM. Обычный метод подходит для dense-ответа, а custom hybrid
+response вызывается низкоуровневым методом клиента:
+
+```python
+import os
+from typing import Any
+
+from openai import OpenAI
+
+client = OpenAI(
+    base_url=os.environ["LITELLM_URL"].rstrip("/") + "/v1",
+    api_key=os.environ["LITELLM_TOKEN"],
+)
+
+dense = client.embeddings.create(model="bge-m3", input="Текст для dense")
+hybrid = client.post(
+    "/hybrid_embeddings",
+    cast_to=dict[str, Any],
+    body={
+        "model": "bge-m3",
+        "input": "Текст для гибридного поиска",
+        "output_types": ["dense", "sparse"],
+        "sparse_top_k": 256,
+    },
+)
 ```
 
 ## Rerank
