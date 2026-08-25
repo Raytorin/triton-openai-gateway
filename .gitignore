@@ -40,3 +40,7 @@ models/
 *.onnx
 *.engine
 *.plan
+
+# Local deployment, capacity profiles, and operator validation scripts
+/examples/mig40-qwen3-reranker/
+/scripts/runtime_contract_check.sh
