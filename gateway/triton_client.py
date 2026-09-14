@@ -425,6 +425,7 @@ def _build_grpc_embedding_inputs(
     *,
     output_types: list[str] | None = None,
     sparse_top_k: int | None = None,
+    lora_name: str | None = None,
 ) -> list[grpcclient.InferInput]:
     embedding_request: dict[str, Any] = {"input": model_input, "pooling_params": {}}
     if dimensions is not None:
@@ -434,6 +435,8 @@ def _build_grpc_embedding_inputs(
         embedding_request["sparse_format"] = "indices_values"
     if sparse_top_k is not None:
         embedding_request["sparse_top_k"] = sparse_top_k
+    if lora_name is not None:
+        embedding_request["lora_name"] = lora_name
 
     embedding_request_json = json.dumps(embedding_request, ensure_ascii=False)
 
@@ -540,8 +543,9 @@ async def call_triton_embeddings(
     model_name: str,
     model_input: str | list[int],
     dimensions: int | None,
+    lora_name: str | None,
 ) -> tuple[list[float], int]:
-    inputs = _build_grpc_embedding_inputs(model_input, dimensions)
+    inputs = _build_grpc_embedding_inputs(model_input, dimensions, lora_name=lora_name)
     outputs = [
         grpcclient.InferRequestedOutput("text_output"),
         grpcclient.InferRequestedOutput("num_input_tokens"),

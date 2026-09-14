@@ -411,6 +411,7 @@ async def create_embeddings(request: EmbeddingsRequest):
                 request.model,
                 model_input,
                 request.dimensions,
+                request.lora_name,
             )
         return index, embedding, prompt_tokens
 
