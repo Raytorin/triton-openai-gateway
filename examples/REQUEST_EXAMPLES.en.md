@@ -85,6 +85,24 @@ curl -sS "$GATEWAY_URL/v1/chat/completions" \
 Set `"include_reasoning": false` to hide reasoning for one request without
 changing the server policy.
 
+## Lora adapter
+
+```bash
+curl -s "$GATEWAY_URL/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "'"$MODEL"'",
+    "messages": [
+      {"role": "user", "content": "Who are you?"}
+    ],
+    "max_tokens": 256,
+    "temperature": 0.2,
+    "lora_name": "finetuned-lora-name"
+  }' | jq
+```
+
+`"lora_name"` parameter is passsed to Triton that can handle it. For instance, VLLM backend finds and loads specific LoRA adapter by using `multi_lora.json` file inside the model directory.  
+
 ## Image: Base64 Data URL
 
 ```bash
