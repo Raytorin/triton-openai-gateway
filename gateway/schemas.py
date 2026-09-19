@@ -58,6 +58,7 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
     debug: bool = False
     include_reasoning: bool | None = None
+    lora_name: str | None = None
 
     model_config = {"extra": "allow"}
 

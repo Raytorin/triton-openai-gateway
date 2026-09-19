@@ -86,6 +86,24 @@ curl -sS "$GATEWAY_URL/v1/chat/completions" \
 Передайте `"include_reasoning": false`, чтобы скрыть reasoning в одном
 запросе, не меняя серверную policy.
 
+## Lora adapter
+
+```bash
+curl -s "$GATEWAY_URL/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "'"$MODEL"'",
+    "messages": [
+      {"role": "user", "content": "Who are you?"}
+    ],
+    "max_tokens": 256,
+    "temperature": 0.2,
+    "lora_name": "finetuned-lora-name"
+  }' | jq
+```
+
+`"lora_name"` параметр передается напрямую в Triton. Например, VLLM-бэкенд определяет путь конкретного LoRA-адаптера и загружает его, ориентируясь на файл `multi_lora.json` в директории с файлами модели.  
+
 ## Image: base64/data URL
 
 ```bash

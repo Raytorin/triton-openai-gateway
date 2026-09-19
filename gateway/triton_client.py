@@ -20,6 +20,7 @@ import tritonclient.grpc as grpcclient
 import tritonclient.grpc.aio as grpc_aio
 from tritonclient.utils import InferenceServerException
 from fastapi import HTTPException
+from grpc.aio import AioRpcError
 
 from .debug import log_chat_response_debug
 from .multimodal import MediaPayload, MediaPayloads
@@ -236,11 +237,14 @@ def _triton_grpc_error(operation: str, exc: Exception) -> HTTPException:
         "does not support 'generate' request",
         "does not support 'embed' request",
     )
+    lora_unrecognized_markers = (
+        "is not supported, we currently support",
+    )
     if any(marker in lowered for marker in limit_markers):
         status_code = 413
     elif any(
         marker in lowered
-        for marker in (*invalid_media_markers, *task_mismatch_markers)
+        for marker in (*invalid_media_markers, *task_mismatch_markers, *lora_unrecognized_markers)
     ):
         status_code = 400
     else:
@@ -783,7 +787,7 @@ async def call_triton_multimodal(
         return last_text
     except HTTPException:
         raise
-    except InferenceServerException as exc:
+    except (InferenceServerException, AioRpcError) as exc:
         raise _triton_grpc_error("generation gRPC infer", exc) from exc
     except Exception as exc:
         raise HTTPException(
