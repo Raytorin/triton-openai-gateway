@@ -238,7 +238,7 @@ def _triton_grpc_error(operation: str, exc: Exception) -> HTTPException:
         "does not support 'embed' request",
     )
     lora_unrecognized_markers = (
-        "is not supported, we currently support"
+        "is not supported, we currently support",
     )
     if any(marker in lowered for marker in limit_markers):
         status_code = 413

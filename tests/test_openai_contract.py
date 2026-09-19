@@ -27,6 +27,20 @@ def request_with(**overrides):
 
 
 class OpenAIParameterTests(unittest.TestCase):
+    def test_lora_name_is_forwarded_to_sampling_parameters(self):
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                sampling = build_sampling_parameters(
+                    request_with(lora_name="finetuned-adapter", stream=stream)
+                )
+                self.assertEqual("finetuned-adapter", sampling["lora_name"])
+
+    def test_absent_lora_name_is_not_sent_to_backend(self):
+        for overrides in ({}, {"lora_name": None}):
+            with self.subTest(overrides=overrides):
+                sampling = build_sampling_parameters(request_with(**overrides))
+                self.assertNotIn("lora_name", sampling)
+
     def test_seed_is_forwarded_to_sampling_parameters(self):
         sampling = build_sampling_parameters(request_with(seed=777))
 
