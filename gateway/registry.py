@@ -53,8 +53,11 @@ def _read_model_capabilities(
     if runner == "pooling":
         # The gateway currently exposes vLLM pooling through /v1/embeddings.
         return frozenset({"embeddings"})
-    if backend in {"vllm", "vllm_multimodal"}:
+    if runner == "generate" or task in {"generate", "generation"}:
         return frozenset({"chat"})
+    # Missing/auto engine options do not establish a generation-only model:
+    # vLLM can infer pooling from its architecture. Let the backend validate
+    # the supported task when the local configuration is inconclusive.
     return None
 
 
