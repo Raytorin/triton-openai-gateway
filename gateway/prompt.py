@@ -363,6 +363,9 @@ def build_sampling_parameters(request: ChatCompletionRequest) -> dict[str, Any]:
     if structured_outputs is not None:
         sampling["structured_outputs"] = structured_outputs
 
+    if request.lora_name is not None:
+        sampling["lora_name"] = request.lora_name
+
     return sampling
 
 
