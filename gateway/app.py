@@ -378,6 +378,13 @@ async def list_models():
 async def create_embeddings(request: EmbeddingsRequest):
     reject_hybrid_options_on_dense_endpoint(request)
     backend = registry.get_backend(request.model)
+    if request.lora_name is not None and backend != "vllm_multimodal":
+        raise HTTPException(
+            status_code=400,
+            detail="Embedding LoRA requires the bundled vllm_multimodal backend. "
+            "Set backend: \"vllm_multimodal\" in config.pbtxt and configure "
+            "enable_lora and multi_lora.json for this model.",
+        )
     model_inputs = build_embedding_inputs(request)
     encoding_format = request.encoding_format or "float"
 
@@ -411,7 +418,7 @@ async def create_embeddings(request: EmbeddingsRequest):
                 request.model,
                 model_input,
                 request.dimensions,
-                request.lora_name,
+                lora_name=request.lora_name,
             )
         return index, embedding, prompt_tokens
 

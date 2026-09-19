@@ -444,8 +444,12 @@ class EmbedRequest(RequestBase):
         logger,
         model_name: str = "",
         pooling_model_metadata: PoolingModelMetadata | None = None,
+        lora_repository: Optional[Dict[str, str]] = None,
+        supported_loras: Optional[List[str]] = None,
     ):
         super().__init__(request, executor_callback, output_dtype, logger, model_name)
+        self.lora_repository = lora_repository or {}
+        self.supported_loras = supported_loras or []
         self.pooling_model_metadata = pooling_model_metadata or PoolingModelMetadata()
         self.output_spec = EmbeddingOutputSpec(
             output_types=("dense",),
@@ -460,6 +464,13 @@ class EmbedRequest(RequestBase):
             self.triton_request, "embedding_request"
         ).as_numpy()[0]
         embedding_request = json.loads(embedding_request.decode("utf-8"))
+        lora_name = embedding_request.get("lora_name")
+        self.lora_request = None
+        if lora_name is not None:
+            lora_int_id = self.supported_loras.index(lora_name) + 1
+            self.lora_request = LoRARequest(
+                str(lora_int_id), lora_int_id, self.lora_repository[lora_name]
+            )
         # prompt
         prompt = embedding_request["input"]
         if isinstance(prompt, str):
@@ -505,7 +516,9 @@ class EmbedRequest(RequestBase):
             task=self.output_spec.task,
         )
         # Create PoolingParams for embeddings
-        response_iterator = self.executor_callback(prompt, pooling_params, self.id)
+        response_iterator = self.executor_callback(
+            prompt, pooling_params, self.id, lora_request=self.lora_request
+        )
 
         status = "completed"
         try:

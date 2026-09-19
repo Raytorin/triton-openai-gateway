@@ -239,6 +239,7 @@ def _triton_grpc_error(operation: str, exc: Exception) -> HTTPException:
     )
     lora_unrecognized_markers = (
         "is not supported, we currently support",
+        "lora feature is not enabled",
     )
     if any(marker in lowered for marker in limit_markers):
         status_code = 413
@@ -547,7 +548,7 @@ async def call_triton_embeddings(
     model_name: str,
     model_input: str | list[int],
     dimensions: int | None,
-    lora_name: str | None,
+    lora_name: str | None = None,
 ) -> tuple[list[float], int]:
     inputs = _build_grpc_embedding_inputs(model_input, dimensions, lora_name=lora_name)
     outputs = [
@@ -587,7 +588,7 @@ async def call_triton_embeddings(
         return embedding, prompt_tokens
     except HTTPException:
         raise
-    except InferenceServerException as exc:
+    except (InferenceServerException, AioRpcError) as exc:
         raise _triton_grpc_error("embeddings gRPC infer", exc) from exc
     except json.JSONDecodeError as exc:
         raise HTTPException(
