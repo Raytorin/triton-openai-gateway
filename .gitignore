@@ -44,3 +44,9 @@ models/
 # Local deployment, capacity profiles, and operator validation scripts
 /examples/mig40-qwen3-reranker/
 /scripts/runtime_contract_check.sh
+
+# Local incident notes
+/docs/incidents/
+
+# Local plans and technical notes
+/.local/
