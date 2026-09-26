@@ -4,7 +4,6 @@
 """Stateless Responses protocol adapter. Generation remains shared with Chat."""
 from __future__ import annotations
 
-import time
 import uuid
 from typing import Any, Literal
 
@@ -148,11 +147,21 @@ def to_chat(request: ResponsesRequest) -> ChatCompletionRequest:
     if request.parallel_tool_calls is False:
         reject("parallel_tool_calls=false is not supported by the current backend")
     tools = []
+    tool_names: set[str] = set()
     for tool in request.tools or []:
         only_keys(tool, {"type", "name", "description", "parameters", "strict"}, "tool parameter")
         if tool.get("type") != "function":
             reject("Only client-executed function tools are supported")
-        required_string(tool, "name")
+        name = required_string(tool, "name")
+        if name in tool_names:
+            reject("Function names must be unique")
+        tool_names.add(name)
+        if tool.get("parameters") is not None and not isinstance(tool["parameters"], dict):
+            reject("Function parameters must be a JSON Schema object")
+        if tool.get("description") is not None and not isinstance(tool["description"], str):
+            reject("Function description must be a string")
+        if tool.get("strict") is not None and type(tool["strict"]) is not bool:
+            reject("Function strict must be a boolean")
         if tool.get("strict") is True:
             reject("Strict function argument validation is not supported; use text.format for constrained JSON output")
         tools.append({"type": "function", "function": {k: v for k, v in tool.items() if k != "type"}})
@@ -162,6 +171,8 @@ def to_chat(request: ResponsesRequest) -> ChatCompletionRequest:
         if choice.get("type") != "function":
             reject("Only function tool_choice is supported")
         choice = {"type": "function", "function": {"name": required_string(choice, "name")}}
+        if choice["function"]["name"] not in tool_names:
+            reject("Selected function must be present in tools")
     elif choice is not None and choice not in ("auto", "none", "required"):
         reject("Unsupported tool_choice")
     if choice in ("required",) and not tools:
@@ -243,9 +254,10 @@ async def create_response(request: ResponsesRequest, response: Response):
         chat = to_chat(request)
     except ValidationError as exc:
         reject(str(exc))
+    except (TypeError, ValueError):
+        reject("Malformed Responses input or parameter type")
+    if request.stream:
+        reject("Responses streaming arrives in the next stage; use stream=false")
     result = await generation.generate(chat, context_mode="truncate" if request.truncation == "auto" else "disabled")
-    if isinstance(result, GenerationStream):
-        await result.aclose()
-        reject("Responses streaming is not available yet")
     response.headers.update(result.headers)
     return serialize_result(request, result)
