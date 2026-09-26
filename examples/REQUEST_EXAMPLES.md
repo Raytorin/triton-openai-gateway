@@ -86,6 +86,60 @@ curl -sS "$GATEWAY_URL/v1/chat/completions" \
 Передайте `"include_reasoning": false`, чтобы скрыть reasoning в одном
 запросе, не меняя серверную policy.
 
+## Lora adapter
+
+```bash
+curl -s "$GATEWAY_URL/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "'"$MODEL"'",
+    "messages": [
+      {"role": "user", "content": "Who are you?"}
+    ],
+    "max_tokens": 256,
+    "temperature": 0.2,
+    "lora_name": "finetuned-lora-name"
+  }' | jq
+```
+
+`"lora_name"` параметр передается напрямую в Triton. Например, VLLM-бэкенд определяет путь конкретного LoRA-адаптера и загружает его, ориентируясь на файл `multi_lora.json` в директории с файлами модели.  
+
+## Embeddings с LoRA-адаптером
+
+Для embeddings с LoRA используйте поставляемый backend `vllm_multimodal`.
+Штатный backend Triton `vllm` не передаёт адаптер embeddings в engine; gateway
+возвращает HTTP 400 при передаче `lora_name` этому backend, чтобы не выдавать
+векторы базовой модели молча. Без `lora_name` используется базовая модель.
+
+Для pooling-модели, поддерживающей LoRA в vLLM, укажите
+`backend: "vllm_multimodal"` в `config.pbtxt`. Добавьте `"enable_lora": true` и
+`"runner": "pooling"` в её `model.json`, сохранив путь к модели и остальные
+настройки engine. В закреплённой версии vLLM 0.24 параметр `runner` поддерживается;
+устаревший параметр `task` добавлять не нужно. Если engine определяет задачу
+автоматически и она не указана явно, gateway оставляет проверку backend.
+Явная конфигурация только для генерации по-прежнему запрещает embeddings.
+
+Поместите `multi_lora.json` в каталог модели Triton (рядом с `config.pbtxt`),
+сопоставив имена адаптеров с локальными путями внутри контейнера:
+
+```json
+{"embedding-adapter": "/models/adapters/embedding-adapter"}
+```
+
+```bash
+curl -sS "$GATEWAY_URL/v1/embeddings" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "embedding-model",
+    "input": ["search query", "document text"],
+    "lora_name": "embedding-adapter"
+  }' | jq
+```
+
+Неизвестный адаптер или отключённая LoRA возвращают HTTP 400. Архитектура модели
+и адаптер должны поддерживать pooling с LoRA: адаптер для генерации сам по себе
+не превращает генеративную модель в embedding-модель.
+
 ## Image: base64/data URL
 
 ```bash

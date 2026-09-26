@@ -653,6 +653,8 @@ class TritonPythonModel:
                     self.logger,
                     model_name=self.args.get("model_name", ""),
                     pooling_model_metadata=self.pooling_model_metadata,
+                    lora_repository=getattr(self, "lora_repository", None),
+                    supported_loras=getattr(self, "supported_loras", None),
                 )
             else:
                 raise ValueError(
@@ -810,10 +812,15 @@ class TritonPythonModel:
         verified_request = None
         lora_error = None
         lora_name = None
+        embedding_input_tensor = pb_utils.get_input_tensor_by_name(
+            request, "embedding_request"
+        )
         parameters_input_tensor = pb_utils.get_input_tensor_by_name(
             request, "sampling_parameters"
         )
-        if parameters_input_tensor:
+        if embedding_input_tensor is not None:
+            parameters = embedding_input_tensor.as_numpy()[0].decode("utf-8")
+        elif parameters_input_tensor is not None:
             parameters = parameters_input_tensor.as_numpy()[0].decode("utf-8")
         else:
             parameters = request.parameters()

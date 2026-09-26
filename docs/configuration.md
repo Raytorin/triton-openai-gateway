@@ -53,6 +53,14 @@ For the S3 repository flow, the watcher creates a stable link under
 version. The root follows `WATCHER_MODEL_DIR`, `TMP_ROOT`, Triton's
 `TMPDIR`, then `/tmp`, in that order.
 
+The watcher tracks published links. After a link is removed, it deletes the
+corresponding temporary version on the next scan (normally within one second).
+When replacing a link, cleanup follows the switch immediately. The enclosing
+`folder*` checkout and metadata are removed once no numeric versions or active
+references remain. Other versions, shared active references, and paths outside
+the watcher root are preserved; the source S3 repository is untouched. Never
+published directories are not treated as garbage: Triton may still be loading them.
+
 ## `config.pbtxt`
 
 Use Triton `KIND_MODEL` for a vLLM engine that owns multiple GPUs. A minimal
@@ -399,6 +407,25 @@ set the corresponding environment variables.
 | `GATEWAY_MAX_REQUEST_BODY_BYTES` | `268435456` | Maximum HTTP request body |
 | `TOKENIZER_PRELOAD` | `true` | Preload active tokenizers at startup |
 | `TOKENIZER_TRUST_REMOTE_CODE` | `true` | Allow model tokenizer remote code |
+
+### Gateway Watchdog
+
+A background supervisor probes the local `/health` endpoint, which does not call
+Triton. After three consecutive failures it sends SIGTERM to Uvicorn, waits up to
+10 seconds, uses SIGKILL if necessary, and starts a new process. A crashed process
+is restarted without waiting for three probes. Startup allows 60 seconds until
+the first successful response; a single failed probe does not trigger a restart.
+When previously live Triton stops responding, the supervisor stops the gateway
+and exits so container shutdown can finish. Restarting interrupts in-flight gateway requests.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `GATEWAY_HEALTH_INTERVAL_SECONDS` | `1` | Probe interval |
+| `GATEWAY_HEALTH_TIMEOUT_SECONDS` | `1` | Per-request HTTP timeout |
+| `GATEWAY_HEALTH_FAILURE_THRESHOLD` | `3` | Consecutive failure threshold |
+| `GATEWAY_STARTUP_GRACE_SECONDS` | `60` | Startup grace until first successful response |
+| `GATEWAY_STOP_GRACE_SECONDS` | `10` | Shutdown grace after SIGTERM |
+| `GATEWAY_RESTART_DELAY_SECONDS` | `2` | Delay before restarting |
 
 ### Admission Control
 
