@@ -486,3 +486,29 @@ helm upgrade --install triton-openai-gateway ./helm/triton-gateway \
 ```
 
 Примеры установки находятся в [README Helm chart](../helm/triton-gateway/README.ru.md).
+
+### Лимит выходных токенов
+
+Chat принимает `max_completion_tokens` и legacy-алиас `max_tokens`. Равные
+значения допустимы, конфликтующие дают 400. Лимиты — только целые числа > 0.
+Без параметра/null выбирается 4096 токенов, при thinking — 8192, с уменьшением
+до свободного контекста без удаления уже помещающейся истории. Явный лимит
+молча не уменьшается. Thinking и аргументы функций входят в общий бюджет.
+Usage пока оценивается повторной токенизацией.
+
+Глобальные defaults: `GATEWAY_DEFAULT_OUTPUT_TOKENS=4096`,
+`GATEWAY_REASONING_DEFAULT_OUTPUT_TOKENS=8192`, `GATEWAY_MAX_OUTPUT_TOKENS=32768`.
+Настройки модели находятся в `gateway.json`, не в аргументах движка vLLM:
+
+```json
+{"generation":{"default_output_tokens":4096,"reasoning_default_output_tokens":8192,"max_output_tokens":32768}}
+```
+
+Потолок модели не превышает глобальный; оба default должны помещаться в потолок.
+Для прежнего поведения задайте оба default равными 256. Нужен положительный
+`model.json.max_model_len`; если он не задан/автоматический, явно укажите
+консервативный `generation.context_window`. Он не расширяет известный runtime
+context. Служебное огромное значение tokenizer не считается runtime context.
+Применяется существующий safety margin. Внутренние summary-вызовы сохраняют
+свои бюджеты. Заголовки `X-Output-Token-Limit`, `X-Output-Token-Limit-Source`,
+`X-Token-Usage-Source` и структурированные логи показывают принятое решение.

@@ -483,3 +483,29 @@ helm upgrade --install triton-openai-gateway ./helm/triton-gateway \
 
 See the [chart README](../helm/triton-gateway/README.md) for focused deployment
 examples.
+
+### Output token budgets
+
+Chat uses `max_completion_tokens` (or legacy `max_tokens`). Equal aliases are
+accepted; conflicting values return 400. Limits must be positive integers.
+Omitted/null limits select 4096 tokens normally or 8192 with thinking enabled,
+reduced to the available context without discarding an already fitting history.
+Explicit limits are never silently clamped. Thinking and function arguments
+count toward the same output budget. Usage is currently estimated by tokenization.
+
+Global environment defaults: `GATEWAY_DEFAULT_OUTPUT_TOKENS=4096`,
+`GATEWAY_REASONING_DEFAULT_OUTPUT_TOKENS=8192`, `GATEWAY_MAX_OUTPUT_TOKENS=32768`.
+Configure a model in `gateway.json` (not vLLM engine arguments):
+
+```json
+{"generation":{"default_output_tokens":4096,"reasoning_default_output_tokens":8192,"max_output_tokens":32768}}
+```
+
+The model cap cannot exceed the global cap; both defaults must fit the cap.
+Set both defaults to 256 to restore the old fallback. A positive runtime
+`model.json.max_model_len` is required. If absent/automatic, explicitly set a
+conservative `generation.context_window`; it never expands a known runtime limit.
+Do not use tokenizer sentinel values as runtime context limits. The existing
+context safety margin applies. Internal summary calls retain their own budgets.
+`X-Output-Token-Limit`, `X-Output-Token-Limit-Source` and `X-Token-Usage-Source`
+report the decision; structured logs include the input/media/context reserves.

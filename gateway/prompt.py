@@ -339,8 +339,14 @@ def oldest_removable_turn(conversation: list[dict[str, Any]]) -> list[int]:
     ]
 
 
-def build_sampling_parameters(request: ChatCompletionRequest) -> dict[str, Any]:
-    max_tokens = request.max_completion_tokens or request.max_tokens or 256
+def build_sampling_parameters(
+    request: ChatCompletionRequest, *, output_token_limit: int | None = None,
+) -> dict[str, Any]:
+    from .token_budget import requested_output_limit
+    requested = requested_output_limit(request)
+    max_tokens = output_token_limit if output_token_limit is not None else (
+        requested if requested is not None else 4096
+    )
     sampling: dict[str, Any] = {
         "max_tokens": int(max_tokens),
         "temperature": float(request.temperature if request.temperature is not None else 0.2),
