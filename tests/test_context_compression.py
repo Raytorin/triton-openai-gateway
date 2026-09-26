@@ -11,6 +11,7 @@ from fastapi import HTTPException
 
 from gateway.admission import AdmissionLease
 import gateway.app as gateway_app
+import gateway.generation as generation
 from gateway.context_compression import (
     SUMMARY_MARKER,
     ContextCompressionSettings,
@@ -629,7 +630,7 @@ class ContextCompressionEndpointTests(unittest.IsolatedAsyncioTestCase):
                     new=AsyncMock(return_value=AdmissionLease([])),
                 ),
                 patch.object(
-                    gateway_app,
+                    generation,
                     "call_triton_multimodal",
                     new=triton_call,
                 ),
