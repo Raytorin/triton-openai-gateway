@@ -93,6 +93,85 @@ def test_incomplete_hides_raw_reasoning():
     assert "secret chain" not in response.text
 
 
+def stream_result(events, closed, error=None):
+    from gateway.generation_types import GenerationStream
+    async def source():
+        try:
+            for event in events:
+                yield event
+            if error:
+                raise error
+        finally:
+            closed.append(True)
+    return GenerationStream(source(), {"X-Output-Token-Limit": "4096"})
+
+
+def decoded_events(response):
+    import json
+    return [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+
+
+def test_stream_text_tools_ids_lifecycle_and_hidden_reasoning():
+    from gateway.generation_types import GenerationEvent as E
+    closed = []
+    source = stream_result([
+        E("x", 123, "test", {"role": "assistant"}),
+        E("x", 123, "test", {"reasoning_content": "secret"}),
+        E("x", 123, "test", {"content": "Hello "}), E("x", 123, "test", {"content": "world"}),
+        E("x", 123, "test", {"tool_calls": [{"index": 0, "id": "call_a", "function": {"name": "weather", "arguments": '{"city":'}}]}),
+        E("x", 123, "test", {"tool_calls": [{"index": 0, "function": {"arguments": '"Paris"}'}}]}),
+        E("x", 123, "test", {}, "tool_calls", {"prompt_tokens": 5, "completion_tokens": 4, "total_tokens": 9})], closed)
+    with patch("gateway.responses.generation.generate", AsyncMock(return_value=source)):
+        response = TestClient(app).post("/responses", json={"model": "test", "input": "Hello", "stream": True})
+    assert response.status_code == 200 and "[DONE]" not in response.text
+    events = decoded_events(response)
+    assert [e["sequence_number"] for e in events] == list(range(len(events)))
+    assert events[0]["type"] == "response.created"
+    assert events[-1]["type"] == "response.completed"
+    final = events[-1]["response"]
+    assert events[0]["response"]["id"] == final["id"]
+    assert final["output"][0]["content"][0]["text"] == "Hello world"
+    assert final["output"][1]["arguments"] == '{"city":"Paris"}'
+    assert final["output"][1]["call_id"] == "call_a"
+    assert "secret" not in response.text
+    for e in events:
+        if "item_id" in e:
+            assert e["item_id"] == final["output"][e["output_index"]]["id"]
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("after_start", [False, True])
+def test_stream_backend_error_and_release(after_start):
+    from fastapi import HTTPException
+    from gateway.generation_types import GenerationEvent as E
+    closed = []
+    source = stream_result([E("x", 123, "test", {"content": "Hi"})] if after_start else [], closed,
+                           HTTPException(502, "Backend unavailable"))
+    with patch("gateway.responses.generation.generate", AsyncMock(return_value=source)):
+        response = TestClient(app).post("/responses", json={"model": "test", "input": "Hello", "stream": True})
+    if after_start:
+        events = decoded_events(response)
+        assert [e["type"] for e in events[-2:]] == ["error", "response.failed"]
+        assert events[-1]["response"]["status"] == "failed"
+    else:
+        assert response.status_code == 502
+        assert response.json()["error"]["message"] == "Backend unavailable"
+    assert source.closed and closed == [True]
+
+
+def test_stream_incomplete_and_empty_unterminated_stream():
+    from gateway.generation_types import GenerationEvent as E
+    for events, status in [([E("x", 123, "test", {}, "length")], 200), ([], 502)]:
+        source = stream_result(events, [])
+        with patch("gateway.responses.generation.generate", AsyncMock(return_value=source)):
+            response = TestClient(app).post("/responses", json={"model": "test", "input": "Hello", "stream": True})
+        assert response.status_code == status
+        if status == 200:
+            last = decoded_events(response)[-1]
+            assert last["type"] == "response.incomplete"
+            assert last["response"]["output"] == []
+
+
 def test_media_validation_and_limits(tmp_path):
     import asyncio
     import base64
