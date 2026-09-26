@@ -111,3 +111,60 @@ class GenerationStreamTests(unittest.IsolatedAsyncioTestCase):
             await until_disconnected(operation(), SimpleNamespace(receive=receive))
         self.assertEqual(exc.exception.status_code, 499)
         self.assertEqual(closed, [True])
+
+    async def test_cancellation_as_preparation_returns_closes_unclaimed_stream(self):
+        import asyncio
+        from types import SimpleNamespace
+        from gateway.generation_types import GenerationEvent, GenerationStream, until_disconnected
+
+        closed = []
+        async def backend():
+            try:
+                yield GenerationEvent("x", 1, "test", {"content": "hello"})
+            finally:
+                closed.append(True)
+        for phase in ("generation", "watcher_cleanup"):
+            with self.subTest(phase=phase):
+                closed.clear()
+                stream = GenerationStream(backend(), {})
+                stream.lease = AsyncMock()
+                await anext(stream.events)
+                watching = asyncio.Event()
+                async def operation():
+                    await watching.wait()
+                    if phase == "generation":
+                        owner.cancel()
+                    return stream
+                async def receive():
+                    try:
+                        watching.set()
+                        await asyncio.Future()
+                    finally:
+                        if phase == "watcher_cleanup":
+                            owner.cancel()
+                owner = asyncio.create_task(until_disconnected(operation(), SimpleNamespace(receive=receive)))
+                with self.assertRaises(asyncio.CancelledError):
+                    await owner
+                self.assertEqual(closed, [True])
+                self.assertTrue(stream.closed)
+                stream.lease.release.assert_awaited_once()
+
+    async def test_successful_preparation_transfers_stream_ownership(self):
+        import asyncio
+        from types import SimpleNamespace
+        from gateway.generation_types import GenerationStream, until_disconnected
+
+        async def backend():
+            yield None
+        stream = GenerationStream(backend(), {})
+        stream.lease = AsyncMock()
+        async def operation():
+            return stream
+        async def receive():
+            await asyncio.Future()
+        result = await until_disconnected(operation(), SimpleNamespace(receive=receive))
+        self.assertIs(result, stream)
+        self.assertFalse(stream.closed)
+        stream.lease.release.assert_not_awaited()
+        await stream.aclose()
+        stream.lease.release.assert_awaited_once()
