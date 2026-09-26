@@ -7,11 +7,11 @@ from __future__ import annotations
 import uuid
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Response, Request
 from pydantic import BaseModel, Field
 
 from . import generation
-from .generation_types import GenerationResult, GenerationStream
+from .generation_types import GenerationResult, GenerationStream, ManagedStreamingResponse, until_disconnected
 from .schemas import ChatCompletionRequest, ChatMessage, ResponseFormat
 
 
@@ -248,7 +248,7 @@ router = APIRouter()
 
 @router.post("/responses")
 @router.post("/v1/responses")
-async def create_response(request: ResponsesRequest, response: Response):
+async def create_response(request: ResponsesRequest, response: Response, http_request: Request):
     from pydantic import ValidationError
     try:
         chat = to_chat(request)
@@ -256,8 +256,26 @@ async def create_response(request: ResponsesRequest, response: Response):
         reject(str(exc))
     except (TypeError, ValueError):
         reject("Malformed Responses input or parameter type")
-    if request.stream:
-        reject("Responses streaming arrives in the next stage; use stream=false")
-    result = await generation.generate(chat, context_mode="truncate" if request.truncation == "auto" else "disabled")
+    from .observability import set_request_model
+    set_request_model(request.model)
+    result = await until_disconnected(generation.generate(chat, context_mode="truncate" if request.truncation == "auto" else "disabled"), http_request)
+    if isinstance(result, GenerationStream):
+        from .responses_stream import response_events
+        try:
+            async def first_backend_event():
+                async for event in result.events:
+                    if event.finish_reason is not None or event.usage is not None or any(
+                        key != "role" and value for key, value in event.delta.items()
+                    ):
+                        return event
+                return None
+            first = await until_disconnected(first_backend_event(), http_request)
+            if first is None:
+                raise HTTPException(502, "Backend stream ended without a completion status")
+        except BaseException:
+            await result.aclose()
+            raise
+        return ManagedStreamingResponse(response_events(request, result, first),
+            media_type="text/event-stream", headers=result.headers, close=result.aclose)
     response.headers.update(result.headers)
     return serialize_result(request, result)

@@ -1029,7 +1029,7 @@ async def stream_triton_native_multimodal_to_openai(
     media: MediaPayloads,
     reasoning_settings: ReasoningSettings | None = None,
 ) -> AsyncIterator[str]:
-    async for event in stream_triton_multimodal_to_openai(
+    async with aclosing(stream_triton_multimodal_to_openai(
         request,
         tokenizer,
         prompt,
@@ -1037,8 +1037,9 @@ async def stream_triton_native_multimodal_to_openai(
         [],
         media,
         reasoning_settings,
-    ):
-        yield event
+    )) as events:
+        async for event in events:
+            yield event
 
 
 async def call_triton_rerank(
@@ -1545,7 +1546,8 @@ async def stream_python_chat_to_openai(
             )
         )
     if tool_calls:
-        finish_reason = "tool_calls"
+        if finish_reason != "length":
+            finish_reason = "tool_calls"
         for index, tool_call in enumerate(tool_calls):
             yield sse_event(
                 build_openai_chunk(
@@ -1562,7 +1564,7 @@ async def stream_python_chat_to_openai(
                     },
                 )
             )
-    elif remaining_text:
+    if remaining_text:
         yield sse_event(
             build_openai_chunk(
                 response_id,
@@ -1643,7 +1645,8 @@ async def stream_tool_aware_response(
             )
         )
     if tool_calls:
-        finish_reason = "tool_calls"
+        if finish_reason != "length":
+            finish_reason = "tool_calls"
         for index, tool_call in enumerate(tool_calls):
             yield sse_event(
                 build_openai_chunk(
@@ -1660,7 +1663,7 @@ async def stream_tool_aware_response(
                     },
                 )
             )
-    elif remaining_text:
+    if remaining_text:
         yield sse_event(
             build_openai_chunk(
                 response_id,
@@ -1749,7 +1752,8 @@ async def stream_tool_aware_multimodal_response(
             )
         )
     if tool_calls:
-        finish_reason = "tool_calls"
+        if finish_reason != "length":
+            finish_reason = "tool_calls"
         for index, tool_call in enumerate(tool_calls):
             yield sse_event(
                 build_openai_chunk(
@@ -1766,7 +1770,7 @@ async def stream_tool_aware_multimodal_response(
                     },
                 )
             )
-    elif remaining_text:
+    if remaining_text:
         yield sse_event(
             build_openai_chunk(
                 response_id,
@@ -1807,7 +1811,7 @@ async def stream_tool_aware_native_multimodal_response(
     tool_parser: str | None = None,
     reasoning_settings: ReasoningSettings | None = None,
 ) -> AsyncIterator[str]:
-    async for event in stream_tool_aware_multimodal_response(
+    async with aclosing(stream_tool_aware_multimodal_response(
         request,
         tokenizer,
         prompt,
@@ -1817,5 +1821,6 @@ async def stream_tool_aware_native_multimodal_response(
         tool_parser,
         media,
         reasoning_settings,
-    ):
-        yield event
+    )) as events:
+        async for event in events:
+            yield event

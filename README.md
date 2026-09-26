@@ -293,3 +293,6 @@ the [Product-Specific Terms for NVIDIA AI Products](https://www.nvidia.com/en-us
 and the licenses of components included in that image. See
 [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before
 redistributing source code or built images.
+
+See the [Responses API contract](docs/responses.md) for stateless JSON/SSE, tools,
+images, supported parameters and the shared output-token policy.

@@ -59,6 +59,12 @@ jobs:
           --cov-report=xml
           --cov-fail-under=50
 
+      - name: Verify OpenAI SDK and LiteLLM Responses compatibility
+        run: |
+          python -m venv .local/client-venv
+          .local/client-venv/bin/python -m pip install --requirement requirements-client.txt
+          .local/client-venv/bin/python tests/client_compatibility.py --server-python "$(command -v python)"
+
       - name: Run media preprocessing smoke test
         run: python tests/runtime_media_smoke.py
 
