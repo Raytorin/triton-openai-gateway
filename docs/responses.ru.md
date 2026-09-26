@@ -100,6 +100,42 @@ with client.responses.stream(model="your-model", input="Привет", store=Fal
 а не вложенной формой Chat. В многоходовом диалоге добавляйте response.output
 в виде dict и соответствующие function_call_output к исходной истории input.
 
+## Диалог без хранения
+
+База данных и volume для Responses не нужны. Приложение клиента хранит историю
+и повторно передаёт её в каждом запросе. `instructions` также передаются каждый
+раз. Например, после ответа на первый вопрос:
+
+```python
+history = [{"role": "user", "content": "Назови столицу Франции"}]
+first = client.responses.create(
+    model="your-model", input=history, instructions="Отвечай кратко",
+    store=False, max_output_tokens=128,
+)
+if first.status != "completed":
+    raise RuntimeError(f"Ответ не завершён: {first.status}")
+history.extend(item.model_dump(exclude_none=True) for item in first.output)
+history.append({"role": "user", "content": "А какая река через неё протекает?"})
+second = client.responses.create(
+    model="your-model", input=history, instructions="Отвечай кратко",
+    store=False, max_output_tokens=128,
+)
+print(second.output_text)
+```
+
+При использовании tools до следующего сообщения добавьте результаты всех вызовов
+с соответствующими `call_id`. Не выполняйте незавершённый вызов из ответа
+`status=incomplete`: аргументы могут быть обрезаны. `output_text` содержит только
+текст; полный `output` нужен для сохранения вызовов функций.
+
+`store=false` означает отсутствие сохраняемого объекта Responses. Это не настройка
+логирования: gateway debug/prompt logging и журналы LiteLLM настраиваются отдельно.
+ID ответа служит для согласования событий текущего ответа; получить результат
+позже по ID или продолжить через `previous_response_id` нельзя. Повторный POST
+создаёт новую генерацию, дедупликация запросов не предоставляется. Если приложение
+автоматически повторяет запросы, оно должно отдельно контролировать повторное
+выполнение клиентских функций.
+
 ## Streaming и ошибки
 
 События: response.created/in_progress; output_item.added/done;

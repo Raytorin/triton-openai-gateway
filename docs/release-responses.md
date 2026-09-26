@@ -30,3 +30,31 @@ Runtime smoke is a separate release gate requiring explicit authorization for
 DevZone targets. Test disconnect and backend cancellation on every supported
 transport used in production. Stateful features remain a subsequent release;
 no SQLite or identity proxy contract is enabled by this change.
+
+## Conditions for user rollout
+
+The first release operates without a database; persistence and related APIs are
+deferred. Before exposing the route to users:
+
+- Configure the actual context window for every published model and verify its
+  tools/vision/JSON Schema on the chosen runtime. The example gateway.json does
+  not establish capabilities for an arbitrary model.
+- Check both the direct route and the deployed LiteLLM proxy, including its
+  defaults and parameter mapping. Both Responses routes must pass through the
+  existing proxy authentication and quotas.
+- Check proxy timeouts and SSE buffering, `incomplete` termination, errors after
+  streaming starts, and admission release on disconnect. HTTP 200 for SSE does
+  not by itself mean generation completed successfully.
+- Measure queues, latency and GPU use with defaults 4096/8192 under an agreed
+  workload. `max_output_tokens` is an upper bound, not a promised response length.
+  Set lower per-model defaults/caps where needed. Admission is process-local;
+  adding replicas does not establish a shared load limit for one Triton server.
+- Build and check the release container, record its digest and the previous
+  working image for rollback. Local Python CI does not exercise the full NVIDIA
+  base runtime. When restoring defaults to 256, account for gateway.json
+  overrides; global environment variables do not override per-model settings.
+
+The temporary Accelerate audit exception expires at 2026-10-10 00:00 UTC and does
+not fix the vulnerability; see [SECURITY.md](../SECURITY.md) for its scope.
+Live runtime checks and any DevZone changes require separate authorization for
+the specific target and scope.

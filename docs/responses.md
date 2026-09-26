@@ -99,6 +99,41 @@ For tools, use flat Responses definitions (`{"type":"function","name":"..."}`),
 not the nested Chat shape. For multiple turns append `response.output` as dicts
 and the matching `function_call_output` items to your original input history.
 
+## Conversation without storage
+
+Responses requires no database or persistence volume. The client application
+keeps history and resends it on each request. Send `instructions` on every turn
+as well. For example:
+
+```python
+history = [{"role": "user", "content": "Name the capital of France"}]
+first = client.responses.create(
+    model="your-model", input=history, instructions="Answer briefly",
+    store=False, max_output_tokens=128,
+)
+if first.status != "completed":
+    raise RuntimeError(f"Response did not complete: {first.status}")
+history.extend(item.model_dump(exclude_none=True) for item in first.output)
+history.append({"role": "user", "content": "Which river runs through it?"})
+second = client.responses.create(
+    model="your-model", input=history, instructions="Answer briefly",
+    store=False, max_output_tokens=128,
+)
+print(second.output_text)
+```
+
+When using tools, append results for every call, with matching `call_id` values,
+before the next message. Do not execute an unfinished call from a response with
+`status=incomplete`: its arguments may be truncated. `output_text` contains only
+text; retain the full `output` to preserve function calls.
+
+`store=false` means no persisted Responses object. It is not a logging setting:
+gateway debug/prompt logging and LiteLLM logs are configured separately. Response
+IDs correlate events within the current response; they cannot retrieve results
+later or continue with `previous_response_id`. A repeated POST starts a new
+generation; request deduplication is not provided. Applications that retry requests
+must separately control repeated execution of client-side functions.
+
 ## Streaming and errors
 
 Events include response.created/in_progress; output_item.added/done;
