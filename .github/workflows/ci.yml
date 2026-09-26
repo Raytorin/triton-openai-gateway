@@ -44,11 +44,7 @@ jobs:
           python scripts/check_python_environment.py
 
       - name: Audit Python dependencies
-        run: |
-          pip-audit --requirement requirements-test.txt --progress-spinner off
-          pip-audit \
-            --requirement docker/triton-chat-gateway-requirements.txt \
-            --progress-spinner off
+        run: python scripts/audit_dependencies.py
 
       - name: Run unit tests with coverage
         run: >-
