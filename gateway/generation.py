@@ -44,6 +44,7 @@ from .prompt import (
     build_usage,
     completion_reached_token_limit,
     fit_conversation_to_context,
+    oldest_removable_turn,
     has_tool_result,
     prompt_token_count,
     selected_tools,
@@ -117,6 +118,48 @@ def _estimate_media_context_tokens(media, media_settings) -> int:
     )
     audio_tokens = len(media.audios) * 512
     return image_tokens + video_tokens + audio_tokens
+
+
+def _additional_media_tokens(tokenizer, conversation, tools, settings, thinking):
+    """Reserve only media tokens not already represented in the rendered prompt.
+
+    Image/video/audio expansion is a conservative estimate, not backend usage.
+    """
+    media = extract_media_payloads(conversation)
+    estimate = _estimate_media_context_tokens(media, settings)
+    if not estimate:
+        return 0
+    text_only = []
+    for message in conversation:
+        message = dict(message)
+        if isinstance(message.get("content"), list):
+            message["content"] = [part for part in message["content"]
+                                  if isinstance(part, dict) and part.get("type") == "text"]
+        text_only.append(message)
+    full = render_chat_prompt(tokenizer, conversation, tools, enable_thinking=thinking)
+    text = render_chat_prompt(tokenizer, text_only, tools, enable_thinking=thinking)
+    embedded = max(0, prompt_token_count(tokenizer, full) - prompt_token_count(tokenizer, text))
+    return max(0, estimate - embedded)
+
+
+def _prepare_responses_context(tokenizer, conversation, tools, window, reserve,
+                               settings, media_settings, thinking):
+    """Stateless truncation removes complete oldest turns; never summarizes."""
+    fitted = list(conversation)
+    dropped = 0
+    while True:
+        prompt = render_chat_prompt(tokenizer, fitted, tools, enable_thinking=thinking)
+        tokens = prompt_token_count(tokenizer, prompt)
+        media_tokens = _additional_media_tokens(tokenizer, fitted, tools, media_settings, thinking)
+        if tokens + media_tokens + reserve + settings.safety_margin_tokens <= window:
+            return ContextPreparation(fitted, prompt, tokens, settings.mode,
+                                      "truncate" if dropped else "none", dropped_messages=dropped)
+        removable = oldest_removable_turn(fitted) if settings.mode == "truncate" else []
+        if not removable:
+            raise HTTPException(400, "Input and output budget exceed the model context window; "
+                                "reduce input/max_output_tokens or allow truncation=auto")
+        fitted = [message for i, message in enumerate(fitted) if i not in removable]
+        dropped += len(removable)
 
 
 async def _generate_context_summary(
@@ -313,6 +356,13 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         )
     conversation = reclassify_media_content(conversation)
     request_media = extract_media_payloads(conversation)
+    if context_mode is not None and (request_media.audios or request_media.videos or request_media.pdfs):
+        raise HTTPException(400, "Responses supports text and images only; use Chat for audio, video and PDF")
+    if context_mode is not None and request_media.images:
+        from .responses_media import prepare_images, validate_vision
+        validate_vision(model_path, registry.resolve_tokenizer_path(model_path))
+        conversation = await prepare_images(conversation, media_settings)
+        request_media = extract_media_payloads(conversation)
     if context_mode is None and request_media.has_any and media_settings.reset_history_on_new_media:
         conversation, removed_history_messages = isolate_latest_media_turn(conversation)
         if removed_history_messages:
@@ -403,22 +453,8 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         else None,
     )
     media = extract_media_payloads(conversation)
-    if backend == "vllm_multimodal" and media.has_any:
-        media = await materialize_native_remote_media(model_path, media)
-        native_settings = load_vllm_media_settings(model_path)
-        media = replace(
-            media,
-            parameters={
-                "image_max_pixels": native_settings.image_max_pixels,
-                "video_fps": native_settings.video_fps,
-                "video_max_frames": native_settings.video_max_frames,
-                "video_max_pixels": native_settings.video_max_pixels,
-                "pdf_dpi": native_settings.pdf_dpi,
-                "pdf_max_pixels": native_settings.pdf_max_pixels,
-            },
-        )
-    images = [payload.data for payload in media.images]
-    reserved_media_tokens = _estimate_media_context_tokens(media, media_settings)
+    reserved_media_tokens = _additional_media_tokens(
+        tokenizer, conversation, tools, media_settings, reasoning_settings.enable_thinking)
     # Automatic defaults preserve an already fitting prompt. Reserve one token
     # only when input itself overflows; apply the permitted policy once, then
     # select the final budget against the resulting prompt.
@@ -432,23 +468,29 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         effective_context_settings = replace(context_settings, mode="disabled")
     context_started_at = time.monotonic()
     try:
-        context_preparation = await prepare_conversation_context(
-            model_name=request.model,
-            tokenizer=tokenizer,
-            conversation=conversation,
-            tools=tools,
-            max_model_len=limits.context_window,
-            max_completion_tokens=reserve,
-            reserved_media_tokens=reserved_media_tokens,
-            settings=effective_context_settings,
-            summary_generator=lambda previous, source: _generate_context_summary(
-                request.model,
-                context_settings,
-                previous,
-                source,
-            ),
-            enable_thinking=reasoning_settings.enable_thinking,
-        )
+        if context_mode is not None:
+            context_preparation = _prepare_responses_context(
+                tokenizer, conversation, tools, limits.context_window,
+                requested or 1, context_settings, media_settings,
+                reasoning_settings.enable_thinking)
+        else:
+            context_preparation = await prepare_conversation_context(
+                model_name=request.model,
+                tokenizer=tokenizer,
+                conversation=conversation,
+                tools=tools,
+                max_model_len=limits.context_window,
+                max_completion_tokens=reserve,
+                reserved_media_tokens=reserved_media_tokens,
+                settings=effective_context_settings,
+                summary_generator=lambda previous, source: _generate_context_summary(
+                    request.model,
+                    context_settings,
+                    previous,
+                    source,
+                ),
+                enable_thinking=reasoning_settings.enable_thinking,
+            )
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -480,6 +522,24 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
     conversation = context_preparation.conversation
     prompt = context_preparation.prompt
     prompt_tokens = context_preparation.prompt_tokens
+    media = extract_media_payloads(conversation)
+    if backend == "vllm_multimodal" and media.has_any:
+        media = await materialize_native_remote_media(model_path, media)
+        native_settings = load_vllm_media_settings(model_path)
+        media = replace(
+            media,
+            parameters={
+                "image_max_pixels": native_settings.image_max_pixels,
+                "video_fps": native_settings.video_fps,
+                "video_max_frames": native_settings.video_max_frames,
+                "video_max_pixels": native_settings.video_max_pixels,
+                "pdf_dpi": native_settings.pdf_dpi,
+                "pdf_max_pixels": native_settings.pdf_max_pixels,
+            },
+        )
+    images = [payload.data for payload in media.images]
+    reserved_media_tokens = _additional_media_tokens(
+        tokenizer, conversation, tools, media_settings, reasoning_settings.enable_thinking)
     budget = choose_budget(limits, requested, prompt_tokens=prompt_tokens,
                            media_tokens=reserved_media_tokens,
                            safety_margin=context_settings.safety_margin_tokens)
@@ -796,14 +856,12 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         reasoning_result,
     )
     finish_reason = (
-        "tool_calls"
-        if tool_calls
-        else "length"
+        "length"
         if (
             (reasoning_result.incomplete and not remaining_text)
             or completion_reached_token_limit(usage, sampling_parameters)
         )
-        else "stop"
+        else "tool_calls" if tool_calls else "stop"
     )
     log_chat_response_debug(
         request,

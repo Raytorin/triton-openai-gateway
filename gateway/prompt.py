@@ -324,9 +324,6 @@ def oldest_removable_turn(conversation: list[dict[str, Any]]) -> list[int]:
         return []
 
     start = candidates[0]
-    if conversation[start].get("role") != "user":
-        return [start]
-
     end = latest_user_index
     for index in range(start + 1, latest_user_index):
         if conversation[index].get("role") == "user":
