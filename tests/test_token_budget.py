@@ -115,3 +115,8 @@ def test_generation_keeps_history_and_reports_effective_budget(tmp_path):
         assert "old question old answer new question" in infer.call_args.args[1]
         assert infer.call_args.args[2]["max_tokens"] == 30
     asyncio.run(run())
+
+
+def test_cap_below_fallback_defaults_is_valid(tmp_path):
+    policy = limits(tmp_path, config={"max_output_tokens": 1024})
+    assert choose_budget(policy, None, prompt_tokens=10, media_tokens=0, safety_margin=64).effective == 1024

@@ -84,8 +84,6 @@ def load_generation_limits(model_path: Path, *, thinking: bool) -> GenerationLim
         _env("GATEWAY_DEFAULT_OUTPUT_TOKENS", 4096)), "default_output_tokens")
     reasoning = _positive(config.get("reasoning_default_output_tokens",
         _env("GATEWAY_REASONING_DEFAULT_OUTPUT_TOKENS", 8192)), "reasoning_default_output_tokens")
-    if regular > cap or reasoning > cap:
-        raise HTTPException(500, "Generation defaults must not exceed max_output_tokens")
     # A gateway override is an explicit conservative bound, never an expansion
     # of a known runtime limit. Tokenizer sentinel values are deliberately unused.
     runtime = _json(model_path / "model.json").get("max_model_len")

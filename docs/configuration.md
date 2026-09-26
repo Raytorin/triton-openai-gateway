@@ -501,7 +501,7 @@ Configure a model in `gateway.json` (not vLLM engine arguments):
 {"generation":{"default_output_tokens":4096,"reasoning_default_output_tokens":8192,"max_output_tokens":32768}}
 ```
 
-The model cap cannot exceed the global cap; both defaults must fit the cap.
+The model cap cannot exceed the global cap. Automatic defaults are bounded by the cap.
 Set both defaults to 256 to restore the old fallback. A positive runtime
 `model.json.max_model_len` is required. If absent/automatic, explicitly set a
 conservative `generation.context_window`; it never expands a known runtime limit.
