@@ -1,0 +1,20 @@
+# Merge these settings into an existing LiteLLM proxy configuration.
+# Use OpenAI SDK/HTTP clients with base_url=http://litellm:4000/gateway/v1.
+# The body must contain the gateway's model name; this route skips provider
+# adaptation and model alias mapping. Validate key/model permissions and
+# quota/accounting behavior separately for the deployed LiteLLM version.
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  pass_through_endpoints:
+    - path: /gateway/v1/responses
+      target: http://triton-inference-server:8080/v1/responses
+      methods: [POST]
+      auth: true
+      include_subpath: false
+      timeout: 300
+    - path: /gateway/v1/chat/completions
+      target: http://triton-inference-server:8080/v1/chat/completions
+      methods: [POST]
+      auth: true
+      include_subpath: false
+      timeout: 300

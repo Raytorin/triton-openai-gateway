@@ -89,11 +89,19 @@ response = client.responses.create(
 )
 print(response.output_text)
 
-with client.responses.stream(model="your-model", input="Привет", store=False) as stream:
+final = None
+with client.responses.create(
+    model="your-model", input="Привет", store=False, stream=True,
+) as stream:
     for event in stream:
         if event.type == "response.output_text.delta":
             print(event.delta, end="")
-    final = stream.get_final_response()
+        elif event.type in {"response.completed", "response.incomplete", "response.failed"}:
+            final = event.response
+if final is None:
+    raise RuntimeError("Поток завершился без терминального ответа")
+if final.status != "completed":
+    print(final.status, final.incomplete_details or final.error)
 ```
 
 Функции описываются плоским форматом Responses (`{"type":"function","name":"..."}`),
@@ -175,3 +183,38 @@ Fixture не проверяет реальный Triton GPU или развёр�
 JSON Schema, длинный/thinking вывод и disconnect. Проверяются фактический маршрут,
 max_output_tokens, остановка backend и освобождение admission.
 Локальный CI не обращается к DevZone и ничего туда не развёртывает.
+
+## Проверенные особенности LiteLLM и OpenAI SDK
+
+На локальной Qwen3-0.6B через Triton/OpenVINO CPU и LiteLLM proxy 1.97.0
+проверены текст, JSON/SSE, история, функции, truncation, thinking и disconnect.
+Эта проверка использует реальную генерацию, но не подтверждает vLLM/CUDA,
+vision, LoRA и принудительное соблюдение JSON Schema. OpenVINO-backend тестового
+стенда не поддерживает constrained output. Его ограничение нельзя переносить
+на vLLM или считать успешной проверкой JSON Schema.
+
+Обнаружены различия на стороне клиентов и прокси:
+
+| Путь | Поведение |
+| --- | --- |
+| Gateway напрямую | Явный положительный лимит сохраняется; 0, boolean и отрицательные значения отклоняются |
+| LiteLLM proxy 1.97.0, обычный `openai/` маршрут | `max_output_tokens` от 1 до 15 увеличивается до 16; 0, отрицательные целые и boolean также преобразуются в 16 |
+| LiteLLM SDK 1.102.1, `litellm.responses` | Такое же преобразование лимита; `drop_params=false` его не отключает |
+| LiteLLM SDK 1.102.1, незавершённый поток | В проверенном сценарии без видимого текста событие переименовывается в `response.completed`, но внутри остаётся `response.status=incomplete` и причина `max_output_tokens` |
+| OpenAI SDK 2.54.0, `get_final_response()` | Helper ожидает `response.completed` и выбрасывает RuntimeError при `response.incomplete`; используйте терминальные события, как в примере выше |
+
+Для точного сохранения gateway-контракта проверен отдельный
+[passthrough-маршрут LiteLLM](../examples/litellm.responses-passthrough.yaml).
+Обращайтесь к нему через OpenAI SDK или обычный HTTP-клиент с
+`base_url=http://litellm:4000/gateway/v1`. В этом режиме на локальном proxy
+сохранились лимит 1, ошибки 400 для 0/boolean, SSE и функция с её результатом;
+запрос без ключа получил 401. `litellm.responses` как клиент всё ещё может
+преобразовать параметры до отправки даже на passthrough URL.
+
+Passthrough передаёт имя модели gateway напрямую и пропускает provider adapter.
+Он не гарантирует те же model aliases, учёт стоимости и ограничения virtual keys,
+что обычный provider route: проверьте эти свойства в своей конфигурации прокси.
+Аутентификацию маршрута оставляйте включённой. Обычный LiteLLM-маршрут пригоден
+для проверенных сценариев, но не обеспечивает точный контракт малых лимитов.
+Эти различия теперь проверяет клиентский fixture; зелёный CI означает известное
+поведение закреплённых версий, а не отсутствие перечисленных ограничений.

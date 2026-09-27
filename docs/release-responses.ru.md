@@ -59,3 +59,9 @@ backend. Stateful-возможности остаются следующим р�
 и не исправляет уязвимость; условия указаны в [SECURITY.ru.md](../SECURITY.ru.md).
 Проверки реального runtime и любые изменения DevZone требуют отдельного
 согласования целевого ресурса и объёма действий.
+
+Локальная проверка с реальным Qwen3-0.6B/Triton/OpenVINO и LiteLLM выявила
+преобразование малых лимитов native-маршрутом LiteLLM и особенности обработки
+incomplete в SDK. Для строгого контракта проверен отдельный authenticated
+passthrough с OpenAI SDK/HTTP-клиентом; см. [ограничения и пример](responses.ru.md#проверенные-особенности-litellm-и-openai-sdk).
+CPU-проверка не закрывает приёмку vLLM/CUDA, vision, LoRA и constrained JSON Schema.

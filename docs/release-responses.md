@@ -58,3 +58,9 @@ The temporary Accelerate audit exception expires at 2026-10-10 00:00 UTC and doe
 not fix the vulnerability; see [SECURITY.md](../SECURITY.md) for its scope.
 Live runtime checks and any DevZone changes require separate authorization for
 the specific target and scope.
+
+A local real-model check with Qwen3-0.6B/Triton/OpenVINO and LiteLLM exposed
+small-limit conversion in the native LiteLLM route and SDK incomplete handling
+differences. A separate authenticated passthrough route with OpenAI SDK/HTTP
+clients was verified for the strict contract; see [limitations and configuration](responses.md#verified-litellm-and-openai-sdk-behavior).
+The CPU check does not close vLLM/CUDA, vision, LoRA or constrained JSON Schema acceptance.

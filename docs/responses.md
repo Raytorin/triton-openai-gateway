@@ -88,11 +88,19 @@ response = client.responses.create(
 )
 print(response.output_text)
 
-with client.responses.stream(model="your-model", input="Say hello", store=False) as stream:
+final = None
+with client.responses.create(
+    model="your-model", input="Say hello", store=False, stream=True,
+) as stream:
     for event in stream:
         if event.type == "response.output_text.delta":
             print(event.delta, end="")
-    final = stream.get_final_response()
+        elif event.type in {"response.completed", "response.incomplete", "response.failed"}:
+            final = event.response
+if final is None:
+    raise RuntimeError("Stream ended without a terminal response")
+if final.status != "completed":
+    print(final.status, final.incomplete_details or final.error)
 ```
 
 For tools, use flat Responses definitions (`{"type":"function","name":"..."}`),
@@ -173,3 +181,38 @@ Before release, run an approved runtime smoke for text, images, functions,
 JSON Schema, long/thinking output and client disconnect. Check forwarded route,
 max_output_tokens, measured backend cancellation and released admission slots.
 No DevZone inference or deployment is part of the local CI suite.
+
+## Verified LiteLLM and OpenAI SDK behavior
+
+Local Qwen3-0.6B on Triton/OpenVINO CPU with LiteLLM proxy 1.97.0 was used to
+verify text, JSON/SSE, history, functions, truncation, thinking and disconnect.
+These checks use real generation, but do not establish vLLM/CUDA, vision, LoRA
+or constrained JSON Schema support. The local OpenVINO backend does not support
+constrained output; this limitation is not evidence about vLLM and is not a
+successful JSON Schema runtime check.
+
+Client and proxy differences observed:
+
+| Path | Behavior |
+| --- | --- |
+| Direct gateway | Preserves explicit positive limits; rejects zero, booleans and negative values |
+| LiteLLM proxy 1.97.0, normal `openai/` route | Raises `max_output_tokens` from 1–15 to 16; also converts zero, negative integers and booleans to 16 |
+| LiteLLM SDK 1.102.1, `litellm.responses` | Applies the same limit conversion; `drop_params=false` does not disable it |
+| LiteLLM SDK 1.102.1, incomplete stream | In the tested case with no visible text, relabels the terminal event as `response.completed` while keeping `response.status=incomplete` and reason `max_output_tokens` |
+| OpenAI SDK 2.54.0, `get_final_response()` | Requires `response.completed` and raises RuntimeError on `response.incomplete`; consume terminal events as in the example above |
+
+To preserve the gateway contract exactly, a separate
+[LiteLLM passthrough route](../examples/litellm.responses-passthrough.yaml) was
+verified. Use OpenAI SDK or a plain HTTP client with
+`base_url=http://litellm:4000/gateway/v1`. On the local proxy this preserved limit 1,
+HTTP 400 for zero/booleans, SSE and the function round trip; a request without a
+key received HTTP 401. Using `litellm.responses` as the client can still transform
+parameters before sending them, even with a passthrough URL.
+
+Passthrough forwards the gateway model name directly and skips the provider
+adapter. It does not guarantee the same model aliases, cost accounting or
+virtual-key restrictions as a normal provider route; verify these properties
+in the deployed proxy configuration. Keep route authentication enabled. The normal
+LiteLLM route works for the tested scenarios but does not preserve the exact
+small-limit contract. The client fixture now checks these differences; green CI
+means the pinned versions behave as documented, not that these limitations are absent.
