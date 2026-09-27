@@ -126,3 +126,38 @@ class ManagedStreamingResponse(StreamingResponse):
             await super().__call__(scope, receive, send)
         finally:
             await self._close()
+
+
+async def until_disconnected(operation, request=None):
+    """Cancel preparation/inference even before response headers can be sent."""
+    if request is None:
+        return await operation
+    import asyncio
+    async def watch():
+        while True:
+            message = await request.receive()
+            if message["type"] == "http.disconnect":
+                return
+    task = asyncio.create_task(operation)
+    watcher = asyncio.create_task(watch())
+    try:
+        try:
+            done, _ = await asyncio.wait({task, watcher}, return_when=asyncio.FIRST_COMPLETED)
+            if task in done:
+                return await task
+            raise HTTPException(499, "Client disconnected")
+        finally:
+            for pending in (task, watcher):
+                if not pending.done():
+                    pending.cancel()
+            with anyio.CancelScope(shield=True):
+                await asyncio.gather(task, watcher, return_exceptions=True)
+    except BaseException:
+        # Cancellation can win as generation returns or while the disconnect
+        # watcher is closing. The caller never received ownership of the stream.
+        with anyio.CancelScope(shield=True):
+            if task.done() and not task.cancelled() and task.exception() is None:
+                abandoned = task.result()
+                if isinstance(abandoned, GenerationStream):
+                    await abandoned.aclose()
+        raise

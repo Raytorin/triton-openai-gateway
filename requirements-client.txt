@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Raytorin
+# SPDX-License-Identifier: Apache-2.0
+# Isolated compatibility environment: LiteLLM requires newer httpx than runtime.
+openai==2.54.0
+litellm==1.102.1

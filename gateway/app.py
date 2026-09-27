@@ -9,7 +9,7 @@ import json
 import logging
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -52,7 +52,7 @@ from .tracing import shutdown_tracing
 
 
 from .generation import registry, admission, generate
-from .generation_types import GenerationStream, chat_events, ManagedStreamingResponse
+from .generation_types import GenerationStream, chat_events, ManagedStreamingResponse, until_disconnected
 
 
 @asynccontextmanager
@@ -495,8 +495,9 @@ async def rerank(request: RerankRequest):
 
 
 @app.post("/v1/chat/completions")
-async def create_chat_completion(request: ChatCompletionRequest, response: Response = None):
-    result = await generate(request)
+async def create_chat_completion(request: ChatCompletionRequest, response: Response = None, http_request: Request = None):
+    set_request_model(request.model)
+    result = await until_disconnected(generate(request), http_request)
     if isinstance(result, GenerationStream):
         return ManagedStreamingResponse(
             _guard_openai_stream(chat_events(result)),
