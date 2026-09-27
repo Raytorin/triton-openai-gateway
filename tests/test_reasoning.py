@@ -12,6 +12,7 @@ import numpy as np
 
 from gateway.admission import AdmissionLease
 import gateway.app as gateway_app
+import gateway.generation as generation
 from gateway.prompt import (
     build_usage,
     completion_reached_token_limit,
@@ -420,7 +421,7 @@ class ReasoningEndpointTests(unittest.IsolatedAsyncioTestCase):
                     new=AsyncMock(return_value=AdmissionLease([])),
                 ),
                 patch.object(
-                    gateway_app,
+                    generation,
                     "call_triton_multimodal",
                     new=AsyncMock(
                         return_value="Inspect first.</think>Final response."
@@ -503,7 +504,7 @@ class ReasoningEndpointTests(unittest.IsolatedAsyncioTestCase):
                     new=AsyncMock(return_value=AdmissionLease([])),
                 ),
                 patch.object(
-                    gateway_app,
+                    generation,
                     "call_triton_multimodal",
                     new=AsyncMock(return_value='{"status":"ok","retries":2}'),
                 ),

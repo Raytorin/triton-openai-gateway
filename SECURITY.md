@@ -35,3 +35,23 @@ Remote media, large request bodies, PDF parsing, video decoding, and long-lived
 streams are resource-sensitive inputs. Keep the default network restrictions and
 configure hard size, duration, pixel, queue, and timeout limits for your
 environment.
+
+## Temporary Dependency Audit Exception
+
+For issue #28, CI temporarily accepts **PYSEC-2026-3804** (aliases
+GHSA-4j2p-28q2-5m79 / CVE-2026-69112) only while the runtime requirements pin
+`accelerate==1.14.0`. The exception expires at **2026-10-10 00:00 UTC**;
+`scripts/audit_dependencies.py` then automatically runs the unmodified audit.
+Changing the package version also removes this exception. Other advisories,
+other dependencies and scanner failures remain blocking. Test requirements
+receive no exception. CI prints the exception whenever it is used.
+
+This is temporary risk acceptance, not a fix. Malicious checkpoint shard indexes
+can reference files outside the model directory or special files that block the
+loader. Only load reviewed models from controlled repositories. Keep this gate
+separate from release approval; replace the exception with a verified upstream
+fix or a tested patch. Accelerate 1.15.0 clears the current advisory version range
+but retains the affected loader code, so a version bump alone is insufficient.
+
+See the [advisory](https://github.com/advisories/GHSA-4j2p-28q2-5m79) and
+[upstream fix proposal](https://github.com/huggingface/accelerate/pull/4214).

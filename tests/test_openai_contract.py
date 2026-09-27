@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from gateway.admission import AdmissionLease
 import gateway.app as gateway_app
+import gateway.generation as generation
 from gateway.openai_contract import normalize_system_messages
 from gateway.prompt import build_sampling_parameters, render_chat_prompt
 from gateway.schemas import ChatCompletionRequest
@@ -178,7 +179,7 @@ class FinishReasonRegressionTests(unittest.IsolatedAsyncioTestCase):
                     new=AsyncMock(return_value=AdmissionLease([])),
                 ),
                 patch.object(
-                    gateway_app,
+                    generation,
                     "call_triton_multimodal",
                     new=AsyncMock(return_value="one two three"),
                 ),

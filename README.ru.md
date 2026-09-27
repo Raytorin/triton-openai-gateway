@@ -251,6 +251,7 @@ Raw Triton HTTP, gRPC и metrics остаются доступными на по
 | [Конфигурация](docs/configuration.ru.md) | Файлы модели, `gateway.json`, environment и Helm |
 | [Эксплуатация](docs/operations.ru.md) | Health, метрики, логи, tracing и диагностика |
 | [Миграция на Triton 26.07](docs/migration-26.07.ru.md) | Runtime pins, совместимость и production-проверка |
+| [Sparse и hybrid embeddings](docs/sparse-embeddings.ru.md) | Запросы BGE-M3, параметры и формат sparse-векторов |
 | [Примеры API](examples/REQUEST_EXAMPLES.md) | Чат, media, tools, embeddings и rerank |
 | [Собственный backend](backends/vllm_multimodal/README.ru.md) | Контракт нативных мультимодальных input Triton |
 | [Helm deployment](helm/triton-gateway/README.ru.md) | Установка в Kubernetes и основные values |

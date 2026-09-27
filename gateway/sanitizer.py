@@ -19,8 +19,8 @@ DEFAULT_CHAT_STOP_SEQUENCES = [
 THINK_OPEN_TAGS = ("<think>", "<thinking>")
 THINK_CLOSE_TAGS = ("</think>", "</thinking>")
 CHAT_ROLE_MARKER_RE = re.compile(
-    r"(?:^|\n)\s*\[?\s*(?:user|assistant|asistant|system)\s*\]?\s*:?\s*\n",
-    re.IGNORECASE,
+    r"^[ \t]*\[?[ \t]*(?:user|assistant|asistant|system)[ \t]*\]?[ \t]*:?[ \t]*\n",
+    re.IGNORECASE | re.MULTILINE,
 )
 PROMPT_LEAK_MARKER_RE = re.compile(
     r"(?:^|\n)\s*user[^\n]{0,160}\n\s*/no_think\b",
