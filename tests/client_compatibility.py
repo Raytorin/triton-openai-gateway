@@ -37,6 +37,11 @@ def serve():
             message = {"content": '{"answer":"sunny"}' if request.response_format else "It is sunny"}
             finish = "stop"
         usage = {"prompt_tokens": 5, "completion_tokens": 4, "total_tokens": 9}
+        if any(m.content == "exhaust-output" for m in request.messages):
+            # Model a backend that exhausts its budget before visible output.
+            message, finish = {"content": ""}, "length"
+            count = request.max_completion_tokens or 4096
+            usage = {"prompt_tokens": 5, "completion_tokens": count, "total_tokens": 5 + count}
         headers = {"X-Output-Token-Limit": str(request.max_completion_tokens or 4096)}
         if not request.stream:
             return GenerationResult("chat-1", 123, request.model, message, finish, usage, headers=headers)
@@ -118,8 +123,51 @@ def check_clients(url):
     assert "max_output_tokens" not in captured[7]["body"]
     assert captured[1]["body"]["max_output_tokens"] == 77
     assert captured[8]["body"]["max_output_tokens"] == 77
+    # Characterize the provider adapter boundary: LiteLLM raises small limits
+    # before they reach our API. This is not gateway compatibility for 1..15.
+    boundary_start = len(captured)
+    direct = client.responses.create(model="test", input="Hello", max_output_tokens=1, store=False)
+    adapted = lite(input="Hello", max_output_tokens=1, store=False)
+    assert direct.max_output_tokens == 1
+    assert adapted.max_output_tokens == 16
+    for invalid in (0, -1, True, False):
+        try:
+            client.responses.create(model="test", input="Hello", max_output_tokens=invalid, store=False)
+        except openai.BadRequestError:
+            pass
+        else:
+            raise AssertionError(f"Gateway accepted invalid limit: {invalid!r}")
+        assert lite(input="Hello", max_output_tokens=invalid, store=False).max_output_tokens == 16
+    for name, create in (("openai", lambda **kw: client.responses.create(model="test", **kw)), ("litellm", lite)):
+        events = list(create(input="exhaust-output", stream=True, max_output_tokens=16, store=False))
+        # LiteLLM 1.102.1 relabels the terminal event but preserves response.status.
+        expected_type = "response.incomplete" if name == "openai" else "response.completed"
+        assert events[-1].type == expected_type
+        assert events[-1].response.status == "incomplete"
+        assert events[-1].response.output == []
+        assert events[-1].response.incomplete_details.reason == "max_output_tokens"
+    # This pinned SDK helper only returns response.completed. Applications must
+    # consume terminal events directly when incomplete/failed are possible.
+    with client.responses.stream(model="test", input="exhaust-output", max_output_tokens=16, store=False) as stream:
+        terminal = [e for e in stream if e.type == "response.incomplete"]
+        assert len(terminal) == 1
+        try:
+            stream.get_final_response()
+        except RuntimeError as exc:
+            assert "response.completed" in str(exc)
+        else:
+            raise AssertionError("Revisit SDK incomplete handling: helper behavior changed")
+    captured = httpx.get(url+"/captured").json()
+    boundary = captured[boundary_start:]
+    assert boundary[0]["body"]["max_output_tokens"] == 1
+    assert boundary[1]["body"]["max_output_tokens"] == 16
+    for index in range(2, 10, 2):
+        assert boundary[index+1]["body"]["max_output_tokens"] == 16
     print(json.dumps({"openai": version("openai"), "litellm": version("litellm"),
-        "requests": len(captured), "route": "/v1/responses", "injected_default_limit": False}))
+        "requests": len(captured), "route": "/v1/responses", "injected_default_limit": False,
+        "litellm_minimum_explicit_limit": 16, "litellm_invalid_integer_limits_normalized": True,
+        "sdk_incomplete_requires_terminal_event_handling": True,
+        "litellm_incomplete_event_type": "response.completed"}))
     client.close()
 
 
