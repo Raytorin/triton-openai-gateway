@@ -90,6 +90,9 @@ app = FastAPI(
 )
 app.add_middleware(RequestContextMiddleware)
 
+from .responses import router as responses_router
+app.include_router(responses_router)
+
 
 @app.exception_handler(HTTPException)
 async def log_http_exception(_request, exc: HTTPException):
@@ -103,7 +106,8 @@ async def log_http_exception(_request, exc: HTTPException):
     )
     return JSONResponse(
         status_code=exc.status_code,
-        content={"detail": exc.detail},
+        content=({"error": {"message": str(exc.detail), "type": "invalid_request_error" if exc.status_code < 500 else "server_error", "param": None, "code": None}}
+                 if _request.url.path in {"/responses", "/v1/responses"} else {"detail": exc.detail}),
         headers=exc.headers,
     )
 
@@ -127,8 +131,9 @@ async def log_request_validation_exception(_request, exc: RequestValidationError
         validation_errors=diagnostics,
     )
     return JSONResponse(
-        status_code=422,
-        content={"detail": jsonable_encoder(exc.errors())},
+        status_code=400 if _request.url.path in {"/responses", "/v1/responses"} else 422,
+        content=({"error": {"message": "; ".join(str(e["msg"]) for e in diagnostics), "type": "invalid_request_error", "param": None, "code": None}}
+                 if _request.url.path in {"/responses", "/v1/responses"} else {"detail": jsonable_encoder(exc.errors())}),
     )
 
 

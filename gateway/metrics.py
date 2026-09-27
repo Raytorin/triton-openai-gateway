@@ -219,6 +219,8 @@ _KNOWN_PATHS = {
     "/v1/rerank",
     "/v2/rerank",
     "/v1/chat/completions",
+    "/v1/responses",
+    "/responses",
 }
 
 
