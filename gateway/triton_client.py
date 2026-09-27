@@ -1545,6 +1545,17 @@ async def stream_python_chat_to_openai(
                 reasoning_message_fields(reasoning_result, settings),
             )
         )
+    # Match JSON output order so Responses output can be replayed verbatim
+    # before the client appends function_call_output items.
+    if remaining_text:
+        yield sse_event(
+            build_openai_chunk(
+                response_id,
+                created,
+                request.model,
+                {"content": remaining_text},
+            )
+        )
     if tool_calls:
         if finish_reason != "length":
             finish_reason = "tool_calls"
@@ -1564,15 +1575,6 @@ async def stream_python_chat_to_openai(
                     },
                 )
             )
-    if remaining_text:
-        yield sse_event(
-            build_openai_chunk(
-                response_id,
-                created,
-                request.model,
-                {"content": remaining_text},
-            )
-        )
 
     log_chat_response_debug(
         request,
@@ -1644,6 +1646,17 @@ async def stream_tool_aware_response(
                 reasoning_message_fields(reasoning_result, settings),
             )
         )
+    # Match JSON output order so Responses output can be replayed verbatim
+    # before the client appends function_call_output items.
+    if remaining_text:
+        yield sse_event(
+            build_openai_chunk(
+                response_id,
+                created,
+                request.model,
+                {"content": remaining_text},
+            )
+        )
     if tool_calls:
         if finish_reason != "length":
             finish_reason = "tool_calls"
@@ -1663,15 +1676,6 @@ async def stream_tool_aware_response(
                     },
                 )
             )
-    if remaining_text:
-        yield sse_event(
-            build_openai_chunk(
-                response_id,
-                created,
-                request.model,
-                {"content": remaining_text},
-            )
-        )
 
     log_chat_response_debug(
         request,
@@ -1751,6 +1755,17 @@ async def stream_tool_aware_multimodal_response(
                 reasoning_message_fields(reasoning_result, settings),
             )
         )
+    # Match JSON output order so Responses output can be replayed verbatim
+    # before the client appends function_call_output items.
+    if remaining_text:
+        yield sse_event(
+            build_openai_chunk(
+                response_id,
+                created,
+                request.model,
+                {"content": remaining_text},
+            )
+        )
     if tool_calls:
         if finish_reason != "length":
             finish_reason = "tool_calls"
@@ -1770,15 +1785,6 @@ async def stream_tool_aware_multimodal_response(
                     },
                 )
             )
-    if remaining_text:
-        yield sse_event(
-            build_openai_chunk(
-                response_id,
-                created,
-                request.model,
-                {"content": remaining_text},
-            )
-        )
 
     log_chat_response_debug(
         request,

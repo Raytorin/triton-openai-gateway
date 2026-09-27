@@ -231,3 +231,65 @@ def test_truncation_preserves_latest_tools_and_recalculates_media(tmp_path):
     with pytest.raises(Exception, match="context window"):
         _prepare_responses_context(tokenizer, history, None, 20, 3,
             replace(settings, mode="disabled"), media_settings, False)
+
+
+@pytest.mark.parametrize("backend", ["python", "http", "vllm", "native_multimodal"])
+def test_buffered_mixed_text_tool_stream_can_be_replayed(backend):
+    from types import SimpleNamespace
+    from gateway import triton_client as tc
+    from gateway.generation_types import generation_stream
+    from gateway.multimodal import MediaPayloads
+
+    class Tokenizer:
+        def __call__(self, text, **kwargs):
+            return SimpleNamespace(input_ids=text.split())
+
+    request = ResponsesRequest(model="test", input="Weather?", stream=True,
+        tools=[{"type": "function", "name": "weather", "parameters": {"type": "object"}}])
+    chat = to_chat(request)
+    args = (chat, Tokenizer(), "prompt")
+    sampling = {"max_tokens": 128}
+    if backend == "python":
+        source = tc.stream_python_chat_to_openai(*args, [], sampling, chat.tools)
+        infer_name = "call_triton_python_chat"
+    elif backend == "http":
+        source = tc.stream_tool_aware_response(*args, sampling, chat.tools)
+        infer_name = "call_triton"
+    elif backend == "vllm":
+        source = tc.stream_tool_aware_multimodal_response(*args, sampling, [], chat.tools)
+        infer_name = "call_triton_multimodal"
+    else:
+        source = tc.stream_tool_aware_native_multimodal_response(
+            *args, sampling, MediaPayloads([], [], [], [], []), chat.tools)
+        infer_name = "call_triton_multimodal"
+    stream = generation_stream(source, media_type="text/event-stream", headers={})
+    generated = ('I will check both cities. '
+        '<tool_call>{"name":"weather","arguments":{"city":"Paris"}}</tool_call>'
+        '<tool_call>{"name":"weather","arguments":{"city":"London"}}</tool_call>')
+    client = TestClient(app)
+    with (patch.object(tc, infer_name, AsyncMock(return_value=generated)),
+          patch("gateway.responses.generation.generate", AsyncMock(return_value=stream))):
+        first = client.post("/v1/responses", json=request.model_dump(exclude_none=True))
+    assert first.status_code == 200
+    events = decoded_events(first)
+    assert events[-1]["type"] == "response.completed"
+    output = events[-1]["response"]["output"]
+    assert [item["type"] for item in output] == ["message", "function_call", "function_call"]
+    assert output[0]["content"][0]["text"] == "I will check both cities."
+    added = [event["item"] for event in events if event["type"] == "response.output_item.added"]
+    assert [item["id"] for item in added] == [item["id"] for item in output]
+    history = [{"role": "user", "content": "Weather?"}, *output,
+        *({"type": "function_call_output", "call_id": item["call_id"], "output": "sunny"}
+          for item in reversed(output[1:]))]
+    with patch("gateway.responses.generation.generate", AsyncMock(return_value=result())) as generate:
+        second = client.post("/v1/responses", json={"model": "test", "input": history, "tools": request.tools})
+    assert second.status_code == 200, second.text
+    messages = generate.call_args.args[0].messages
+    assert [m.role for m in messages] == ["user", "assistant", "assistant", "tool", "tool"]
+    assert [m.tool_call_id for m in messages[-2:]] == [item["call_id"] for item in reversed(output[1:])]
+    # A new user turn still cannot interrupt outstanding function calls.
+    with patch("gateway.responses.generation.generate", AsyncMock()) as generate:
+        invalid = client.post("/v1/responses", json={"model": "test", "input": [
+            *history[:4], {"role": "user", "content": "Ignore the pending calls"}]})
+    assert invalid.status_code == 400
+    generate.assert_not_called()

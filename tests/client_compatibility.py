@@ -32,6 +32,8 @@ def serve():
         if request.tools and not any(m.role == "tool" for m in request.messages):
             message = {"tool_calls": [{"id": "call_weather", "type": "function", "function": {
                 "name": "weather", "arguments": '{"city":"Paris"}'}}]}
+            if any(m.content == "Mixed weather?" for m in request.messages):
+                message["content"] = "I will check the weather."
             finish = "tool_calls"
         else:
             message = {"content": '{"answer":"sunny"}' if request.response_format else "It is sunny"}
@@ -94,7 +96,9 @@ def check_clients(url):
     client = openai.OpenAI(base_url=url+"/v1", api_key="local-fixture", max_retries=0)
     def lite(**kwargs):
         return litellm.responses(model="openai/test", api_base=url+"/v1", api_key="local-fixture", **kwargs)
+    client_starts = []
     for name, create in [("openai", lambda **kw: client.responses.create(model="test", **kw)), ("litellm", lite)]:
+        client_starts.append(len(httpx.get(url+"/captured").json()))
         response = create(input="Hello", store=False)
         assert response.output_text == "It is sunny", (name, response)
         events = list(create(input="Hello", stream=True, max_output_tokens=77, store=False))
@@ -112,17 +116,22 @@ def check_clients(url):
         assert tools_stream[-1].response.output[0].arguments == '{"city":"Paris"}'
         schema_stream = list(create(input="JSON", text=text, stream=True, store=False))
         assert json.loads(schema_stream[-1].response.output[0].content[0].text) == {"answer": "sunny"}
-        print(f"{name}: text, streaming, function roundtrip, tool stream, JSON Schema and schema stream passed")
+        mixed = list(create(input="Mixed weather?", tools=[tool], stream=True, store=False))[-1].response
+        assert [item.type for item in mixed.output] == ["message", "function_call"]
+        mixed_history = [{"role": "user", "content": "Mixed weather?"},
+            *(item.model_dump(exclude_none=True) for item in mixed.output),
+            {"type": "function_call_output", "call_id": mixed.output[1].call_id, "output": "sunny"}]
+        assert create(input=mixed_history, tools=[tool], store=False).output_text == "It is sunny"
+        print(f"{name}: text, streaming, function roundtrip, mixed text/tool stream roundtrip, JSON Schema and schema stream passed")
     # Exercise the SDK event accumulator, not just event iteration.
     with client.responses.stream(model="test", input="Hello", store=False) as stream:
         response = stream.get_final_response()
         assert response.output_text == "It is sunny"
     captured = httpx.get(url+"/captured").json()
     assert all(item["path"] == "/v1/responses" for item in captured)
-    assert "max_output_tokens" not in captured[0]["body"]
-    assert "max_output_tokens" not in captured[7]["body"]
-    assert captured[1]["body"]["max_output_tokens"] == 77
-    assert captured[8]["body"]["max_output_tokens"] == 77
+    for start in client_starts:
+        assert "max_output_tokens" not in captured[start]["body"]
+        assert captured[start+1]["body"]["max_output_tokens"] == 77
     # Characterize the provider adapter boundary: LiteLLM raises small limits
     # before they reach our API. This is not gateway compatibility for 1..15.
     boundary_start = len(captured)
