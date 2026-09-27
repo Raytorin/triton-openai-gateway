@@ -9,7 +9,7 @@ import json
 import logging
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -490,7 +490,7 @@ async def rerank(request: RerankRequest):
 
 
 @app.post("/v1/chat/completions")
-async def create_chat_completion(request: ChatCompletionRequest):
+async def create_chat_completion(request: ChatCompletionRequest, response: Response = None):
     result = await generate(request)
     if isinstance(result, GenerationStream):
         return ManagedStreamingResponse(
@@ -498,4 +498,6 @@ async def create_chat_completion(request: ChatCompletionRequest):
             media_type="text/event-stream", headers=result.headers,
             close=result.aclose,
         )
+    if response is not None:
+        response.headers.update(result.headers)
     return result.to_chat()

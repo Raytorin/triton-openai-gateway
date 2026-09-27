@@ -37,6 +37,7 @@ from .multimodal import (
 from .observability import log_event, set_request_model
 from .openai_contract import normalize_system_messages
 from .prompt import (
+    render_chat_prompt,
     add_system_instruction,
     build_conversation,
     build_sampling_parameters,
@@ -70,13 +71,14 @@ from .vllm_media import (
 )
 
 
+from .token_budget import load_generation_limits, requested_output_limit, choose_budget, TokenBudget
 from .generation_types import GenerationResult, GenerationStream, generation_stream
 
 registry = ModelRegistry()
 admission = AdmissionController()
 
 
-async def generate(request: ChatCompletionRequest) -> GenerationResult | GenerationStream:
+async def generate(request: ChatCompletionRequest, *, context_mode: str | None = None) -> GenerationResult | GenerationStream:
     """Execute one generation with a single admission lease for either API."""
     set_request_model(request.model)
     model_path = registry.resolve(request.model)
@@ -91,7 +93,7 @@ async def generate(request: ChatCompletionRequest) -> GenerationResult | Generat
     if telemetry := get_generation_telemetry():
         telemetry.admitted(lease.wait_seconds)
     try:
-        result = await _generate(request)
+        result = await _generate(request, context_mode=context_mode)
     except BaseException as exc:
         if telemetry := get_generation_telemetry():
             telemetry.fail(exc)
@@ -235,6 +237,7 @@ async def _generate_context_summary(
 def _chat_stream_headers(
     reasoning_settings: Any,
     context_preparation: ContextPreparation,
+    budget: TokenBudget,
 ) -> dict[str, str]:
     return {
         "Cache-Control": "no-cache",
@@ -242,16 +245,16 @@ def _chat_stream_headers(
         "X-Accel-Buffering": "no",
         **reasoning_settings.response_headers(),
         **context_preparation.response_headers(),
+        **budget.headers(),
     }
 
 
-async def _generate(request: ChatCompletionRequest):
+async def _generate(request: ChatCompletionRequest, *, context_mode: str | None = None):
     backend = registry.get_backend(request.model)
     is_vllm_backend = backend in {"vllm", "vllm_multimodal"}
     tokenizer, model_path = await registry.get_tokenizer_async(request.model)
     tools = selected_tools(request.tools, request.tool_choice)
     tool_parser = registry.get_tool_parser(request.model) if tools else None
-    sampling_parameters = build_sampling_parameters(request)
     conversation = build_conversation(request.messages)
     conversation, system_message_count, moved_system_messages = (
         normalize_system_messages(conversation)
@@ -277,6 +280,15 @@ async def _generate(request: ChatCompletionRequest):
         include_reasoning=request.include_reasoning,
         force_disable=structured_response,
     )
+    limits = load_generation_limits(model_path, thinking=reasoning_settings.enable_thinking)
+    requested = requested_output_limit(request)
+    if requested is not None and requested > limits.cap:
+        raise HTTPException(400, f"Requested output limit {requested} exceeds maximum {limits.cap}")
+    sampling_parameters = build_sampling_parameters(
+        request, output_token_limit=requested if requested is not None else limits.default,
+    )
+    if context_mode is not None:
+        context_settings = replace(context_settings, mode=context_mode)
     if structured_response and reasoning_settings.configured_mode != "disabled":
         log_event(
             logger,
@@ -286,9 +298,9 @@ async def _generate(request: ChatCompletionRequest):
             configured_reasoning_mode=reasoning_settings.configured_mode,
             response_format=request.response_format.type,
         )
-    conversation, removed_historical_media = scope_media_history(
-        conversation,
-        media_settings.media_history_mode,
+    conversation, removed_historical_media = (
+        (conversation, 0) if context_mode is not None else
+        scope_media_history(conversation, media_settings.media_history_mode)
     )
     if removed_historical_media:
         log_event(
@@ -301,7 +313,7 @@ async def _generate(request: ChatCompletionRequest):
         )
     conversation = reclassify_media_content(conversation)
     request_media = extract_media_payloads(conversation)
-    if request_media.has_any and media_settings.reset_history_on_new_media:
+    if context_mode is None and request_media.has_any and media_settings.reset_history_on_new_media:
         conversation, removed_history_messages = isolate_latest_media_turn(conversation)
         if removed_history_messages:
             log_event(
@@ -311,7 +323,7 @@ async def _generate(request: ChatCompletionRequest):
                 model=request.model,
                 removed_message_count=removed_history_messages,
             )
-    elif request_media.has_any and media_settings.focus_current_media:
+    elif context_mode is None and request_media.has_any and media_settings.focus_current_media:
         history_token_budget = (
             None
             if context_settings.mode == "summarize"
@@ -407,6 +419,17 @@ async def _generate(request: ChatCompletionRequest):
         )
     images = [payload.data for payload in media.images]
     reserved_media_tokens = _estimate_media_context_tokens(media, media_settings)
+    # Automatic defaults preserve an already fitting prompt. Reserve one token
+    # only when input itself overflows; apply the permitted policy once, then
+    # select the final budget against the resulting prompt.
+    initial_prompt = render_chat_prompt(tokenizer, conversation, tools,
+                                       enable_thinking=reasoning_settings.enable_thinking)
+    initial_tokens = prompt_token_count(tokenizer, initial_prompt)
+    available = limits.context_window - initial_tokens - reserved_media_tokens - context_settings.safety_margin_tokens
+    reserve = requested if requested is not None else max(1, min(limits.default, limits.cap, available))
+    effective_context_settings = context_settings
+    if requested is None and available > 0:
+        effective_context_settings = replace(context_settings, mode="disabled")
     context_started_at = time.monotonic()
     try:
         context_preparation = await prepare_conversation_context(
@@ -414,12 +437,10 @@ async def _generate(request: ChatCompletionRequest):
             tokenizer=tokenizer,
             conversation=conversation,
             tools=tools,
-            max_model_len=media_settings.max_model_len,
-            max_completion_tokens=int(
-                sampling_parameters.get("max_tokens") or 256
-            ),
+            max_model_len=limits.context_window,
+            max_completion_tokens=reserve,
             reserved_media_tokens=reserved_media_tokens,
-            settings=context_settings,
+            settings=effective_context_settings,
             summary_generator=lambda previous, source: _generate_context_summary(
                 request.model,
                 context_settings,
@@ -459,6 +480,12 @@ async def _generate(request: ChatCompletionRequest):
     conversation = context_preparation.conversation
     prompt = context_preparation.prompt
     prompt_tokens = context_preparation.prompt_tokens
+    budget = choose_budget(limits, requested, prompt_tokens=prompt_tokens,
+                           media_tokens=reserved_media_tokens,
+                           safety_margin=context_settings.safety_margin_tokens)
+    sampling_parameters["max_tokens"] = budget.effective
+    log_event(logger, "generation.token_budget", "Output token budget selected",
+              model=request.model, **budget.__dict__, usage_source="estimated")
     CONTEXT_COMPRESSION_REQUESTS.labels(
         request.model,
         context_preparation.mode,
@@ -607,6 +634,7 @@ async def _generate(request: ChatCompletionRequest):
                 headers=_chat_stream_headers(
                     reasoning_settings,
                     context_preparation,
+                    budget,
                 ),
             )
 
@@ -627,6 +655,7 @@ async def _generate(request: ChatCompletionRequest):
                     headers=_chat_stream_headers(
                         reasoning_settings,
                         context_preparation,
+                        budget,
                     ),
                 )
 
@@ -643,6 +672,7 @@ async def _generate(request: ChatCompletionRequest):
                 headers=_chat_stream_headers(
                     reasoning_settings,
                     context_preparation,
+                    budget,
                 ),
             )
 
@@ -662,6 +692,7 @@ async def _generate(request: ChatCompletionRequest):
                 headers=_chat_stream_headers(
                     reasoning_settings,
                     context_preparation,
+                    budget,
                 ),
             )
 
@@ -680,6 +711,7 @@ async def _generate(request: ChatCompletionRequest):
                 headers=_chat_stream_headers(
                     reasoning_settings,
                     context_preparation,
+                    budget,
                 ),
             )
 
@@ -697,6 +729,7 @@ async def _generate(request: ChatCompletionRequest):
                 headers=_chat_stream_headers(
                     reasoning_settings,
                     context_preparation,
+                    budget,
                 ),
             )
 
@@ -712,6 +745,7 @@ async def _generate(request: ChatCompletionRequest):
             headers=_chat_stream_headers(
                 reasoning_settings,
                 context_preparation,
+                budget,
             ),
         )
 
@@ -814,4 +848,5 @@ async def _generate(request: ChatCompletionRequest):
         "usage": usage,
         "reasoning_status": reasoning_settings.response_status(),
         "context_status": context_preparation.response_status(),
+        "_generation_headers": budget.headers(),
     }

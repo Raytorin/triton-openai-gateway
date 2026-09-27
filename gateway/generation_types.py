@@ -25,6 +25,7 @@ class GenerationResult:
     finish_reason: str
     usage: dict[str, Any]
     extensions: dict[str, Any] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_chat(cls, payload: dict[str, Any]) -> GenerationResult:
@@ -32,7 +33,8 @@ class GenerationResult:
         return cls(payload["id"], payload["created"], payload["model"],
                    choice["message"], choice["finish_reason"], payload["usage"],
                    {k: v for k, v in payload.items()
-                    if k not in {"id", "created", "object", "model", "choices", "usage"}})
+                    if k not in {"id", "created", "object", "model", "choices", "usage", "_generation_headers"}},
+                   payload.get("_generation_headers", {}))
 
     def to_chat(self) -> dict[str, Any]:
         return {"id": self.id, "object": "chat.completion", "created": self.created,
