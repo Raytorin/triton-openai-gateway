@@ -33,7 +33,7 @@ argument enforcement, file_id, input audio/video/PDF, text verbosity, nonempty
 reasoning settings, previous_response_id, conversation, store=true, background=true.
 Use Chat for audio/video/PDF. Retrieval/deletion/cancellation by response ID,
 Conversations, compact, generated audio/images and legacy `/v1/completions`
-are outside this release. Functions execute in the client, never in the gateway.
+are not supported. Functions execute in the client, never in the gateway.
 
 **Deliberate default difference:** omitted `store` means **false**. Every turn
 must contain its own history; IDs do not identify retrievable server objects.
@@ -56,8 +56,8 @@ is a conservative estimate from the configured pixel bound, not exact processor
 usage. Remaining media is recalculated after truncation. Images use the existing
 bounded downloader and decoder, are resized within `image_max_pixels`, and
 normalized to JPEG. `detail` is accepted; the pixel bound governs preprocessing.
-Vision is detected from local `config.json` vision settings; for other verified
-vision runtimes set `generation.supports_vision=true` in `gateway.json`.
+Vision is detected from local `config.json` vision settings; for other runtimes
+with vision support set `generation.supports_vision=true` in `gateway.json`.
 `supports_vision=false` rejects images before inference.
 
 Fitting history is preserved, even when less than the default output budget
@@ -155,64 +155,32 @@ emitting deltas. Responses does not claim incremental tool decoding on those pat
 Errors before headers use an HTTP error envelope. Errors after headers emit
 `error`, then `response.failed`. Disconnect closes the backend iterator and
 releases admission, including during request preparation. gRPC cancellation is
-propagated; actual GPU cancellation on a particular backend still needs a runtime
-smoke check. HTTP transport closure cannot guarantee immediate GPU abort.
+propagated; actual generation cancellation depends on the backend and transport.
+HTTP transport closure cannot guarantee immediate GPU abort.
 
 Request IDs use existing middleware. Prometheus labels include the two fixed
 routes, never individual response or item IDs.
 
-## Compatibility and release validation
+## LiteLLM and OpenAI SDK behavior
 
-`requirements-client.txt` pins OpenAI SDK 2.54.0 and LiteLLM 1.102.1. The local
-HTTP fixture verifies text/output_text, SDK stream accumulation, tool round trips,
-streamed tools and JSON Schema for both clients. It captures actual forwarded
-paths and limits. With LiteLLM `model="openai/test"` and `api_base=.../v1`, requests
-reach `/v1/responses`; this tested SDK configuration adds no default output limit.
-A deployed LiteLLM proxy may have different versions, mappings or defaults.
-
-```bash
-python -m venv .local/client-venv
-.local/client-venv/bin/python -m pip install -r requirements-client.txt
-.local/client-venv/bin/python tests/client_compatibility.py --server-python .venv/bin/python
-```
-
-The fixture does not validate a live Triton GPU or deployed LiteLLM proxy.
-Before release, run an approved runtime smoke for text, images, functions,
-JSON Schema, long/thinking output and client disconnect. Check forwarded route,
-max_output_tokens, measured backend cancellation and released admission slots.
-No DevZone inference or deployment is part of the local CI suite.
-
-## Verified LiteLLM and OpenAI SDK behavior
-
-Local Qwen3-0.6B on Triton/OpenVINO CPU with LiteLLM proxy 1.97.0 was used to
-verify text, JSON/SSE, history, functions, truncation, thinking and disconnect.
-These checks use real generation, but do not establish vLLM/CUDA, vision, LoRA
-or constrained JSON Schema support. The local OpenVINO backend does not support
-constrained output; this limitation is not evidence about vLLM and is not a
-successful JSON Schema runtime check.
-
-Client and proxy differences observed:
+Client versions and routing affect forwarded parameters and events:
 
 | Path | Behavior |
 | --- | --- |
 | Direct gateway | Preserves explicit positive limits; rejects zero, booleans and negative values |
 | LiteLLM proxy 1.97.0, normal `openai/` route | Raises `max_output_tokens` from 1–15 to 16; also converts zero, negative integers and booleans to 16 |
 | LiteLLM SDK 1.102.1, `litellm.responses` | Applies the same limit conversion; `drop_params=false` does not disable it |
-| LiteLLM SDK 1.102.1, incomplete stream | In the tested case with no visible text, relabels the terminal event as `response.completed` while keeping `response.status=incomplete` and reason `max_output_tokens` |
+| LiteLLM SDK 1.102.1, incomplete stream | For an incomplete response with no visible text, may relabel the terminal event as `response.completed` while keeping `response.status=incomplete` and reason `max_output_tokens` |
 | OpenAI SDK 2.54.0, `get_final_response()` | Requires `response.completed` and raises RuntimeError on `response.incomplete`; consume terminal events as in the example above |
 
-To preserve the gateway contract exactly, a separate
-[LiteLLM passthrough route](../examples/litellm.responses-passthrough.yaml) was
-verified. Use OpenAI SDK or a plain HTTP client with
-`base_url=http://litellm:4000/gateway/v1`. On the local proxy this preserved limit 1,
-HTTP 400 for zero/booleans, SSE and the function round trip; a request without a
-key received HTTP 401. Using `litellm.responses` as the client can still transform
-parameters before sending them, even with a passthrough URL.
+To preserve gateway parameters, use a separate
+[LiteLLM passthrough route](../examples/litellm.responses-passthrough.yaml).
+Use OpenAI SDK or a plain HTTP client with
+`base_url=http://litellm:4000/gateway/v1`. Using `litellm.responses` as the client
+can still transform parameters before sending them, even with a passthrough URL.
 
 Passthrough forwards the gateway model name directly and skips the provider
 adapter. It does not guarantee the same model aliases, cost accounting or
 virtual-key restrictions as a normal provider route; verify these properties
 in the deployed proxy configuration. Keep route authentication enabled. The normal
-LiteLLM route works for the tested scenarios but does not preserve the exact
-small-limit contract. The client fixture now checks these differences; green CI
-means the pinned versions behave as documented, not that these limitations are absent.
+LiteLLM route does not preserve the exact small-limit contract.

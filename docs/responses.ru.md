@@ -33,7 +33,7 @@ strict для аргументов функций, file_id, входные audio
 непустые настройки reasoning, previous_response_id, conversation, store=true,
 background=true. Audio/video/PDF доступны через Chat. Получение/удаление/отмена
 по ID, Conversations, compact, генерация audio/images и legacy `/v1/completions`
-не входят в этот релиз. Функции выполняет клиент.
+не поддерживаются. Функции выполняет клиент.
 
 **Отличие default от OpenAI:** опущенный `store` означает **false**. Каждый ход
 передаёт собственную историю; ID не обозначают доступные для получения объекты.
@@ -57,8 +57,8 @@ Boolean, строки, дробные, нулевые и отрицательн�
 После сокращения истории оставшиеся media пересчитываются. Изображения проходят
 существующий загрузчик с ограничениями и декодер, уменьшаются до image_max_pixels
 и преобразуются в JPEG. Поле detail принимается, обработкой управляет лимит пикселей.
-Vision определяется по локальному config.json; для других проверенных vision
-runtime задайте generation.supports_vision=true в gateway.json.
+Vision определяется по локальному config.json; для других runtime с поддержкой
+vision задайте generation.supports_vision=true в gateway.json.
 Значение false отклоняет изображения до инференса.
 
 Помещающаяся история сохраняется, даже если на вывод остаётся меньше default.
@@ -156,65 +156,33 @@ content_part.added/done; output_text.delta/done; function_call_arguments.delta/d
 
 Ошибки до заголовков возвращаются HTTP-ответом. После заголовков выдаются error
 и response.failed. Disconnect закрывает backend iterator и освобождает admission,
-включая этап подготовки. Отмена передаётся в gRPC; фактическую остановку GPU на
-конкретном backend нужно проверить runtime smoke. Закрытие HTTP-транспорта
+включая этап подготовки. Отмена передаётся в gRPC; фактическая остановка
+генерации зависит от backend и транспорта. Закрытие HTTP-транспорта
 не гарантирует немедленную остановку GPU.
 
 Request ID добавляет существующий middleware. Метрики содержат два фиксированных
 маршрута; отдельные response/item ID в Prometheus labels не попадают.
 
-## Совместимость и приёмка релиза
+## Особенности LiteLLM и OpenAI SDK
 
-requirements-client.txt закрепляет OpenAI SDK 2.54.0 и LiteLLM 1.102.1.
-Локальный HTTP fixture проверяет текст/output_text, сборку потока SDK, цикл
-function calling, потоковые tools и JSON Schema обоими клиентами. Фиксируются
-переданные маршруты и лимиты. При model="openai/test" и api_base=.../v1 LiteLLM
-обращается к /v1/responses и не добавляет default лимита. У развёрнутого прокси
-могут отличаться версия, маршрутизация и defaults.
-
-```bash
-python -m venv .local/client-venv
-.local/client-venv/bin/python -m pip install -r requirements-client.txt
-.local/client-venv/bin/python tests/client_compatibility.py --server-python .venv/bin/python
-```
-
-Fixture не проверяет реальный Triton GPU или развёрнутый LiteLLM-прокси.
-До релиза нужен согласованный runtime smoke: текст, изображения, функции,
-JSON Schema, длинный/thinking вывод и disconnect. Проверяются фактический маршрут,
-max_output_tokens, остановка backend и освобождение admission.
-Локальный CI не обращается к DevZone и ничего туда не развёртывает.
-
-## Проверенные особенности LiteLLM и OpenAI SDK
-
-На локальной Qwen3-0.6B через Triton/OpenVINO CPU и LiteLLM proxy 1.97.0
-проверены текст, JSON/SSE, история, функции, truncation, thinking и disconnect.
-Эта проверка использует реальную генерацию, но не подтверждает vLLM/CUDA,
-vision, LoRA и принудительное соблюдение JSON Schema. OpenVINO-backend тестового
-стенда не поддерживает constrained output. Его ограничение нельзя переносить
-на vLLM или считать успешной проверкой JSON Schema.
-
-Обнаружены различия на стороне клиентов и прокси:
+Версия и способ подключения клиента влияют на передаваемые параметры и события:
 
 | Путь | Поведение |
 | --- | --- |
 | Gateway напрямую | Явный положительный лимит сохраняется; 0, boolean и отрицательные значения отклоняются |
 | LiteLLM proxy 1.97.0, обычный `openai/` маршрут | `max_output_tokens` от 1 до 15 увеличивается до 16; 0, отрицательные целые и boolean также преобразуются в 16 |
 | LiteLLM SDK 1.102.1, `litellm.responses` | Такое же преобразование лимита; `drop_params=false` его не отключает |
-| LiteLLM SDK 1.102.1, незавершённый поток | В проверенном сценарии без видимого текста событие переименовывается в `response.completed`, но внутри остаётся `response.status=incomplete` и причина `max_output_tokens` |
+| LiteLLM SDK 1.102.1, незавершённый поток | Для незавершённого ответа без видимого текста событие может переименовываться в `response.completed`, но внутри остаётся `response.status=incomplete` и причина `max_output_tokens` |
 | OpenAI SDK 2.54.0, `get_final_response()` | Helper ожидает `response.completed` и выбрасывает RuntimeError при `response.incomplete`; используйте терминальные события, как в примере выше |
 
-Для точного сохранения gateway-контракта проверен отдельный
+Для сохранения параметров gateway используйте отдельный
 [passthrough-маршрут LiteLLM](../examples/litellm.responses-passthrough.yaml).
 Обращайтесь к нему через OpenAI SDK или обычный HTTP-клиент с
-`base_url=http://litellm:4000/gateway/v1`. В этом режиме на локальном proxy
-сохранились лимит 1, ошибки 400 для 0/boolean, SSE и функция с её результатом;
-запрос без ключа получил 401. `litellm.responses` как клиент всё ещё может
+`base_url=http://litellm:4000/gateway/v1`. `litellm.responses` как клиент может
 преобразовать параметры до отправки даже на passthrough URL.
 
 Passthrough передаёт имя модели gateway напрямую и пропускает provider adapter.
 Он не гарантирует те же model aliases, учёт стоимости и ограничения virtual keys,
 что обычный provider route: проверьте эти свойства в своей конфигурации прокси.
-Аутентификацию маршрута оставляйте включённой. Обычный LiteLLM-маршрут пригоден
-для проверенных сценариев, но не обеспечивает точный контракт малых лимитов.
-Эти различия теперь проверяет клиентский fixture; зелёный CI означает известное
-поведение закреплённых версий, а не отсутствие перечисленных ограничений.
+Аутентификацию маршрута оставляйте включённой. Обычный LiteLLM-маршрут
+не обеспечивает точный контракт малых лимитов.
