@@ -91,6 +91,7 @@ protocol, prompt rendering, media orchestration, and request controls.
 
 ## Features
 
+- `POST /v1/responses` and `/responses` for stateless text/vision generation, functions, and Responses SSE.
 - `POST /v1/chat/completions`, including SSE streaming and client cancellation.
 - OpenAI `response_format` with JSON object and strict JSON Schema output.
 - OpenAI function calling with JSON and Qwen3-Coder XML response parsing.
@@ -234,6 +235,7 @@ embeddings, and reranking are in
 | `GET /metrics` | Gateway Prometheus metrics |
 | `GET /docs` | Interactive OpenAPI documentation |
 | `GET /v1/models` | Models known to the Triton repository |
+| `POST /v1/responses`, `POST /responses` | Stateless Responses with JSON/SSE and client-managed history |
 | `POST /v1/chat/completions` | Chat, tools, and multimodal requests |
 | `POST /v1/embeddings` | Text embeddings |
 | `POST /v1/hybrid_embeddings` | BGE-M3 dense and lexical sparse embeddings |
@@ -246,6 +248,7 @@ and `8002`.
 
 | Document | Contents |
 | --- | --- |
+| [Responses API](docs/responses.md) | Supported parameters, token budgets, streaming, and client compatibility |
 | [Architecture](docs/architecture.md) | Components and end-to-end request flows |
 | [Configuration](docs/configuration.md) | Model files, `gateway.json`, environment, and Helm |
 | [Operations](docs/operations.md) | Health, metrics, logging, tracing, and troubleshooting |

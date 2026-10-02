@@ -168,9 +168,9 @@ Client versions and routing affect forwarded parameters and events:
 | Path | Behavior |
 | --- | --- |
 | Direct gateway | Preserves explicit positive limits; rejects zero, booleans and negative values |
-| LiteLLM proxy 1.97.0, normal `openai/` route | Raises `max_output_tokens` from 1–15 to 16; also converts zero, negative integers and booleans to 16 |
-| LiteLLM SDK 1.102.1, `litellm.responses` | Applies the same limit conversion; `drop_params=false` does not disable it |
-| LiteLLM SDK 1.102.1, incomplete stream | For an incomplete response with no visible text, may relabel the terminal event as `response.completed` while keeping `response.status=incomplete` and reason `max_output_tokens` |
+| LiteLLM proxy 1.97.0 / 1.103.0, normal `openai/` route | Raises `max_output_tokens` from 1–15 to 16; also converts zero, negative integers and booleans to 16 |
+| LiteLLM SDK 1.103.0, `litellm.responses` | Applies the same limit conversion; `drop_params=false` does not disable it |
+| LiteLLM SDK 1.103.0, incomplete stream | For an incomplete response with no visible text, may relabel the terminal event as `response.completed` while keeping `response.status=incomplete` and reason `max_output_tokens` |
 | OpenAI SDK 2.54.0, `get_final_response()` | Requires `response.completed` and raises RuntimeError on `response.incomplete`; consume terminal events as in the example above |
 
 To preserve gateway parameters, use a separate
