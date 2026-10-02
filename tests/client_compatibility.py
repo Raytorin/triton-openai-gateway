@@ -149,7 +149,7 @@ def check_clients(url):
         assert lite(input="Hello", max_output_tokens=invalid, store=False).max_output_tokens == 16
     for name, create in (("openai", lambda **kw: client.responses.create(model="test", **kw)), ("litellm", lite)):
         events = list(create(input="exhaust-output", stream=True, max_output_tokens=16, store=False))
-        # LiteLLM 1.102.1 relabels the terminal event but preserves response.status.
+        # LiteLLM 1.103.0 relabels the terminal event but preserves response.status.
         expected_type = "response.incomplete" if name == "openai" else "response.completed"
         assert events[-1].type == expected_type
         assert events[-1].response.status == "incomplete"

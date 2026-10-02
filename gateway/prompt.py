@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from .cpu_work import checkpoint
 from .multimodal import normalize_message_content
 from .openai_contract import structured_outputs_parameter
 from .schemas import ChatCompletionRequest, ChatMessage
@@ -176,6 +177,7 @@ def render_chat_prompt(
     *,
     enable_thinking: bool = False,
 ) -> str:
+    checkpoint()
     attempts: list[dict[str, Any]] = [
         {
             "tokenize": False,
@@ -234,6 +236,7 @@ def fit_conversation_to_context(
     reserved_media_tokens: int = 0,
     safety_margin_tokens: int = 64,
     enable_thinking: bool = False,
+    initial_prompt: tuple[str, int] | None = None,
 ) -> tuple[list[dict[str, Any]], str, int, int]:
     prompt_limit = context_prompt_limit(
         max_model_len,
@@ -245,13 +248,14 @@ def fit_conversation_to_context(
     fitted = [dict(message) for message in conversation]
     dropped_messages = 0
     while True:
-        prompt = render_chat_prompt(
-            tokenizer,
-            fitted,
-            tools,
-            enable_thinking=enable_thinking,
-        )
-        prompt_tokens = prompt_token_count(tokenizer, prompt)
+        checkpoint()
+        if initial_prompt is not None:
+            prompt, prompt_tokens = initial_prompt
+            initial_prompt = None
+        else:
+            prompt, prompt_tokens = render_and_count_prompt(
+                tokenizer, fitted, tools, enable_thinking=enable_thinking,
+            )
         if prompt_tokens <= prompt_limit:
             return fitted, prompt, prompt_tokens, dropped_messages
 
@@ -270,6 +274,11 @@ def fit_conversation_to_context(
             message for index, message in enumerate(fitted) if index not in removable_set
         ]
         dropped_messages += len(removable)
+
+
+def render_and_count_prompt(tokenizer, conversation, tools=None, *, enable_thinking=False):
+    prompt = render_chat_prompt(tokenizer, conversation, tools, enable_thinking=enable_thinking)
+    return prompt, prompt_token_count(tokenizer, prompt)
 
 
 def context_prompt_limit(
@@ -297,6 +306,7 @@ def context_prompt_limit(
 
 
 def prompt_token_count(tokenizer, prompt: str) -> int:
+    checkpoint()
     try:
         return len(tokenizer.encode(prompt, add_special_tokens=False))
     except TypeError:
@@ -396,7 +406,9 @@ def build_usage(
     *,
     reasoning_text: str = "",
 ) -> dict[str, Any]:
+    checkpoint()
     prompt_tokens = len(tokenizer(prompt, add_special_tokens=False).input_ids)
+    checkpoint()
     completion_tokens = len(tokenizer(generated_text, add_special_tokens=False).input_ids)
     usage: dict[str, Any] = {
         "prompt_tokens": prompt_tokens,
@@ -404,6 +416,7 @@ def build_usage(
         "total_tokens": prompt_tokens + completion_tokens,
     }
     if reasoning_text:
+        checkpoint()
         usage["completion_tokens_details"] = {
             "reasoning_tokens": len(
                 tokenizer(reasoning_text, add_special_tokens=False).input_ids

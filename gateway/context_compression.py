@@ -20,12 +20,14 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from .cpu_work import run_cpu
 from .prompt import (
     context_prompt_limit,
     fit_conversation_to_context,
     oldest_removable_turn,
     prompt_token_count,
     render_chat_prompt,
+    render_and_count_prompt,
 )
 
 
@@ -309,6 +311,7 @@ async def prepare_conversation_context(
     settings: ContextCompressionSettings,
     summary_generator: SummaryGenerator | None = None,
     enable_thinking: bool = False,
+    initial_prompt: tuple[str, int] | None = None,
 ) -> ContextPreparation:
     started_at = time.monotonic()
     prompt_limit = context_prompt_limit(
@@ -317,13 +320,13 @@ async def prepare_conversation_context(
         reserved_media_tokens,
         settings.safety_margin_tokens,
     )
-    prompt = render_chat_prompt(
-        tokenizer,
-        conversation,
-        tools,
-        enable_thinking=enable_thinking,
-    )
-    tokens = prompt_token_count(tokenizer, prompt)
+    if initial_prompt is None:
+        prompt, tokens = await run_cpu(
+            render_and_count_prompt, tokenizer, conversation, tools,
+            enable_thinking=enable_thinking,
+        )
+    else:
+        prompt, tokens = initial_prompt
     summary_model = settings.summary_model or model_name
     trigger_limit = prompt_limit
     target_limit = prompt_limit
@@ -346,7 +349,7 @@ async def prepare_conversation_context(
         _raise_context_overflow(tokens, prompt_limit, max_model_len)
 
     if settings.mode == "truncate":
-        result = _truncate_context(
+        result = await run_cpu(_truncate_context,
             tokenizer,
             conversation,
             tools,
@@ -357,6 +360,7 @@ async def prepare_conversation_context(
             summary_model,
             action="truncate",
             enable_thinking=enable_thinking,
+            initial_prompt=(prompt, tokens),
         )
         return replace(
             result,
@@ -403,7 +407,7 @@ async def prepare_conversation_context(
                 fallback_reason=fallback_reason,
             )
         else:
-            result = _truncate_context(
+            result = await run_cpu(_truncate_context,
                 tokenizer,
                 conversation,
                 tools,
@@ -415,6 +419,7 @@ async def prepare_conversation_context(
                 action="truncate_fallback",
                 fallback_reason=fallback_reason,
                 enable_thinking=enable_thinking,
+                initial_prompt=(prompt, tokens),
             )
 
     return replace(
@@ -497,7 +502,7 @@ async def _summarize_context(
     summary_generator: SummaryGenerator,
     enable_thinking: bool,
 ) -> ContextPreparation:
-    retained, removed = _select_summary_source(
+    retained, removed = await run_cpu(_select_summary_source,
         tokenizer,
         conversation,
         tools,
@@ -514,9 +519,9 @@ async def _summarize_context(
             ),
         )
 
-    boundary_hashes = _boundary_hashes(removed)
+    boundary_hashes = await run_cpu(_boundary_hashes, removed)
     boundary = boundary_hashes[-1]
-    evidence, evidence_messages = _build_verbatim_evidence(
+    evidence, evidence_messages = await run_cpu(_build_verbatim_evidence,
         tokenizer,
         removed,
         settings.evidence_max_tokens,
@@ -529,7 +534,7 @@ async def _summarize_context(
         settings.cache_size,
     )
     if cached is not None and cached_covered == len(removed):
-        fitted, prompt, prompt_tokens = _render_with_summary(
+        fitted, prompt, prompt_tokens = await run_cpu(_render_with_summary,
             tokenizer,
             retained,
             tools,
@@ -556,8 +561,8 @@ async def _summarize_context(
 
     previous_summary = cached.text if cached is not None else None
     source_messages = removed[cached_covered:]
-    source_text = _format_summary_source(source_messages, cached_covered)
-    chunks = _split_text_by_tokens(
+    source_text = await run_cpu(_format_summary_source, source_messages, cached_covered)
+    chunks = await run_cpu(_split_text_by_tokens,
         tokenizer,
         source_text,
         max(
@@ -601,7 +606,7 @@ async def _summarize_context(
             detail="Context summarization produced no summary",
         )
 
-    fitted, prompt, prompt_tokens = _render_with_summary(
+    fitted, prompt, prompt_tokens = await run_cpu(_render_with_summary,
         tokenizer,
         retained,
         tools,
@@ -654,6 +659,7 @@ def _truncate_context(
     action: str,
     fallback_reason: str = "",
     enable_thinking: bool = False,
+    initial_prompt: tuple[str, int] | None = None,
 ) -> ContextPreparation:
     fitted, prompt, prompt_tokens, dropped = fit_conversation_to_context(
         tokenizer,
@@ -664,6 +670,7 @@ def _truncate_context(
         reserved_media_tokens=reserved_media_tokens,
         safety_margin_tokens=settings.safety_margin_tokens,
         enable_thinking=enable_thinking,
+        initial_prompt=initial_prompt,
     )
     return ContextPreparation(
         conversation=fitted,

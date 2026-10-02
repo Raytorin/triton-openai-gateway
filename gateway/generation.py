@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from .cpu_work import run_cpu
 from .admission import AdmissionController
 from .context_compression import (
     ContextCompressionSettings,
@@ -38,6 +39,7 @@ from .observability import log_event, set_request_model
 from .openai_contract import normalize_system_messages
 from .prompt import (
     render_chat_prompt,
+    render_and_count_prompt,
     add_system_instruction,
     build_conversation,
     build_sampling_parameters,
@@ -120,7 +122,7 @@ def _estimate_media_context_tokens(media, media_settings) -> int:
     return image_tokens + video_tokens + audio_tokens
 
 
-def _additional_media_tokens(tokenizer, conversation, tools, settings, thinking):
+def _additional_media_tokens(tokenizer, conversation, tools, settings, thinking, prompt_tokens=None):
     """Reserve only media tokens not already represented in the rendered prompt.
 
     Image/video/audio expansion is a conservative estimate, not backend usage.
@@ -136,21 +138,30 @@ def _additional_media_tokens(tokenizer, conversation, tools, settings, thinking)
             message["content"] = [part for part in message["content"]
                                   if isinstance(part, dict) and part.get("type") == "text"]
         text_only.append(message)
-    full = render_chat_prompt(tokenizer, conversation, tools, enable_thinking=thinking)
+    if prompt_tokens is None:
+        _, prompt_tokens = render_and_count_prompt(tokenizer, conversation, tools, enable_thinking=thinking)
     text = render_chat_prompt(tokenizer, text_only, tools, enable_thinking=thinking)
-    embedded = max(0, prompt_token_count(tokenizer, full) - prompt_token_count(tokenizer, text))
+    embedded = max(0, prompt_tokens - prompt_token_count(tokenizer, text))
     return max(0, estimate - embedded)
 
 
+def _measure_prompt(tokenizer, conversation, tools, media_settings, thinking):
+    prompt, tokens = render_and_count_prompt(tokenizer, conversation, tools, enable_thinking=thinking)
+    media_tokens = _additional_media_tokens(tokenizer, conversation, tools, media_settings, thinking, tokens)
+    return prompt, tokens, media_tokens
+
+
 def _prepare_responses_context(tokenizer, conversation, tools, window, reserve,
-                               settings, media_settings, thinking):
+                               settings, media_settings, thinking, initial=None):
     """Stateless truncation removes complete oldest turns; never summarizes."""
     fitted = list(conversation)
     dropped = 0
     while True:
-        prompt = render_chat_prompt(tokenizer, fitted, tools, enable_thinking=thinking)
-        tokens = prompt_token_count(tokenizer, prompt)
-        media_tokens = _additional_media_tokens(tokenizer, fitted, tools, media_settings, thinking)
+        if initial is not None:
+            prompt, tokens, media_tokens = initial
+            initial = None
+        else:
+            prompt, tokens, media_tokens = _measure_prompt(tokenizer, fitted, tools, media_settings, thinking)
         if tokens + media_tokens + reserve + settings.safety_margin_tokens <= window:
             return ContextPreparation(fitted, prompt, tokens, settings.mode,
                                       "truncate" if dropped else "none", dropped_messages=dropped)
@@ -193,7 +204,7 @@ async def _generate_context_summary(
         summary_prompt,
         summary_prompt_tokens,
         _,
-    ) = fit_conversation_to_context(
+    ) = await run_cpu(fit_conversation_to_context,
         summary_tokenizer,
         summary_conversation,
         tools=None,
@@ -243,7 +254,7 @@ async def _generate_context_summary(
         raise
 
     generated_text = strip_prompt_echo(summary_prompt, generated_text)
-    generated_text, _ = sanitize_generated_text(generated_text)
+    generated_text, _ = await run_cpu(sanitize_generated_text, generated_text)
     if not generated_text.strip():
         CONTEXT_SUMMARY_CALLS.labels(
             request_model,
@@ -254,7 +265,7 @@ async def _generate_context_summary(
             status_code=502,
             detail="Context summarization model returned an empty response",
         )
-    output_tokens = prompt_token_count(summary_tokenizer, generated_text)
+    output_tokens = await run_cpu(prompt_token_count, summary_tokenizer, generated_text)
     CONTEXT_SUMMARY_CALLS.labels(
         request_model,
         summary_model,
@@ -380,7 +391,7 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
             else media_settings.media_history_max_tokens
         )
         conversation, kept_history_messages, dropped_history_messages = (
-            focus_current_media_context(
+            await run_cpu(focus_current_media_context,
                 conversation,
                 tokenizer,
                 request_media,
@@ -453,14 +464,11 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         else None,
     )
     media = extract_media_payloads(conversation)
-    reserved_media_tokens = _additional_media_tokens(
-        tokenizer, conversation, tools, media_settings, reasoning_settings.enable_thinking)
-    # Automatic defaults preserve an already fitting prompt. Reserve one token
-    # only when input itself overflows; apply the permitted policy once, then
-    # select the final budget against the resulting prompt.
-    initial_prompt = render_chat_prompt(tokenizer, conversation, tools,
-                                       enable_thinking=reasoning_settings.enable_thinking)
-    initial_tokens = prompt_token_count(tokenizer, initial_prompt)
+    initial_prompt, initial_tokens, reserved_media_tokens = await run_cpu(
+        _measure_prompt, tokenizer, conversation, tools, media_settings,
+        reasoning_settings.enable_thinking,
+    )
+    # Preserve fitting history; reuse this exact measurement in context fitting.
     available = limits.context_window - initial_tokens - reserved_media_tokens - context_settings.safety_margin_tokens
     reserve = requested if requested is not None else max(1, min(limits.default, limits.cap, available))
     effective_context_settings = context_settings
@@ -469,10 +477,11 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
     context_started_at = time.monotonic()
     try:
         if context_mode is not None:
-            context_preparation = _prepare_responses_context(
+            context_preparation = await run_cpu(_prepare_responses_context,
                 tokenizer, conversation, tools, limits.context_window,
                 requested or 1, context_settings, media_settings,
-                reasoning_settings.enable_thinking)
+                reasoning_settings.enable_thinking,
+                initial=(initial_prompt, initial_tokens, reserved_media_tokens))
         else:
             context_preparation = await prepare_conversation_context(
                 model_name=request.model,
@@ -490,6 +499,7 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
                     source,
                 ),
                 enable_thinking=reasoning_settings.enable_thinking,
+                initial_prompt=(initial_prompt, initial_tokens),
             )
     except asyncio.CancelledError:
         raise
@@ -538,8 +548,8 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
             },
         )
     images = [payload.data for payload in media.images]
-    reserved_media_tokens = _additional_media_tokens(
-        tokenizer, conversation, tools, media_settings, reasoning_settings.enable_thinking)
+    reserved_media_tokens = await run_cpu(_additional_media_tokens,
+        tokenizer, conversation, tools, media_settings, reasoning_settings.enable_thinking, prompt_tokens)
     budget = choose_budget(limits, requested, prompt_tokens=prompt_tokens,
                            media_tokens=reserved_media_tokens,
                            safety_margin=context_settings.safety_margin_tokens)
@@ -833,23 +843,23 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
     else:
         generated_text = await call_triton(request.model, prompt, sampling_parameters)
     raw_generated_text = strip_prompt_echo(prompt, generated_text)
-    reasoning_result = split_reasoning_output(
+    reasoning_result = await run_cpu(split_reasoning_output,
         raw_generated_text,
         reasoning_settings,
     )
-    generated_text, _ = sanitize_generated_text(reasoning_result.content)
+    generated_text, _ = await run_cpu(sanitize_generated_text, reasoning_result.content)
     tool_calls, remaining_text = (
-        extract_tool_calls(generated_text, tools, tool_parser)
+        await run_cpu(extract_tool_calls, generated_text, tools, tool_parser)
         if tools
         else ([], generated_text)
     )
-    usage = build_usage(
+    usage = await run_cpu(build_usage,
         tokenizer,
         prompt,
         raw_generated_text,
         reasoning_text=reasoning_result.reasoning,
     )
-    reasoning_tokens, content_tokens = observe_reasoning_result(
+    reasoning_tokens, content_tokens = await run_cpu(observe_reasoning_result,
         request.model,
         tokenizer,
         reasoning_settings,

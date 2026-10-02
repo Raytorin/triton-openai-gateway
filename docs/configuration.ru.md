@@ -429,6 +429,29 @@ OpenAI-совместимых клиентов используйте
 | `GATEWAY_STOP_GRACE_SECONDS` | `10` | Ожидание завершения после SIGTERM |
 | `GATEWAY_RESTART_DELAY_SECONDS` | `2` | Пауза перед повторным запуском |
 
+### CPU-подготовка
+
+Chat и Responses выполняют шаблоны, токенизацию, укладывание контекста и подсчёт
+выходных токенов в ограниченном пуле потоков. Через него проходят и CPU-этапы
+подготовки summary; инференс остаётся асинхронным.
+
+| Переменная окружения | По умолчанию | Назначение |
+| --- | ---: | --- |
+| `GATEWAY_CPU_WORKERS` | `4` | Максимум одновременных CPU-задач на процесс gateway |
+| `GATEWAY_CPU_MAX_QUEUE` | `64` | Максимум ожидающих CPU-задач; `0` запрещает ожидание |
+| `GATEWAY_CPU_QUEUE_TIMEOUT_SECONDS` | `30` | Максимальное ожидание CPU-слота |
+
+Переполнение очереди или таймаут до начала streaming возвращают HTTP `429` с
+`Retry-After: 1`. Ошибка после начала streaming передаётся по контракту потоковых
+ошибок соответствующего API. При отмене ожидающая задача удаляется; активная
+подготовка останавливается между вызовами токенизатора. CPU-слот и admission
+удерживаются до завершения текущего нативного вызова. Увеличение числа Uvicorn
+workers умножает эти лимиты на процесс, как и лимиты admission.
+
+Метрики: `triton_gateway_cpu_active`, `triton_gateway_cpu_queued`,
+`triton_gateway_cpu_rejected_total`, `triton_gateway_cpu_wait_seconds` и
+`triton_gateway_cpu_duration_seconds`. В CPU-метриках нет ID запросов или моделей.
+
 ### Admission control
 
 Глобальные значения задаются через `GATEWAY_MAX_INFLIGHT_REQUESTS`,

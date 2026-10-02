@@ -170,9 +170,9 @@ Request ID добавляет существующий middleware. Метрик�
 | Путь | Поведение |
 | --- | --- |
 | Gateway напрямую | Явный положительный лимит сохраняется; 0, boolean и отрицательные значения отклоняются |
-| LiteLLM proxy 1.97.0, обычный `openai/` маршрут | `max_output_tokens` от 1 до 15 увеличивается до 16; 0, отрицательные целые и boolean также преобразуются в 16 |
-| LiteLLM SDK 1.102.1, `litellm.responses` | Такое же преобразование лимита; `drop_params=false` его не отключает |
-| LiteLLM SDK 1.102.1, незавершённый поток | Для незавершённого ответа без видимого текста событие может переименовываться в `response.completed`, но внутри остаётся `response.status=incomplete` и причина `max_output_tokens` |
+| LiteLLM proxy 1.97.0 / 1.103.0, обычный `openai/` маршрут | `max_output_tokens` от 1 до 15 увеличивается до 16; 0, отрицательные целые и boolean также преобразуются в 16 |
+| LiteLLM SDK 1.103.0, `litellm.responses` | Такое же преобразование лимита; `drop_params=false` его не отключает |
+| LiteLLM SDK 1.103.0, незавершённый поток | Для незавершённого ответа без видимого текста событие может переименовываться в `response.completed`, но внутри остаётся `response.status=incomplete` и причина `max_output_tokens` |
 | OpenAI SDK 2.54.0, `get_final_response()` | Helper ожидает `response.completed` и выбрасывает RuntimeError при `response.incomplete`; используйте терминальные события, как в примере выше |
 
 Для сохранения параметров gateway используйте отдельный

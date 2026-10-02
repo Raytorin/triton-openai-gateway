@@ -427,6 +427,29 @@ and exits so container shutdown can finish. Restarting interrupts in-flight gate
 | `GATEWAY_STOP_GRACE_SECONDS` | `10` | Shutdown grace after SIGTERM |
 | `GATEWAY_RESTART_DELAY_SECONDS` | `2` | Delay before restarting |
 
+### CPU Preparation
+
+Chat and Responses render templates, tokenize prompts, fit context, and count
+output usage in a bounded worker pool. The pool also handles CPU portions of
+summary preparation; inference remains asynchronous.
+
+| Environment variable | Default | Meaning |
+| --- | ---: | --- |
+| `GATEWAY_CPU_WORKERS` | `4` | Maximum concurrent CPU work items per gateway process |
+| `GATEWAY_CPU_MAX_QUEUE` | `64` | Maximum waiting CPU work items; `0` disables waiting |
+| `GATEWAY_CPU_QUEUE_TIMEOUT_SECONDS` | `30` | Maximum wait for a CPU slot |
+
+A full queue or an expired wait returns HTTP `429` with `Retry-After: 1` before
+streaming starts. An error after streaming starts follows the API's stream error
+contract. On cancellation, queued work is removed; running preparation stops
+between tokenizer calls. CPU and admission slots remain occupied until the
+current native call finishes. Increasing Uvicorn workers multiplies these
+process-local limits as well as the admission limits.
+
+Monitor `triton_gateway_cpu_active`, `triton_gateway_cpu_queued`,
+`triton_gateway_cpu_rejected_total`, `triton_gateway_cpu_wait_seconds`, and
+`triton_gateway_cpu_duration_seconds`. CPU metrics contain no request or model IDs.
+
 ### Admission Control
 
 Global defaults use `GATEWAY_MAX_INFLIGHT_REQUESTS`,

@@ -12,6 +12,13 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, ge
 from starlette.responses import Response
 
 
+CPU_ACTIVE = Gauge("triton_gateway_cpu_active", "Running gateway CPU work items.")
+CPU_QUEUED = Gauge("triton_gateway_cpu_queued", "Gateway CPU work items waiting for capacity.")
+CPU_REJECTED = Counter("triton_gateway_cpu_rejected_total", "Rejected gateway CPU work items.", ("reason",))
+CPU_WAIT = Histogram("triton_gateway_cpu_wait_seconds", "Time waiting for gateway CPU capacity.")
+CPU_DURATION = Histogram("triton_gateway_cpu_duration_seconds", "Time holding a gateway CPU worker slot.")
+
+
 HTTP_REQUESTS = Counter(
     "triton_gateway_http_requests_total",
     "HTTP requests handled by the gateway.",
