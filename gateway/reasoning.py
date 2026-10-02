@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from .cpu_work import checkpoint
 from .metrics import REASONING_REQUESTS, REASONING_TOKENS
 
 
@@ -263,6 +264,7 @@ def reasoning_message_fields(
 
 
 def reasoning_token_count(tokenizer: Any, text: str) -> int:
+    checkpoint()
     if not text:
         return 0
     try:

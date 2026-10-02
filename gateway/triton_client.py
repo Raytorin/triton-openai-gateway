@@ -22,6 +22,7 @@ from tritonclient.utils import InferenceServerException
 from fastapi import HTTPException
 from grpc.aio import AioRpcError
 
+from .cpu_work import run_cpu
 from .debug import log_chat_response_debug
 from .multimodal import MediaPayload, MediaPayloads
 from .metrics import (
@@ -974,13 +975,13 @@ async def stream_triton_multimodal_to_openai(
         )
         emitted_text = final_text
 
-    usage = build_usage(
+    usage = await run_cpu(build_usage,
         tokenizer,
         prompt,
         raw_generated_text,
         reasoning_text=reasoning_result.reasoning,
     )
-    reasoning_tokens, content_tokens = observe_reasoning_result(
+    reasoning_tokens, content_tokens = await run_cpu(observe_reasoning_result,
         request.model,
         tokenizer,
         settings,
@@ -1332,13 +1333,13 @@ async def stream_triton_to_openai(
         )
         emitted_text = final_text
 
-    usage = build_usage(
+    usage = await run_cpu(build_usage,
         tokenizer,
         prompt,
         raw_generated_text,
         reasoning_text=reasoning_result.reasoning,
     )
-    reasoning_tokens, content_tokens = observe_reasoning_result(
+    reasoning_tokens, content_tokens = await run_cpu(observe_reasoning_result,
         request.model,
         tokenizer,
         settings,
@@ -1474,7 +1475,7 @@ async def stream_python_chat_to_openai(
         )
     except HTTPException as exc:
         error_text = _friendly_error_message(exc.detail)
-        usage = build_usage(tokenizer, prompt, "")
+        usage = await run_cpu(build_usage, tokenizer, prompt, "")
 
         yield sse_event(
             build_openai_chunk(
@@ -1505,7 +1506,7 @@ async def stream_python_chat_to_openai(
         yield "data: [DONE]\n\n"
         return
 
-    generated_text, reasoning_result, usage = _process_completed_generation(
+    generated_text, reasoning_result, usage = await run_cpu(_process_completed_generation,
         request,
         tokenizer,
         prompt,
@@ -1513,7 +1514,7 @@ async def stream_python_chat_to_openai(
         reasoning_settings,
     )
     tool_calls, remaining_text = (
-        extract_tool_calls(generated_text, tools, tool_parser)
+        await run_cpu(extract_tool_calls, generated_text, tools, tool_parser)
         if tools
         else ([], generated_text)
     )
@@ -1610,14 +1611,14 @@ async def stream_tool_aware_response(
     created = int(time.time())
 
     generated_text = await call_triton(request.model, prompt, sampling_parameters)
-    generated_text, reasoning_result, usage = _process_completed_generation(
+    generated_text, reasoning_result, usage = await run_cpu(_process_completed_generation,
         request,
         tokenizer,
         prompt,
         generated_text,
         reasoning_settings,
     )
-    tool_calls, remaining_text = extract_tool_calls(generated_text, tools, tool_parser)
+    tool_calls, remaining_text = await run_cpu(extract_tool_calls, generated_text, tools, tool_parser)
 
     yield sse_event(
         build_openai_chunk(
@@ -1719,14 +1720,14 @@ async def stream_tool_aware_multimodal_response(
         images,
         media,
     )
-    generated_text, reasoning_result, usage = _process_completed_generation(
+    generated_text, reasoning_result, usage = await run_cpu(_process_completed_generation,
         request,
         tokenizer,
         prompt,
         generated_text,
         reasoning_settings,
     )
-    tool_calls, remaining_text = extract_tool_calls(generated_text, tools, tool_parser)
+    tool_calls, remaining_text = await run_cpu(extract_tool_calls, generated_text, tools, tool_parser)
 
     yield sse_event(
         build_openai_chunk(
