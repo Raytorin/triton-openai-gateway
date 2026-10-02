@@ -1,5 +1,7 @@
 # Sparse и hybrid embeddings
 
+**Язык:** [English](sparse-embeddings.md) | Русский
+
 ## Когда нужен отдельный endpoint
 
 Стандартный OpenAI endpoint `POST /v1/embeddings` возвращает только dense-вектор.

@@ -253,6 +253,7 @@ and `8002`.
 | [Configuration](docs/configuration.md) | Model files, `gateway.json`, environment, and Helm |
 | [Operations](docs/operations.md) | Health, metrics, logging, tracing, and troubleshooting |
 | [Triton 26.07 migration](docs/migration-26.07.md) | Runtime pins, compatibility notes, and production validation |
+| [Sparse and hybrid embeddings](docs/sparse-embeddings.md) | BGE-M3 requests, parameters, and sparse vector format |
 | [API examples](examples/REQUEST_EXAMPLES.en.md) | Chat, media, tools, embeddings, and rerank requests |
 | [Custom backend](backends/vllm_multimodal/README.md) | Native multimodal Triton input contract |
 | [Helm deployment](helm/triton-gateway/README.md) | Kubernetes installation and values |
