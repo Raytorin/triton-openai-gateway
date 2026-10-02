@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from gateway.admission import AdmissionLease
 import gateway.app as gateway_app
+import gateway.generation as generation
 from gateway.openai_contract import normalize_system_messages
 from gateway.prompt import build_sampling_parameters, render_chat_prompt
 from gateway.schemas import ChatCompletionRequest
@@ -27,6 +28,20 @@ def request_with(**overrides):
 
 
 class OpenAIParameterTests(unittest.TestCase):
+    def test_lora_name_is_forwarded_to_sampling_parameters(self):
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                sampling = build_sampling_parameters(
+                    request_with(lora_name="finetuned-adapter", stream=stream)
+                )
+                self.assertEqual("finetuned-adapter", sampling["lora_name"])
+
+    def test_absent_lora_name_is_not_sent_to_backend(self):
+        for overrides in ({}, {"lora_name": None}):
+            with self.subTest(overrides=overrides):
+                sampling = build_sampling_parameters(request_with(**overrides))
+                self.assertNotIn("lora_name", sampling)
+
     def test_seed_is_forwarded_to_sampling_parameters(self):
         sampling = build_sampling_parameters(request_with(seed=777))
 
@@ -164,7 +179,7 @@ class FinishReasonRegressionTests(unittest.IsolatedAsyncioTestCase):
                     new=AsyncMock(return_value=AdmissionLease([])),
                 ),
                 patch.object(
-                    gateway_app,
+                    generation,
                     "call_triton_multimodal",
                     new=AsyncMock(return_value="one two three"),
                 ),

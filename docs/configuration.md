@@ -53,6 +53,14 @@ For the S3 repository flow, the watcher creates a stable link under
 version. The root follows `WATCHER_MODEL_DIR`, `TMP_ROOT`, Triton's
 `TMPDIR`, then `/tmp`, in that order.
 
+The watcher tracks published links. After a link is removed, it deletes the
+corresponding temporary version on the next scan (normally within one second).
+When replacing a link, cleanup follows the switch immediately. The enclosing
+`folder*` checkout and metadata are removed once no numeric versions or active
+references remain. Other versions, shared active references, and paths outside
+the watcher root are preserved; the source S3 repository is untouched. Never
+published directories are not treated as garbage: Triton may still be loading them.
+
 ## `config.pbtxt`
 
 Use Triton `KIND_MODEL` for a vLLM engine that owns multiple GPUs. A minimal
@@ -400,6 +408,48 @@ set the corresponding environment variables.
 | `TOKENIZER_PRELOAD` | `true` | Preload active tokenizers at startup |
 | `TOKENIZER_TRUST_REMOTE_CODE` | `true` | Allow model tokenizer remote code |
 
+### Gateway Watchdog
+
+A background supervisor probes the local `/health` endpoint, which does not call
+Triton. After three consecutive failures it sends SIGTERM to Uvicorn, waits up to
+10 seconds, uses SIGKILL if necessary, and starts a new process. A crashed process
+is restarted without waiting for three probes. Startup allows 60 seconds until
+the first successful response; a single failed probe does not trigger a restart.
+When previously live Triton stops responding, the supervisor stops the gateway
+and exits so container shutdown can finish. Restarting interrupts in-flight gateway requests.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `GATEWAY_HEALTH_INTERVAL_SECONDS` | `1` | Probe interval |
+| `GATEWAY_HEALTH_TIMEOUT_SECONDS` | `1` | Per-request HTTP timeout |
+| `GATEWAY_HEALTH_FAILURE_THRESHOLD` | `3` | Consecutive failure threshold |
+| `GATEWAY_STARTUP_GRACE_SECONDS` | `60` | Startup grace until first successful response |
+| `GATEWAY_STOP_GRACE_SECONDS` | `10` | Shutdown grace after SIGTERM |
+| `GATEWAY_RESTART_DELAY_SECONDS` | `2` | Delay before restarting |
+
+### CPU Preparation
+
+Chat and Responses render templates, tokenize prompts, fit context, and count
+output usage in a bounded worker pool. The pool also handles CPU portions of
+summary preparation; inference remains asynchronous.
+
+| Environment variable | Default | Meaning |
+| --- | ---: | --- |
+| `GATEWAY_CPU_WORKERS` | `4` | Maximum concurrent CPU work items per gateway process |
+| `GATEWAY_CPU_MAX_QUEUE` | `64` | Maximum waiting CPU work items; `0` disables waiting |
+| `GATEWAY_CPU_QUEUE_TIMEOUT_SECONDS` | `30` | Maximum wait for a CPU slot |
+
+A full queue or an expired wait returns HTTP `429` with `Retry-After: 1` before
+streaming starts. An error after streaming starts follows the API's stream error
+contract. On cancellation, queued work is removed; running preparation stops
+between tokenizer calls. CPU and admission slots remain occupied until the
+current native call finishes. Increasing Uvicorn workers multiplies these
+process-local limits as well as the admission limits.
+
+Monitor `triton_gateway_cpu_active`, `triton_gateway_cpu_queued`,
+`triton_gateway_cpu_rejected_total`, `triton_gateway_cpu_wait_seconds`, and
+`triton_gateway_cpu_duration_seconds`. CPU metrics contain no request or model IDs.
+
 ### Admission Control
 
 Global defaults use `GATEWAY_MAX_INFLIGHT_REQUESTS`,
@@ -456,3 +506,29 @@ helm upgrade --install triton-openai-gateway ./helm/triton-gateway \
 
 See the [chart README](../helm/triton-gateway/README.md) for focused deployment
 examples.
+
+### Output token budgets
+
+Chat uses `max_completion_tokens` (or legacy `max_tokens`). Equal aliases are
+accepted; conflicting values return 400. Limits must be positive integers.
+Omitted/null limits select 4096 tokens normally or 8192 with thinking enabled,
+reduced to the available context without discarding an already fitting history.
+Explicit limits are never silently clamped. Thinking and function arguments
+count toward the same output budget. Usage is currently estimated by tokenization.
+
+Global environment defaults: `GATEWAY_DEFAULT_OUTPUT_TOKENS=4096`,
+`GATEWAY_REASONING_DEFAULT_OUTPUT_TOKENS=8192`, `GATEWAY_MAX_OUTPUT_TOKENS=32768`.
+Configure a model in `gateway.json` (not vLLM engine arguments):
+
+```json
+{"generation":{"default_output_tokens":4096,"reasoning_default_output_tokens":8192,"max_output_tokens":32768}}
+```
+
+The model cap cannot exceed the global cap. Automatic defaults are bounded by the cap.
+Set both defaults to 256 to restore the old fallback. A positive runtime
+`model.json.max_model_len` is required. If absent/automatic, explicitly set a
+conservative `generation.context_window`; it never expands a known runtime limit.
+Do not use tokenizer sentinel values as runtime context limits. The existing
+context safety margin applies. Internal summary calls retain their own budgets.
+`X-Output-Token-Limit`, `X-Output-Token-Limit-Source` and `X-Token-Usage-Source`
+report the decision; structured logs include the input/media/context reserves.

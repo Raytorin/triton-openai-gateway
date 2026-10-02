@@ -44,8 +44,8 @@ class ChatCompletionRequest(BaseModel):
     tools: list[dict[str, Any]] | None = None
     tool_choice: Any | None = None
     temperature: float | None = 0.2
-    max_tokens: int | None = None
-    max_completion_tokens: int | None = None
+    max_tokens: int | None = Field(default=None, gt=0, strict=True)
+    max_completion_tokens: int | None = Field(default=None, gt=0, strict=True)
     top_p: float | None = None
     stop: str | list[str] | None = None
     repetition_penalty: float | None = None
@@ -58,6 +58,7 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
     debug: bool = False
     include_reasoning: bool | None = None
+    lora_name: str | None = None
 
     model_config = {"extra": "allow"}
 
@@ -68,6 +69,7 @@ class EmbeddingsRequest(BaseModel):
     dimensions: int | None = None
     encoding_format: str | None = "float"
     user: str | None = None
+    lora_name: str | None = None
 
     model_config = {"extra": "allow"}
 

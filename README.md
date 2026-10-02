@@ -91,6 +91,7 @@ protocol, prompt rendering, media orchestration, and request controls.
 
 ## Features
 
+- `POST /v1/responses` and `/responses` for stateless text/vision generation, functions, and Responses SSE.
 - `POST /v1/chat/completions`, including SSE streaming and client cancellation.
 - OpenAI `response_format` with JSON object and strict JSON Schema output.
 - OpenAI function calling with JSON and Qwen3-Coder XML response parsing.
@@ -234,6 +235,7 @@ embeddings, and reranking are in
 | `GET /metrics` | Gateway Prometheus metrics |
 | `GET /docs` | Interactive OpenAPI documentation |
 | `GET /v1/models` | Models known to the Triton repository |
+| `POST /v1/responses`, `POST /responses` | Stateless Responses with JSON/SSE and client-managed history |
 | `POST /v1/chat/completions` | Chat, tools, and multimodal requests |
 | `POST /v1/embeddings` | Text embeddings |
 | `POST /v1/hybrid_embeddings` | BGE-M3 dense and lexical sparse embeddings |
@@ -246,10 +248,12 @@ and `8002`.
 
 | Document | Contents |
 | --- | --- |
+| [Responses API](docs/responses.md) | Supported parameters, token budgets, streaming, and client compatibility |
 | [Architecture](docs/architecture.md) | Components and end-to-end request flows |
 | [Configuration](docs/configuration.md) | Model files, `gateway.json`, environment, and Helm |
 | [Operations](docs/operations.md) | Health, metrics, logging, tracing, and troubleshooting |
 | [Triton 26.07 migration](docs/migration-26.07.md) | Runtime pins, compatibility notes, and production validation |
+| [Sparse and hybrid embeddings](docs/sparse-embeddings.md) | BGE-M3 requests, parameters, and sparse vector format |
 | [API examples](examples/REQUEST_EXAMPLES.en.md) | Chat, media, tools, embeddings, and rerank requests |
 | [Custom backend](backends/vllm_multimodal/README.md) | Native multimodal Triton input contract |
 | [Helm deployment](helm/triton-gateway/README.md) | Kubernetes installation and values |
@@ -293,3 +297,6 @@ the [Product-Specific Terms for NVIDIA AI Products](https://www.nvidia.com/en-us
 and the licenses of components included in that image. See
 [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before
 redistributing source code or built images.
+
+See the [Responses API contract](docs/responses.md) for stateless JSON/SSE, tools,
+images, supported parameters and the shared output-token policy.

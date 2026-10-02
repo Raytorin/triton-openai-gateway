@@ -20,7 +20,9 @@ import tritonclient.grpc as grpcclient
 import tritonclient.grpc.aio as grpc_aio
 from tritonclient.utils import InferenceServerException
 from fastapi import HTTPException
+from grpc.aio import AioRpcError
 
+from .cpu_work import run_cpu
 from .debug import log_chat_response_debug
 from .multimodal import MediaPayload, MediaPayloads
 from .metrics import (
@@ -236,11 +238,15 @@ def _triton_grpc_error(operation: str, exc: Exception) -> HTTPException:
         "does not support 'generate' request",
         "does not support 'embed' request",
     )
+    lora_unrecognized_markers = (
+        "is not supported, we currently support",
+        "lora feature is not enabled",
+    )
     if any(marker in lowered for marker in limit_markers):
         status_code = 413
     elif any(
         marker in lowered
-        for marker in (*invalid_media_markers, *task_mismatch_markers)
+        for marker in (*invalid_media_markers, *task_mismatch_markers, *lora_unrecognized_markers)
     ):
         status_code = 400
     else:
@@ -425,6 +431,7 @@ def _build_grpc_embedding_inputs(
     *,
     output_types: list[str] | None = None,
     sparse_top_k: int | None = None,
+    lora_name: str | None = None,
 ) -> list[grpcclient.InferInput]:
     embedding_request: dict[str, Any] = {"input": model_input, "pooling_params": {}}
     if dimensions is not None:
@@ -434,6 +441,8 @@ def _build_grpc_embedding_inputs(
         embedding_request["sparse_format"] = "indices_values"
     if sparse_top_k is not None:
         embedding_request["sparse_top_k"] = sparse_top_k
+    if lora_name is not None:
+        embedding_request["lora_name"] = lora_name
 
     embedding_request_json = json.dumps(embedding_request, ensure_ascii=False)
 
@@ -540,8 +549,9 @@ async def call_triton_embeddings(
     model_name: str,
     model_input: str | list[int],
     dimensions: int | None,
+    lora_name: str | None = None,
 ) -> tuple[list[float], int]:
-    inputs = _build_grpc_embedding_inputs(model_input, dimensions)
+    inputs = _build_grpc_embedding_inputs(model_input, dimensions, lora_name=lora_name)
     outputs = [
         grpcclient.InferRequestedOutput("text_output"),
         grpcclient.InferRequestedOutput("num_input_tokens"),
@@ -579,7 +589,7 @@ async def call_triton_embeddings(
         return embedding, prompt_tokens
     except HTTPException:
         raise
-    except InferenceServerException as exc:
+    except (InferenceServerException, AioRpcError) as exc:
         raise _triton_grpc_error("embeddings gRPC infer", exc) from exc
     except json.JSONDecodeError as exc:
         raise HTTPException(
@@ -779,7 +789,7 @@ async def call_triton_multimodal(
         return last_text
     except HTTPException:
         raise
-    except InferenceServerException as exc:
+    except (InferenceServerException, AioRpcError) as exc:
         raise _triton_grpc_error("generation gRPC infer", exc) from exc
     except Exception as exc:
         raise HTTPException(
@@ -965,13 +975,13 @@ async def stream_triton_multimodal_to_openai(
         )
         emitted_text = final_text
 
-    usage = build_usage(
+    usage = await run_cpu(build_usage,
         tokenizer,
         prompt,
         raw_generated_text,
         reasoning_text=reasoning_result.reasoning,
     )
-    reasoning_tokens, content_tokens = observe_reasoning_result(
+    reasoning_tokens, content_tokens = await run_cpu(observe_reasoning_result,
         request.model,
         tokenizer,
         settings,
@@ -1020,7 +1030,7 @@ async def stream_triton_native_multimodal_to_openai(
     media: MediaPayloads,
     reasoning_settings: ReasoningSettings | None = None,
 ) -> AsyncIterator[str]:
-    async for event in stream_triton_multimodal_to_openai(
+    async with aclosing(stream_triton_multimodal_to_openai(
         request,
         tokenizer,
         prompt,
@@ -1028,8 +1038,9 @@ async def stream_triton_native_multimodal_to_openai(
         [],
         media,
         reasoning_settings,
-    ):
-        yield event
+    )) as events:
+        async for event in events:
+            yield event
 
 
 async def call_triton_rerank(
@@ -1322,13 +1333,13 @@ async def stream_triton_to_openai(
         )
         emitted_text = final_text
 
-    usage = build_usage(
+    usage = await run_cpu(build_usage,
         tokenizer,
         prompt,
         raw_generated_text,
         reasoning_text=reasoning_result.reasoning,
     )
-    reasoning_tokens, content_tokens = observe_reasoning_result(
+    reasoning_tokens, content_tokens = await run_cpu(observe_reasoning_result,
         request.model,
         tokenizer,
         settings,
@@ -1464,7 +1475,7 @@ async def stream_python_chat_to_openai(
         )
     except HTTPException as exc:
         error_text = _friendly_error_message(exc.detail)
-        usage = build_usage(tokenizer, prompt, "")
+        usage = await run_cpu(build_usage, tokenizer, prompt, "")
 
         yield sse_event(
             build_openai_chunk(
@@ -1495,7 +1506,7 @@ async def stream_python_chat_to_openai(
         yield "data: [DONE]\n\n"
         return
 
-    generated_text, reasoning_result, usage = _process_completed_generation(
+    generated_text, reasoning_result, usage = await run_cpu(_process_completed_generation,
         request,
         tokenizer,
         prompt,
@@ -1503,7 +1514,7 @@ async def stream_python_chat_to_openai(
         reasoning_settings,
     )
     tool_calls, remaining_text = (
-        extract_tool_calls(generated_text, tools, tool_parser)
+        await run_cpu(extract_tool_calls, generated_text, tools, tool_parser)
         if tools
         else ([], generated_text)
     )
@@ -1535,8 +1546,20 @@ async def stream_python_chat_to_openai(
                 reasoning_message_fields(reasoning_result, settings),
             )
         )
+    # Match JSON output order so Responses output can be replayed verbatim
+    # before the client appends function_call_output items.
+    if remaining_text:
+        yield sse_event(
+            build_openai_chunk(
+                response_id,
+                created,
+                request.model,
+                {"content": remaining_text},
+            )
+        )
     if tool_calls:
-        finish_reason = "tool_calls"
+        if finish_reason != "length":
+            finish_reason = "tool_calls"
         for index, tool_call in enumerate(tool_calls):
             yield sse_event(
                 build_openai_chunk(
@@ -1553,15 +1576,6 @@ async def stream_python_chat_to_openai(
                     },
                 )
             )
-    elif remaining_text:
-        yield sse_event(
-            build_openai_chunk(
-                response_id,
-                created,
-                request.model,
-                {"content": remaining_text},
-            )
-        )
 
     log_chat_response_debug(
         request,
@@ -1597,14 +1611,14 @@ async def stream_tool_aware_response(
     created = int(time.time())
 
     generated_text = await call_triton(request.model, prompt, sampling_parameters)
-    generated_text, reasoning_result, usage = _process_completed_generation(
+    generated_text, reasoning_result, usage = await run_cpu(_process_completed_generation,
         request,
         tokenizer,
         prompt,
         generated_text,
         reasoning_settings,
     )
-    tool_calls, remaining_text = extract_tool_calls(generated_text, tools, tool_parser)
+    tool_calls, remaining_text = await run_cpu(extract_tool_calls, generated_text, tools, tool_parser)
 
     yield sse_event(
         build_openai_chunk(
@@ -1633,8 +1647,20 @@ async def stream_tool_aware_response(
                 reasoning_message_fields(reasoning_result, settings),
             )
         )
+    # Match JSON output order so Responses output can be replayed verbatim
+    # before the client appends function_call_output items.
+    if remaining_text:
+        yield sse_event(
+            build_openai_chunk(
+                response_id,
+                created,
+                request.model,
+                {"content": remaining_text},
+            )
+        )
     if tool_calls:
-        finish_reason = "tool_calls"
+        if finish_reason != "length":
+            finish_reason = "tool_calls"
         for index, tool_call in enumerate(tool_calls):
             yield sse_event(
                 build_openai_chunk(
@@ -1651,15 +1677,6 @@ async def stream_tool_aware_response(
                     },
                 )
             )
-    elif remaining_text:
-        yield sse_event(
-            build_openai_chunk(
-                response_id,
-                created,
-                request.model,
-                {"content": remaining_text},
-            )
-        )
 
     log_chat_response_debug(
         request,
@@ -1703,14 +1720,14 @@ async def stream_tool_aware_multimodal_response(
         images,
         media,
     )
-    generated_text, reasoning_result, usage = _process_completed_generation(
+    generated_text, reasoning_result, usage = await run_cpu(_process_completed_generation,
         request,
         tokenizer,
         prompt,
         generated_text,
         reasoning_settings,
     )
-    tool_calls, remaining_text = extract_tool_calls(generated_text, tools, tool_parser)
+    tool_calls, remaining_text = await run_cpu(extract_tool_calls, generated_text, tools, tool_parser)
 
     yield sse_event(
         build_openai_chunk(
@@ -1739,8 +1756,20 @@ async def stream_tool_aware_multimodal_response(
                 reasoning_message_fields(reasoning_result, settings),
             )
         )
+    # Match JSON output order so Responses output can be replayed verbatim
+    # before the client appends function_call_output items.
+    if remaining_text:
+        yield sse_event(
+            build_openai_chunk(
+                response_id,
+                created,
+                request.model,
+                {"content": remaining_text},
+            )
+        )
     if tool_calls:
-        finish_reason = "tool_calls"
+        if finish_reason != "length":
+            finish_reason = "tool_calls"
         for index, tool_call in enumerate(tool_calls):
             yield sse_event(
                 build_openai_chunk(
@@ -1757,15 +1786,6 @@ async def stream_tool_aware_multimodal_response(
                     },
                 )
             )
-    elif remaining_text:
-        yield sse_event(
-            build_openai_chunk(
-                response_id,
-                created,
-                request.model,
-                {"content": remaining_text},
-            )
-        )
 
     log_chat_response_debug(
         request,
@@ -1798,7 +1818,7 @@ async def stream_tool_aware_native_multimodal_response(
     tool_parser: str | None = None,
     reasoning_settings: ReasoningSettings | None = None,
 ) -> AsyncIterator[str]:
-    async for event in stream_tool_aware_multimodal_response(
+    async with aclosing(stream_tool_aware_multimodal_response(
         request,
         tokenizer,
         prompt,
@@ -1808,5 +1828,6 @@ async def stream_tool_aware_native_multimodal_response(
         tool_parser,
         media,
         reasoning_settings,
-    ):
-        yield event
+    )) as events:
+        async for event in events:
+            yield event

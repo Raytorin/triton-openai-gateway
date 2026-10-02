@@ -92,6 +92,7 @@ continuous batching и параллелизм остаются внутри Trit
 
 ## Возможности
 
+- `POST /v1/responses` и `/responses` для генерации текста/vision без хранения, функций и Responses SSE.
 - `POST /v1/chat/completions` с SSE streaming и отменой при отключении клиента.
 - OpenAI `response_format` для JSON object и строгого JSON Schema output.
 - OpenAI function calling с разбором JSON и XML Qwen3-Coder.
@@ -235,6 +236,7 @@ embeddings и rerank находятся в [примерах API](examples/REQUE
 | `GET /metrics` | Prometheus-метрики gateway |
 | `GET /docs` | Интерактивная OpenAPI-документация |
 | `GET /v1/models` | Модели, известные Triton repository |
+| `POST /v1/responses`, `POST /responses` | Responses без хранения, JSON/SSE и история на стороне клиента |
 | `POST /v1/chat/completions` | Чат, tools и мультимодальные запросы |
 | `POST /v1/embeddings` | Текстовые embeddings |
 | `POST /v1/hybrid_embeddings` | Dense и лексические sparse embeddings BGE-M3 |
@@ -247,10 +249,12 @@ Raw Triton HTTP, gRPC и metrics остаются доступными на по
 
 | Документ | Содержание |
 | --- | --- |
+| [Responses API](docs/responses.ru.md) | Поддерживаемые параметры, бюджеты токенов, streaming и совместимость клиентов |
 | [Архитектура](docs/architecture.ru.md) | Компоненты и полные цепочки запросов |
 | [Конфигурация](docs/configuration.ru.md) | Файлы модели, `gateway.json`, environment и Helm |
 | [Эксплуатация](docs/operations.ru.md) | Health, метрики, логи, tracing и диагностика |
 | [Миграция на Triton 26.07](docs/migration-26.07.ru.md) | Runtime pins, совместимость и production-проверка |
+| [Sparse и hybrid embeddings](docs/sparse-embeddings.ru.md) | Запросы BGE-M3, параметры и формат sparse-векторов |
 | [Примеры API](examples/REQUEST_EXAMPLES.md) | Чат, media, tools, embeddings и rerank |
 | [Собственный backend](backends/vllm_multimodal/README.ru.md) | Контракт нативных мультимодальных input Triton |
 | [Helm deployment](helm/triton-gateway/README.ru.md) | Установка в Kubernetes и основные values |
@@ -294,3 +298,6 @@ NGC container и дополнительно подпадает под
 а также лицензии компонентов внутри базового образа. Перед распространением
 исходников или собранного образа изучите [NOTICE](NOTICE) и
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+[Контракт Responses API](docs/responses.ru.md): JSON/SSE без хранения, функции,
+изображения, поддерживаемые параметры и общая политика токенов.

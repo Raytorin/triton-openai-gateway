@@ -9,6 +9,8 @@ from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
 LANGUAGE_PAIRS = (
+    ("docs/sparse-embeddings.md", "docs/sparse-embeddings.ru.md"),
+    ("docs/responses.md", "docs/responses.ru.md"),
     ("README.md", "README.ru.md"),
     ("AUTHORS.md", "AUTHORS.ru.md"),
     ("CONTRIBUTING.md", "CONTRIBUTING.ru.md"),

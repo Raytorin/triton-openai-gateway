@@ -19,6 +19,8 @@ EXPECTED_OPERATIONS = {
     "/v1/rerank": {"post"},
     "/v2/rerank": {"post"},
     "/v1/chat/completions": {"post"},
+    "/v1/responses": {"post"},
+    "/responses": {"post"},
 }
 
 

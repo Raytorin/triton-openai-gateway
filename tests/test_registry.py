@@ -98,7 +98,7 @@ class RegistryTests(unittest.TestCase):
             active, model_path = self._create_model(
                 Path(directory),
                 "chat-model",
-                '{"max_model_len":32768}',
+                '{"runner":"generate","max_model_len":32768}',
             )
             with patch("gateway.registry.MODELS_ACTIVE_DIR", active):
                 registry = ModelRegistry()
@@ -108,6 +108,20 @@ class RegistryTests(unittest.TestCase):
 
             self.assertEqual(context.exception.status_code, 400)
             self.assertIn("text generation", str(context.exception.detail))
+
+    def test_auto_task_detection_is_delegated_to_backend(self):
+        for backend in ("vllm", "vllm_multimodal"):
+            for config in ('{"max_model_len":32768}', '{"runner":"auto"}'):
+                with self.subTest(backend=backend, config=config):
+                    with tempfile.TemporaryDirectory() as directory:
+                        active, model_path = self._create_model(
+                            Path(directory), "auto-model", config, backend
+                        )
+                        with patch("gateway.registry.MODELS_ACTIVE_DIR", active):
+                            registry = ModelRegistry()
+                            self.assertIsNone(registry.get_capabilities("auto-model"))
+                            registry.validate_route("auto-model", "embeddings", model_path)
+                            registry.validate_route("auto-model", "chat", model_path)
 
 
 if __name__ == "__main__":

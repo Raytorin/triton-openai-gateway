@@ -9,6 +9,74 @@ WATCHER_MODEL_DIR_SOURCE="${WATCHER_MODEL_DIR_SOURCE:-direct}"
 VERSION_DIR_REGEX="${VERSION_DIR_REGEX:-^[0-9]+$}"
 MODELS_ACTIVE_DIR="${MODELS_ACTIVE_DIR:-${WATCHER_MODEL_DIR%/}/models-active}"
 
+# Remember published links so an external unlink is an unload, not a signal
+# to publish the same temporary checkout again on the next scan.
+declare -A published_targets=()
+
+cleanup_unlinked_target() {
+  local target="$1"
+  python3 - "${WATCHER_MODEL_DIR}" "${MODELS_ACTIVE_DIR}" "${target}" <<'CLEANUP'
+import pathlib
+import re
+import shutil
+import sys
+
+root, active, target = map(pathlib.Path, sys.argv[1:])
+root, active = root.resolve(), active.resolve()
+# Only direct folder*/numeric-version checkouts belong to this watcher.
+# Never follow a checkout/version symlink into another repository.
+if target.is_symlink() or target.parent.is_symlink():
+    raise SystemExit(0)
+target = target.resolve()
+checkout = target.parent
+if (checkout.parent != root or not checkout.name.startswith("folder")
+        or not re.fullmatch(r"[0-9]+", target.name)
+        or checkout == active or checkout in active.parents):
+    raise SystemExit(0)
+links = [link.resolve() for link in active.iterdir() if link.is_symlink()]
+if any(link == target or target in link.parents for link in links):
+    raise SystemExit(0)
+try:
+    if target.is_dir():
+        shutil.rmtree(target)
+        print(f"removed inactive model version {target}", flush=True)
+    # Other versions may still be downloading or active. Preserve those and
+    # shared metadata until the last version has gone.
+    if checkout.is_dir() and not any(
+        child.is_dir() and re.fullmatch(r"[0-9]+", child.name)
+        for child in checkout.iterdir()
+    ) and not any(link == checkout or checkout in link.parents for link in links):
+        shutil.rmtree(checkout)
+        print(f"removed inactive model checkout {checkout}", flush=True)
+except OSError as exc:
+    print(f"model cleanup failed for {target}: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+CLEANUP
+}
+
+remember_existing_links() {
+  local link_path
+  [[ -d "${MODELS_ACTIVE_DIR}" ]] || return 0
+  while IFS= read -r -d '' link_path; do
+    published_targets["${link_path}"]="$(readlink -m -- "${link_path}")"
+  done < <(find "${MODELS_ACTIVE_DIR}" -mindepth 1 -maxdepth 1 -type l -print0)
+}
+
+cleanup_removed_links() {
+  local link_path previous_target current_target
+  for link_path in "${!published_targets[@]}"; do
+    previous_target="${published_targets[${link_path}]}"
+    current_target=""
+    if [[ -L "${link_path}" ]]; then
+      current_target="$(readlink -m -- "${link_path}")"
+    fi
+    if [[ "${current_target}" != "${previous_target}" ]]; then
+      cleanup_unlinked_target "${previous_target}" || continue
+      unset 'published_targets[$link_path]'
+    fi
+  done
+}
+
 sync_model_json() {
   local target_dir="$1"
   local model_file="${target_dir}/model.json"
@@ -163,18 +231,19 @@ sync_model_symlink() {
   local model_name link_path existing_target
 
   model_name="$(resolve_model_name "${target_dir}")"
-  [[ -n "${model_name}" ]] || return 0
+  [[ -n "${model_name}" && "${model_name}" != "." && "${model_name}" != ".." && "${model_name}" != */* ]] || return 0
 
   mkdir -p "${MODELS_ACTIVE_DIR}"
   link_path="${MODELS_ACTIVE_DIR}/${model_name}"
 
   if [[ -L "${link_path}" ]]; then
-    existing_target="$(readlink -f "${link_path}" 2>/dev/null || true)"
+    existing_target="$(readlink -m "${link_path}" 2>/dev/null || true)"
   else
     existing_target=""
   fi
 
   if [[ -n "${existing_target}" && "${existing_target}" == "$(readlink -f "${target_dir}")" ]]; then
+    published_targets["${link_path}"]="${existing_target}"
     return 0
   fi
 
@@ -182,7 +251,11 @@ sync_model_symlink() {
     return 0
   fi
 
-  ln -sfn "${target_dir}" "${link_path}"
+  ln -sfnT "${target_dir}" "${link_path}"
+  published_targets["${link_path}"]="$(readlink -m -- "${target_dir}")"
+  if [[ -n "${existing_target}" ]]; then
+    cleanup_unlinked_target "${existing_target}" || true
+  fi
   echo "$(date '+%F %T') updated symlink ${link_path} -> ${target_dir}"
 }
 
@@ -193,10 +266,13 @@ cleanup_stale_symlinks() {
   [[ -d "${MODELS_ACTIVE_DIR}" ]] || return 0
 
   while IFS= read -r link_path; do
-    target_path="$(readlink -f "${link_path}" 2>/dev/null || true)"
+    target_path="$(readlink -m "${link_path}" 2>/dev/null || true)"
     if [[ -z "${target_path}" || ! -e "${target_path}" ]]; then
       rm -f "${link_path}"
       echo "$(date '+%F %T') removed stale symlink ${link_path}"
+      if [[ -n "${target_path}" ]]; then
+        cleanup_unlinked_target "${target_path}" || true
+      fi
     fi
   done < <(find "${MODELS_ACTIVE_DIR}" -mindepth 1 -maxdepth 1 -type l 2>/dev/null | sort)
 }
@@ -220,6 +296,7 @@ scan_once() {
   local target
 
   cleanup_stale_symlinks
+  cleanup_removed_links
 
   while IFS= read -r folder; do
     while IFS= read -r target; do
@@ -228,9 +305,11 @@ scan_once() {
   done < <(find "${WATCHER_MODEL_DIR}" -maxdepth 1 -type d -name 'folder*' 2>/dev/null | sort)
 }
 
-echo "$(date '+%F %T') watching ${WATCHER_MODEL_DIR} (source=${WATCHER_MODEL_DIR_SOURCE}, models_active_dir=${MODELS_ACTIVE_DIR}) ..."
-
-while true; do
-  scan_once
-  sleep 1
-done
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  echo "$(date '+%F %T') watching ${WATCHER_MODEL_DIR} (source=${WATCHER_MODEL_DIR_SOURCE}, models_active_dir=${MODELS_ACTIVE_DIR}) ..."
+  remember_existing_links
+  while true; do
+    scan_once
+    sleep 1
+  done
+fi
