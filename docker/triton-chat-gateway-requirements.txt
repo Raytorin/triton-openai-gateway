@@ -9,7 +9,7 @@ sentencepiece==0.2.2
 tritonclient[grpc]==2.71.0
 uvicorn[standard]==0.51.0
 compressed-tensors==0.17.0
-accelerate==1.14.0
+accelerate==1.15.0
 pillow==12.3.0
 pymupdf==1.28.2
 qwen-vl-utils[decord]==0.0.14
