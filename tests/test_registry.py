@@ -1,4 +1,7 @@
+import asyncio
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import tempfile
 from pathlib import Path
 from types import ModuleType
@@ -8,6 +11,61 @@ from unittest.mock import MagicMock, patch
 from fastapi import HTTPException
 
 from gateway.registry import ModelRegistry
+
+
+class RegistryConcurrencyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cold_waiters_do_not_block_cached_tokenizer(self):
+        registry = ModelRegistry()
+        cached = object()
+        registry._cache["warm"] = ("/warm", cached)
+        started = asyncio.Event()
+        release = threading.Event()
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=2))
+        calls = []
+
+        def load(path, **_kwargs):
+            calls.append(path)
+            loop.call_soon_threadsafe(started.set)
+            release.wait(2)
+            return object()
+
+        transformers = ModuleType("transformers")
+        transformers.AutoTokenizer = type("Loader", (), {"from_pretrained": staticmethod(load)})
+        with (
+            patch.object(registry, "resolve", side_effect=lambda name: Path("/") / name),
+            patch.object(registry, "resolve_tokenizer_path", side_effect=lambda path: path),
+            patch.dict(sys.modules, {"transformers": transformers}),
+        ):
+            cold = [asyncio.create_task(registry.get_tokenizer_async("cold")) for _ in range(5)]
+            await asyncio.wait_for(started.wait(), 1)
+            try:
+                warm, _ = await asyncio.wait_for(registry.get_tokenizer_async("warm"), 0.2)
+                self.assertIs(warm, cached)
+                cold[0].cancel()
+                await asyncio.gather(cold[0], return_exceptions=True)
+            finally:
+                release.set()
+                results = await asyncio.gather(*cold, return_exceptions=True)
+            self.assertEqual(calls, ["/cold"])
+            self.assertTrue(all(result[0] is results[1][0] for result in results[1:]))
+
+    async def test_failed_tokenizer_load_can_be_retried_and_path_change_reloads(self):
+        registry = ModelRegistry()
+        first, second = object(), object()
+        loader = MagicMock(side_effect=[ValueError("broken tokenizer"), first, second])
+        transformers = ModuleType("transformers")
+        transformers.AutoTokenizer = type("Loader", (), {"from_pretrained": loader})
+        with (
+            patch.object(registry, "resolve", return_value=Path("/model")),
+            patch.object(registry, "resolve_tokenizer_path", return_value=Path("/v1")) as path,
+            patch.dict(sys.modules, {"transformers": transformers}),
+        ):
+            with self.assertRaisesRegex(ValueError, "broken tokenizer"):
+                await registry.get_tokenizer_async("model")
+            self.assertIs((await registry.get_tokenizer_async("model"))[0], first)
+            path.return_value = Path("/v2")
+            self.assertIs((await registry.get_tokenizer_async("model"))[0], second)
 
 
 class _AutoTokenizer:

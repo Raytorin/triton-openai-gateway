@@ -65,6 +65,8 @@ class ModelRegistry:
     def __init__(self):
         self._cache: dict[str, tuple[str, Any]] = {}
         self._lock = Lock()
+        self._model_locks: dict[str, Any] = {}
+        self._loads: dict[tuple[asyncio.AbstractEventLoop, str], asyncio.Task] = {}
 
     def list_models(self) -> list[str]:
         if not MODELS_ACTIVE_DIR.exists():
@@ -155,6 +157,16 @@ class ModelRegistry:
             if cached and cached[0] == tokenizer_path_str:
                 return cached[1], model_path
 
+            model_lock = self._model_locks.setdefault(model_name, Lock())
+
+        # Only the same model shares a loading lock. Never hold the cache
+        # lock across imports, filesystem reads or third-party loading code.
+        with model_lock:
+            with self._lock:
+                cached = self._cache.get(model_name)
+                if cached and cached[0] == tokenizer_path_str:
+                    return cached[1], model_path
+
             # Transformers 5 imports PyTorch eagerly and noticeably delays
             # Uvicorn startup. Import it only when a tokenizer must be loaded.
             from transformers import AutoTokenizer
@@ -175,13 +187,31 @@ class ModelRegistry:
                 TOKENIZER_LOAD_DURATION.labels(model_name).observe(
                     time.monotonic() - started_at
                 )
-            self._cache[model_name] = (tokenizer_path_str, tokenizer)
+            with self._lock:
+                self._cache[model_name] = (tokenizer_path_str, tokenizer)
             return tokenizer, model_path
 
     async def get_tokenizer_async(self, model_name: str):
-        # Loading a Hugging Face tokenizer performs filesystem work and may
-        # import model-specific Python. Keep it outside the ASGI event loop.
-        return await asyncio.to_thread(self.get_tokenizer, model_name)
+        # Share one in-flight task per model and loop. Duplicate async callers
+        # must not fill the thread executor with waiters on a threading.Lock.
+        key = (asyncio.get_running_loop(), model_name)
+        with self._lock:
+            task = self._loads.get(key)
+            if task is None:
+                task = asyncio.create_task(asyncio.to_thread(self.get_tokenizer, model_name))
+                self._loads[key] = task
+                task.add_done_callback(lambda done: self._finish_load(key, done))
+        # A disconnected waiter does not cancel loading for the others.
+        return await asyncio.shield(task)
+
+    def _finish_load(self, key, task: asyncio.Task) -> None:
+        with self._lock:
+            if self._loads.get(key) is task:
+                del self._loads[key]
+        # Retrieve errors even when every waiter disconnected; future calls
+        # can retry after either success or failure.
+        if not task.cancelled():
+            task.exception()
 
     async def preload_tokenizers(self) -> None:
         models = self.list_models()
