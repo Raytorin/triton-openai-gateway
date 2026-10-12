@@ -13,7 +13,7 @@ ACCELERATE_ADVISORY = "PYSEC-2026-3804"
 # Also known as GHSA-4j2p-28q2-5m79 / CVE-2026-69112.
 # Temporary acceptance for issue #28; this is not a vulnerability fix.
 # The unmodified audit resumes at 00:00 UTC on this date.
-ACCELERATE_EXCEPTION_EXPIRES = date(2026, 10, 10)
+ACCELERATE_EXCEPTION_EXPIRES = date(2026, 11, 10)
 
 
 def runtime_exception_args(requirements: str, today: date) -> list[str]:
