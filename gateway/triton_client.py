@@ -560,27 +560,27 @@ async def call_triton_embeddings(
     try:
         embedding: list[float] | None = None
         prompt_tokens = 0
-        async for item in _stream_grpc_results(
-            "embeddings",
-            model_name,
-            inputs,
-            outputs,
-        ):
-            embedding_json = _decode_numpy_first(item.as_numpy("text_output"))
-            if embedding_json is None:
-                continue
-            parsed = json.loads(str(embedding_json))
-            if not isinstance(parsed, list):
-                raise HTTPException(
-                    status_code=502,
-                    detail=(
-                        "Unexpected embeddings payload type from Triton: "
-                        f"{type(parsed).__name__}"
-                    ),
+        async with aclosing(
+            _stream_grpc_results("embeddings", model_name, inputs, outputs)
+        ) as results:
+            async for item in results:
+                embedding_json = _decode_numpy_first(item.as_numpy("text_output"))
+                if embedding_json is None:
+                    continue
+                parsed = json.loads(str(embedding_json))
+                if not isinstance(parsed, list):
+                    raise HTTPException(
+                        status_code=502,
+                        detail=(
+                            "Unexpected embeddings payload type from Triton: "
+                            f"{type(parsed).__name__}"
+                        ),
+                    )
+                embedding = [float(value) for value in parsed]
+                prompt_tokens_value = _decode_numpy_first(
+                    item.as_numpy("num_input_tokens")
                 )
-            embedding = [float(value) for value in parsed]
-            prompt_tokens_value = _decode_numpy_first(item.as_numpy("num_input_tokens"))
-            prompt_tokens = int(prompt_tokens_value or 0)
+                prompt_tokens = int(prompt_tokens_value or 0)
         if embedding is None:
             raise HTTPException(
                 status_code=502,
@@ -624,21 +624,19 @@ async def call_triton_hybrid_embeddings(
     try:
         result: dict[str, Any] | None = None
         prompt_tokens = 0
-        async for item in _stream_grpc_results(
-            "hybrid_embeddings",
-            model_name,
-            inputs,
-            outputs,
-        ):
-            embedding_json = _decode_numpy_first(item.as_numpy("text_output"))
-            if embedding_json is None:
-                continue
-            parsed = json.loads(str(embedding_json))
-            result = _validate_hybrid_embedding_payload(parsed, output_types)
-            prompt_tokens_value = _decode_numpy_first(
-                item.as_numpy("num_input_tokens")
-            )
-            prompt_tokens = int(prompt_tokens_value or 0)
+        async with aclosing(
+            _stream_grpc_results("hybrid_embeddings", model_name, inputs, outputs)
+        ) as results:
+            async for item in results:
+                embedding_json = _decode_numpy_first(item.as_numpy("text_output"))
+                if embedding_json is None:
+                    continue
+                parsed = json.loads(str(embedding_json))
+                result = _validate_hybrid_embedding_payload(parsed, output_types)
+                prompt_tokens_value = _decode_numpy_first(
+                    item.as_numpy("num_input_tokens")
+                )
+                prompt_tokens = int(prompt_tokens_value or 0)
         if result is None:
             raise HTTPException(
                 status_code=502,
