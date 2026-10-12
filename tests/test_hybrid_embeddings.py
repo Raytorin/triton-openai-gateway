@@ -251,6 +251,7 @@ class HybridEmbeddingEndpointTests(unittest.IsolatedAsyncioTestCase):
                     request
                 )
 
+        response = json.loads(response.body)
         self.assertEqual(response["object"], "hybrid_embedding.list")
         self.assertEqual(response["usage"]["prompt_tokens"], 5)
         self.assertEqual(response["data"][0]["embedding"], [0.1, 0.2])

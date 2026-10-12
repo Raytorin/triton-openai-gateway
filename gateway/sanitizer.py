@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Raytorin
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import re
 
 
@@ -103,22 +105,87 @@ def _remove_thinking_blocks(text: str) -> tuple[str, bool]:
         )
 
 
-def _trim_repeated_completion(text: str) -> tuple[str, bool]:
+_PARAGRAPH_RE = re.compile(r"\n\s*\n")
+_NONSPACE_RE = re.compile(r"\S")
+_NEWLINE_RE = re.compile(r"\n")
+
+
+def _trim_repeated_completion(text: str, state: StreamingSanitizer | None = None) -> tuple[str, bool]:
     normalized = text.rstrip()
-    for match in re.finditer(r"\n\s*\n", normalized):
-        head = normalized[: match.start()].rstrip()
-        tail = normalized[match.end() :].lstrip()
-        if len(head) < 80 or len(tail) < 32:
+    start = state.repeat_start if state is not None else 0
+    next_start = len(normalized)
+    for match in _PARAGRAPH_RE.finditer(normalized, start):
+        # Compare offsets and at most 96 characters. Slicing both the entire
+        # head and tail at every paragraph makes one scan quadratic.
+        head_end = match.start()
+        while head_end and normalized[head_end - 1].isspace():
+            head_end -= 1
+        if head_end < 80:
             continue
-
-        duplicate_prefix_len = min(len(head), len(tail), 96)
-        if duplicate_prefix_len < 32:
+        tail_match = _NONSPACE_RE.search(normalized, match.end())
+        tail_start = tail_match.start() if tail_match else len(normalized)
+        tail_length = len(normalized) - tail_start
+        if tail_length < 32:
+            next_start = min(next_start, match.start())
             continue
-
-        if tail.startswith(head[:duplicate_prefix_len]):
-            return head, True
-
+        prefix_length = min(head_end, tail_length, 96)
+        if normalized.startswith(normalized[:prefix_length], tail_start):
+            return normalized[:head_end], True
+    if state is not None:
+        state.repeat_start = next_start
     return text, False
+
+
+class StreamingSanitizer:
+    """Remember completed scans; recheck incomplete lines and paragraph tails.
+
+    Thinking removal and leading role cleanup retain their stateless semantics.
+    If either revises the visible prefix, all scan cursors reset automatically.
+    """
+    def __init__(self):
+        self.previous = ""
+        self.repeat_start = 0
+        self.line_start = 0
+        self.previous_line_start = 0
+        self.stopped: tuple[str, bool] | None = None
+
+    def sanitize(self, text: str) -> tuple[str, bool]:
+        return sanitize_generated_text(text, streaming=True, _state=self)
+
+    def prepare(self, text: str) -> None:
+        if not text.startswith(self.previous):
+            self.__init__()
+
+    def marker_index(self, text: str) -> int | None:
+        old_length = len(self.previous)
+        # Literal markers can straddle an arbitrary backend chunk boundary.
+        overlap = max(map(len, DEFAULT_CHAT_STOP_SEQUENCES)) - 1
+        start = max(0, old_length - overlap)
+        cut_at = None
+        for marker in DEFAULT_CHAT_STOP_SEQUENCES:
+            index = text.find(marker, start)
+            if index != -1 and (cut_at is None or index < cut_at):
+                cut_at = index
+
+        # Role markers require a completed line; prompt-leak markers require
+        # /no_think. Search only when that new input can complete a match.
+        has_newline = text.find("\n", old_length) != -1
+        if has_newline:
+            match = CHAT_ROLE_MARKER_RE.search(text, self.line_start)
+            if match and (cut_at is None or match.start() < cut_at):
+                cut_at = match.start()
+        if "/no_think" in text[max(0, old_length - 9):].lower():
+            match = PROMPT_LEAK_MARKER_RE.search(text, self.previous_line_start)
+            if match and (cut_at is None or match.start() < cut_at):
+                cut_at = match.start()
+
+        for newline in _NEWLINE_RE.finditer(text, old_length):
+            # Retain the previous non-empty line through arbitrarily many
+            # blank lines: user ... \n <whitespace> /no_think is still a marker.
+            if _NONSPACE_RE.search(text, self.line_start, newline.start()):
+                self.previous_line_start = max(0, self.line_start - 1)
+            self.line_start = newline.end()
+        return cut_at
 
 
 def _find_chat_marker_index(text: str) -> int | None:
@@ -139,15 +206,24 @@ def _find_chat_marker_index(text: str) -> int | None:
     return cut_at
 
 
-def sanitize_generated_text(text: str, *, streaming: bool = False) -> tuple[str, bool]:
+def sanitize_generated_text(text: str, *, streaming: bool = False, _state: StreamingSanitizer | None = None) -> tuple[str, bool]:
     if streaming and not _contains_thinking_tag(text):
         if _looks_like_reasoning(text):
             return "", False
 
     text, stopped_at_thinking = _remove_thinking_blocks(text)
     text = _strip_leading_role_noise(text)
-    text, stopped_at_repeat = _trim_repeated_completion(text)
-    cut_at = _find_chat_marker_index(text)
+    if _state is not None:
+        _state.prepare(text)
+        if _state.stopped is not None:
+            return _state.stopped
+    original_text = text
+    text, stopped_at_repeat = _trim_repeated_completion(text, _state)
+    cut_at = _find_chat_marker_index(text) if _state is None else _state.marker_index(text)
+    if _state is not None:
+        _state.previous = original_text
+        if cut_at is not None or stopped_at_thinking or stopped_at_repeat:
+            _state.stopped = (text[:cut_at].rstrip() if cut_at is not None else text, True)
     if cut_at is None:
         return text, stopped_at_thinking or stopped_at_repeat
     return text[:cut_at].rstrip(), True

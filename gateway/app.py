@@ -16,9 +16,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import __author__, __repository__, __version__
 from .admission import AdmissionLease
+from .cpu_work import run_cpu
 from .embeddings import (
     build_embedding_inputs,
-    encode_embedding,
+    render_embedding_response,
+    run_embedding_batch,
     load_hybrid_embedding_settings,
     reject_hybrid_options_on_dense_endpoint,
     tokenize_embedding_inputs,
@@ -29,7 +31,7 @@ from .generation_telemetry import (
     get_generation_telemetry,
     observe_generation_usage,
 )
-from .metrics import EMBEDDING_BATCH_SIZE, RERANK_STRATEGY_SELECTIONS, SPARSE_EMBEDDING_SIZE, metrics_response
+from .metrics import EMBEDDING_BATCH_SIZE, RERANK_STRATEGY_SELECTIONS, metrics_response
 from .multimodal import extract_media_payloads, reclassify_media_content
 from .observability import RequestContextMiddleware, log_event, set_request_model
 from .prompt import build_conversation
@@ -294,7 +296,7 @@ async def create_embeddings(request: EmbeddingsRequest):
 
     if backend in {"vllm", "vllm_multimodal"}:
         tokenizer, _ = await registry.get_tokenizer_async(request.model)
-        model_inputs = tokenize_embedding_inputs(tokenizer, model_inputs)
+        model_inputs = await run_cpu(tokenize_embedding_inputs, tokenizer, model_inputs)
         log_event(
             logger,
             "embeddings.routed",
@@ -314,43 +316,21 @@ async def create_embeddings(request: EmbeddingsRequest):
         )
 
     EMBEDDING_BATCH_SIZE.labels(request.model).observe(len(model_inputs))
-    semaphore = asyncio.Semaphore(EMBEDDING_MAX_CONCURRENCY)
+    async def embed(model_input):
+        return await call_triton_embeddings(
+            request.model, model_input, request.dimensions, lora_name=request.lora_name,
+        )
 
-    async def embed(index: int, model_input):
-        async with semaphore:
-            embedding, prompt_tokens = await call_triton_embeddings(
-                request.model,
-                model_input,
-                request.dimensions,
-                lora_name=request.lora_name,
-            )
-        return index, embedding, prompt_tokens
-
-    results = await asyncio.gather(
-        *(embed(index, model_input) for index, model_input in enumerate(model_inputs))
-    )
-    results.sort(key=lambda item: item[0])
+    results = await run_embedding_batch(model_inputs, embed, EMBEDDING_MAX_CONCURRENCY)
     total_prompt_tokens = sum(item[2] for item in results)
-    data = [
-        {
-            "object": "embedding",
-            "embedding": encode_embedding(embedding, encoding_format),
-            "index": index,
-        }
-        for index, embedding, _ in results
-    ]
-
     usage = {
         "prompt_tokens": total_prompt_tokens,
         "total_tokens": total_prompt_tokens,
     }
     observe_generation_usage(usage)
-    return {
-        "object": "list",
-        "data": data,
-        "model": request.model,
-        "usage": usage,
-    }
+    return await run_cpu(
+        render_embedding_response, request.model, results, encoding_format, usage,
+    )
 
 
 @app.post("/v1/embeddings/hybrid", include_in_schema=False)
@@ -391,54 +371,21 @@ async def create_hybrid_embeddings(request: HybridEmbeddingsRequest):
         input_count=len(model_inputs),
     )
     EMBEDDING_BATCH_SIZE.labels(request.model).observe(len(model_inputs))
-    semaphore = asyncio.Semaphore(EMBEDDING_MAX_CONCURRENCY)
+    async def embed(model_input):
+        return await call_triton_hybrid_embeddings(
+            request.model, model_input, request.dimensions, output_types, sparse_top_k,
+        )
 
-    async def embed(index: int, model_input):
-        async with semaphore:
-            result, prompt_tokens = await call_triton_hybrid_embeddings(
-                request.model,
-                model_input,
-                request.dimensions,
-                output_types,
-                sparse_top_k,
-            )
-        return index, result, prompt_tokens
-
-    results = await asyncio.gather(
-        *(embed(index, model_input) for index, model_input in enumerate(model_inputs))
-    )
-    results.sort(key=lambda item: item[0])
+    results = await run_embedding_batch(model_inputs, embed, EMBEDDING_MAX_CONCURRENCY)
     total_prompt_tokens = sum(item[2] for item in results)
-    data = []
-    for index, result, _ in results:
-        item: dict[str, Any] = {
-            "object": "hybrid_embedding",
-            "index": index,
-        }
-        if "dense" in result:
-            item["embedding"] = encode_embedding(
-                result["dense"],
-                encoding_format,
-            )
-        if "sparse" in result:
-            item["sparse_embedding"] = result["sparse"]
-            SPARSE_EMBEDDING_SIZE.labels(request.model).observe(
-                len(result["sparse"]["indices"])
-            )
-        data.append(item)
-
     usage = {
         "prompt_tokens": total_prompt_tokens,
         "total_tokens": total_prompt_tokens,
     }
     observe_generation_usage(usage)
-    return {
-        "object": "hybrid_embedding.list",
-        "data": data,
-        "model": request.model,
-        "output_types": output_types,
-        "usage": usage,
-    }
+    return await run_cpu(
+        render_embedding_response, request.model, results, encoding_format, usage, output_types,
+    )
 
 
 @app.post("/rerank")

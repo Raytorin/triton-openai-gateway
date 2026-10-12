@@ -40,7 +40,7 @@ environment.
 
 For issue #28, CI temporarily accepts **PYSEC-2026-3804** (aliases
 GHSA-4j2p-28q2-5m79 / CVE-2026-69112) only while the runtime requirements pin
-`accelerate==1.14.0`. The exception expires at **2026-10-10 00:00 UTC**;
+`accelerate==1.14.0`. The exception expires at **2026-11-10 00:00 UTC**;
 `scripts/audit_dependencies.py` then automatically runs the unmodified audit.
 Changing the package version also removes this exception. Other advisories,
 other dependencies and scanner failures remain blocking. Test requirements
