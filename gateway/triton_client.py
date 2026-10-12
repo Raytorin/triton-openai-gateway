@@ -41,7 +41,7 @@ from .reasoning import (
     reasoning_message_fields,
     split_reasoning_output,
 )
-from .sanitizer import sanitize_generated_text, strip_prompt_echo
+from .sanitizer import StreamingSanitizer, sanitize_generated_text, strip_prompt_echo
 from .schemas import ChatCompletionRequest
 from .settings import (
     REQUEST_TIMEOUT_SECONDS,
@@ -824,6 +824,7 @@ async def stream_triton_multimodal_to_openai(
 ) -> AsyncIterator[str]:
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
+    sanitizer = StreamingSanitizer()
     emitted_text = ""
     emitted_reasoning = ""
     raw_generated_text = ""
@@ -871,10 +872,7 @@ async def stream_triton_multimodal_to_openai(
                         raw_generated_text,
                         settings,
                     )
-                    current_text, should_stop = sanitize_generated_text(
-                        reasoning_result.content,
-                        streaming=True,
-                    )
+                    current_text, should_stop = sanitizer.sanitize(reasoning_result.content)
                     safe_text = current_text
                     if not should_stop and len(safe_text) > STREAM_HOLDBACK_CHARS:
                         safe_text = safe_text[:-STREAM_HOLDBACK_CHARS]
@@ -1185,6 +1183,7 @@ async def stream_triton_to_openai(
 ) -> AsyncIterator[str]:
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
+    sanitizer = StreamingSanitizer()
     emitted_text = ""
     emitted_reasoning = ""
     raw_generated_text = ""
@@ -1243,10 +1242,7 @@ async def stream_triton_to_openai(
                     raw_generated_text,
                     settings,
                 )
-                current_text, should_stop = sanitize_generated_text(
-                    reasoning_result.content,
-                    streaming=True,
-                )
+                current_text, should_stop = sanitizer.sanitize(reasoning_result.content)
                 safe_text = current_text
                 if not should_stop and len(safe_text) > STREAM_HOLDBACK_CHARS:
                     safe_text = safe_text[:-STREAM_HOLDBACK_CHARS]
