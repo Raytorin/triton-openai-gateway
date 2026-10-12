@@ -14,6 +14,40 @@ from gateway.registry import ModelRegistry
 
 
 class RegistryConcurrencyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_model_switch_during_load_uses_new_tokenizer_and_model_path(self):
+        registry = ModelRegistry()
+        started = asyncio.Event()
+        release = threading.Event()
+        loop = asyncio.get_running_loop()
+        first, second = object(), object()
+
+        def load(path, **_kwargs):
+            if path == "/v1":
+                loop.call_soon_threadsafe(started.set)
+                release.wait(2)
+                return first
+            self.assertEqual(path, "/v2")
+            return second
+
+        transformers = ModuleType("transformers")
+        transformers.AutoTokenizer = type("Loader", (), {"from_pretrained": staticmethod(load)})
+        with (
+            patch.object(registry, "resolve", return_value=Path("/v1")) as path,
+            patch.object(registry, "resolve_tokenizer_path", side_effect=lambda value: value),
+            patch.dict(sys.modules, {"transformers": transformers}),
+        ):
+            old = asyncio.create_task(registry.get_tokenizer_async("model"))
+            await asyncio.wait_for(started.wait(), 1)
+            path.return_value = Path("/v2")
+            new = asyncio.create_task(registry.get_tokenizer_async("model"))
+            try:
+                await asyncio.sleep(0.02)
+            finally:
+                release.set()
+                results = await asyncio.gather(old, new)
+            self.assertEqual(results[0], (first, Path("/v1")))
+            self.assertEqual(results[1], (second, Path("/v2")))
+
     async def test_cold_waiters_do_not_block_cached_tokenizer(self):
         registry = ModelRegistry()
         cached = object()

@@ -66,7 +66,7 @@ class ModelRegistry:
         self._cache: dict[str, tuple[str, Any]] = {}
         self._lock = Lock()
         self._model_locks: dict[str, Any] = {}
-        self._loads: dict[tuple[asyncio.AbstractEventLoop, str], asyncio.Task] = {}
+        self._loads: dict[tuple[asyncio.AbstractEventLoop, str, Path, Path], asyncio.Task] = {}
 
     def list_models(self) -> list[str]:
         if not MODELS_ACTIVE_DIR.exists():
@@ -148,8 +148,15 @@ class ModelRegistry:
         return detect_model_tool_parser(self.resolve(model_name))
 
     def get_tokenizer(self, model_name: str):
+        model_path, tokenizer_path = self._tokenizer_location(model_name)
+        return self._load_tokenizer(model_name, model_path, tokenizer_path)
+
+    def _tokenizer_location(self, model_name: str) -> tuple[Path, Path]:
         model_path = self.resolve(model_name)
         tokenizer_path = self.resolve_tokenizer_path(model_path)
+        return model_path, tokenizer_path
+
+    def _load_tokenizer(self, model_name: str, model_path: Path, tokenizer_path: Path):
         tokenizer_path_str = str(tokenizer_path)
 
         with self._lock:
@@ -192,13 +199,18 @@ class ModelRegistry:
             return tokenizer, model_path
 
     async def get_tokenizer_async(self, model_name: str):
-        # Share one in-flight task per model and loop. Duplicate async callers
+        # Resolve before selecting a shared task: a model may be replaced while
+        # its previous tokenizer is still loading. Keep filesystem work off loop.
+        model_path, tokenizer_path = await asyncio.to_thread(self._tokenizer_location, model_name)
+        # Share one in-flight task per model version and loop. Duplicate callers
         # must not fill the thread executor with waiters on a threading.Lock.
-        key = (asyncio.get_running_loop(), model_name)
+        key = (asyncio.get_running_loop(), model_name, model_path, tokenizer_path)
         with self._lock:
             task = self._loads.get(key)
             if task is None:
-                task = asyncio.create_task(asyncio.to_thread(self.get_tokenizer, model_name))
+                task = asyncio.create_task(asyncio.to_thread(
+                    self._load_tokenizer, model_name, model_path, tokenizer_path,
+                ))
                 self._loads[key] = task
                 task.add_done_callback(lambda done: self._finish_load(key, done))
         # A disconnected waiter does not cancel loading for the others.
