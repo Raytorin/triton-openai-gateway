@@ -36,48 +36,21 @@ class AdmissionPolicy:
 
 
 class _BoundedGate:
-    def __init__(self, scope: str, route: str, model: str, policy: GatePolicy):
+    def __init__(self, scope: str, route: str, model: str, policy: GatePolicy, condition: asyncio.Condition):
         self.scope = scope
         self.route = route
         self.model = model
         self.policy = policy
-        self._condition = asyncio.Condition()
+        self._condition = condition
         self._inflight = 0
         self._queued = 0
-
-    async def acquire(self) -> float:
-        started_at = time.monotonic()
-        async with self._condition:
-            if self._inflight >= self.policy.max_inflight:
-                if self._queued >= self.policy.max_queue:
-                    self._reject("queue_full")
-                self._queued += 1
-                self._set_metrics()
-                try:
-                    await asyncio.wait_for(
-                        self._condition.wait_for(
-                            lambda: self._inflight < self.policy.max_inflight
-                        ),
-                        timeout=self.policy.queue_timeout_seconds,
-                    )
-                except TimeoutError as exc:
-                    self._reject("queue_timeout", exc)
-                finally:
-                    self._queued -= 1
-                    self._set_metrics()
-
-            self._inflight += 1
-            self._set_metrics()
-        wait_seconds = time.monotonic() - started_at
-        ADMISSION_WAIT.labels(self.scope, self.route, self.model).observe(wait_seconds)
-        return wait_seconds
 
     async def release(self) -> None:
         async with self._condition:
             if self._inflight > 0:
                 self._inflight -= 1
             self._set_metrics()
-            self._condition.notify(1)
+            self._condition.notify_all()
 
     def _set_metrics(self) -> None:
         labels = (self.scope, self.route, self.model)
@@ -124,6 +97,7 @@ class AdmissionController:
     def __init__(self) -> None:
         self._gates: dict[tuple[Any, ...], _BoundedGate] = {}
         self._lock = asyncio.Lock()
+        self._condition = asyncio.Condition()
 
     async def acquire(self, route: str, model: str, model_path: Path) -> AdmissionLease:
         policy = load_admission_policy(model_path, route)
@@ -141,18 +115,40 @@ class AdmissionController:
             model,
             policy.model_gate,
         )
-        acquired: list[_BoundedGate] = []
-        wait_seconds = 0.0
-        try:
-            wait_seconds += await global_gate.acquire()
-            acquired.append(global_gate)
-            wait_seconds += await model_gate.acquire()
-            acquired.append(model_gate)
-        except BaseException:
-            for gate in reversed(acquired):
-                await gate.release()
-            raise
-        return AdmissionLease(acquired, wait_seconds)
+        gates = [global_gate, model_gate]
+        started_at = time.monotonic()
+        # Reserve both budgets atomically. A request waiting for its model
+        # belongs to the bounded queues, not to the global inflight budget.
+        async with self._condition:
+            def available() -> bool:
+                return all(g._inflight < g.policy.max_inflight for g in gates)
+
+            if not available():
+                for gate in gates:
+                    if gate._queued >= gate.policy.max_queue:
+                        gate._reject("queue_full")
+                for gate in gates:
+                    gate._queued += 1
+                    gate._set_metrics()
+                timeout_gate = min(gates, key=lambda g: g.policy.queue_timeout_seconds)
+                try:
+                    await asyncio.wait_for(
+                        self._condition.wait_for(available),
+                        timeout=timeout_gate.policy.queue_timeout_seconds,
+                    )
+                except TimeoutError as exc:
+                    timeout_gate._reject("queue_timeout", exc)
+                finally:
+                    for gate in gates:
+                        gate._queued -= 1
+                        gate._set_metrics()
+            for gate in gates:
+                gate._inflight += 1
+                gate._set_metrics()
+        wait_seconds = time.monotonic() - started_at
+        for gate in gates:
+            ADMISSION_WAIT.labels(gate.scope, gate.route, gate.model).observe(wait_seconds)
+        return AdmissionLease(gates, wait_seconds)
 
     async def _gate(
         self,
@@ -165,7 +161,7 @@ class AdmissionController:
         async with self._lock:
             gate = self._gates.get(key)
             if gate is None:
-                gate = _BoundedGate(scope, route, model, policy)
+                gate = _BoundedGate(scope, route, model, policy, self._condition)
                 self._gates[key] = gate
             return gate
 
