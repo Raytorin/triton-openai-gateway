@@ -431,7 +431,16 @@ and exits so container shutdown can finish. Restarting interrupts in-flight gate
 
 Chat and Responses render templates, tokenize prompts, fit context, and count
 output usage in a bounded worker pool. The pool also handles CPU portions of
-summary preparation; inference remains asynchronous.
+summary preparation; inference remains asynchronous. Dense embeddings tokenize
+inputs in this pool. Dense and hybrid embedding responses are encoded one vector
+at a time in the pool, without a second traversal by FastAPI on the event loop.
+`GATEWAY_EMBEDDING_MAX_CONCURRENCY` (default `8`) bounds both inference calls and
+worker tasks within each embedding request. A failed or cancelled batch drains
+its outstanding backend calls before releasing admission capacity.
+
+Tokenizer loading is shared by concurrent requests for the same model. Loading
+another model does not hold a registry-wide cache lock. Cold loading can still
+contend for Python's GIL; `TOKENIZER_PRELOAD=true` starts loading at startup.
 
 | Environment variable | Default | Meaning |
 | --- | ---: | --- |
@@ -451,6 +460,12 @@ Monitor `triton_gateway_cpu_active`, `triton_gateway_cpu_queued`,
 `triton_gateway_cpu_duration_seconds`. CPU metrics contain no request or model IDs.
 
 ### Admission Control
+
+A request receives its global and model/route inflight slots together. Waiting
+for a busy model does not consume global inflight capacity needed by other
+models. Every waiting request counts toward both queue limits and uses the
+shorter of their queue timeouts. Queue overflow or expiry returns HTTP `429`.
+
 
 Global defaults use `GATEWAY_MAX_INFLIGHT_REQUESTS`,
 `GATEWAY_MAX_QUEUE_SIZE`, and `GATEWAY_QUEUE_TIMEOUT_SECONDS`. Route overrides
