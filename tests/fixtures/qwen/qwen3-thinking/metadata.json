@@ -1,0 +1,14 @@
+{
+  "repo_id": "Qwen/Qwen3-4B-Thinking-2507",
+  "revision": "a847ed9e9f50a0cdd07e38aba12f9e6755e3c141",
+  "source_file": "tokenizer_config.json",
+  "source_url": "https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507/resolve/a847ed9e9f50a0cdd07e38aba12f9e6755e3c141/tokenizer_config.json",
+  "source_sha256": "60adcfc35f5f251e19a196ec977b4ca0fcfb534852911b3196d68d5e3b146aa0",
+  "template_sha256": "3802169b2a02b81e6adb7ab4f64f91ff02db753c8c3a64a01c35192d3a61d8d7",
+  "license": "Apache-2.0",
+  "model_type": "qwen3",
+  "extraction": "chat_template JSON string, UTF-8 without added newline",
+  "license_declaration_url": "https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507/blob/a847ed9e9f50a0cdd07e38aba12f9e6755e3c141/README.md",
+  "readme_sha256": "fe8c344703d3bcbce0bbc1fbad3ee418da1065aa2fce583c7c0e717a298c3ea4",
+  "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+}

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import lru_cache
 import json
 import os
 from pathlib import Path
@@ -14,6 +13,7 @@ from fastapi import HTTPException
 
 from .cpu_work import checkpoint
 from .metrics import REASONING_REQUESTS, REASONING_TOKENS
+from .qwen import qwen_template_capabilities
 
 
 _MODES = {"disabled", "hidden", "separate"}
@@ -31,6 +31,14 @@ class ReasoningSettings:
     parser: str
     response_field: str
     supported: bool
+    qwen_profile: bool = False
+    requires_template_kwargs: bool = False
+    resolved_chat_template: str | None = None
+    _template_options: tuple[tuple[str, Any], ...] = ()
+
+    @property
+    def template_kwargs(self) -> dict[str, Any]:
+        return {"enable_thinking": self.enable_thinking, **dict(self._template_options)}
 
     @property
     def enable_thinking(self) -> bool:
@@ -80,25 +88,47 @@ def load_reasoning_settings(
     *,
     include_reasoning: bool | None = None,
     force_disable: bool = False,
+    tokenizer: Any = None,
+    enable_thinking: bool | None = None,
+    preserve_thinking: bool | None = None,
+    reasoning_effort: str | None = None,
+    tools: list[dict[str, Any]] | None = None,
 ) -> ReasoningSettings:
+    for name, value in (("enable_thinking", enable_thinking), ("preserve_thinking", preserve_thinking)):
+        if value is not None and type(value) is not bool:
+            raise HTTPException(status_code=400, detail=f"{name} must be a boolean")
+    if reasoning_effort is not None and not isinstance(reasoning_effort, str):
+        raise HTTPException(status_code=400, detail="reasoning_effort must be a string")
+    qwen_profile, capabilities = qwen_template_capabilities(model_path, tokenizer, tools=tools)
     config_path = model_path / "gateway.json"
-    modified_ns = config_path.stat().st_mtime_ns if config_path.is_file() else 0
     configured = _read_reasoning_settings(
         str(config_path),
-        modified_ns,
         str(model_path),
+        template=capabilities.template,
+        qwen_profile=qwen_profile,
+        has_think_tags=capabilities.has_think_tags,
     )
 
     mode = configured.configured_mode
-    # OpenAI structured output constrains the visible assistant response. A
-    # thinking prompt would put the constrained JSON inside an unfinished
-    # reasoning block, leaving message.content empty after post-processing.
-    if force_disable:
+    if enable_thinking is True and (mode == "disabled" or force_disable):
+        raise HTTPException(status_code=400, detail="enable_thinking=true is prohibited by server policy or constrained JSON output")
+    if enable_thinking is not None:
+        supported_values = {"switch": (False, True), "on": (True,), "off": (False,)}
+        if enable_thinking not in supported_values.get(capabilities.thinking, ()):
+            raise HTTPException(status_code=400, detail="The resolved chat template does not support this enable_thinking value")
+    if force_disable or enable_thinking is False or capabilities.thinking == "off":
         mode = "disabled"
-    # A caller may hide reasoning allowed by server policy, but cannot make a
-    # hidden or disabled chain-of-thought visible.
     elif include_reasoning is False and mode == "separate":
         mode = "hidden"
+    if mode == "disabled" and capabilities.thinking == "on":
+        raise HTTPException(status_code=400, detail="The resolved fixed-thinking template cannot disable thinking")
+    if preserve_thinking is not None and not capabilities.preserves_thinking:
+        raise HTTPException(status_code=400, detail="preserve_thinking is not supported by the resolved chat template")
+    if reasoning_effort is not None:
+        if mode == "disabled":
+            raise HTTPException(status_code=400, detail="reasoning_effort requires thinking to be enabled")
+        if reasoning_effort not in capabilities.efforts:
+            raise HTTPException(status_code=400, detail="reasoning_effort is not supported by the resolved chat template")
 
     if mode != "disabled" and not configured.supported:
         raise HTTPException(
@@ -116,16 +146,27 @@ def load_reasoning_settings(
         parser=configured.parser,
         response_field=configured.response_field,
         supported=configured.supported,
+        qwen_profile=qwen_profile,
+        resolved_chat_template=capabilities.template,
+        requires_template_kwargs=(
+            enable_thinking is not None or preserve_thinking is not None
+            or reasoning_effort is not None
+            or capabilities.thinking == "switch"
+        ),
+        _template_options=tuple((name, value) for name, value in (
+            ("preserve_thinking", preserve_thinking), ("reasoning_effort", reasoning_effort)
+        ) if value is not None),
     )
 
 
-@lru_cache(maxsize=256)
 def _read_reasoning_settings(
     config_path: str,
-    modified_ns: int,
     model_path: str,
+    *,
+    template: str | None = None,
+    qwen_profile: bool = False,
+    has_think_tags: bool = False,
 ) -> ReasoningSettings:
-    del modified_ns
     payload = _read_gateway_json(Path(config_path))
     configured = payload.get("reasoning", {})
     if not isinstance(configured, dict):
@@ -155,11 +196,14 @@ def _read_reasoning_settings(
         "reasoning_content",
         _RESPONSE_FIELDS,
     )
-    parser = (
-        _detect_reasoning_parser(Path(model_path))
-        if requested_parser == "auto"
-        else requested_parser
-    )
+    if requested_parser != "auto":
+        parser = requested_parser
+    elif template is not None and has_think_tags:
+        parser = "qwen3" if qwen_profile else "think_tags"
+    elif template is not None:
+        parser = "none"
+    else:
+        parser = _detect_reasoning_parser(Path(model_path))
     supported = parser != "none"
 
     return ReasoningSettings(
