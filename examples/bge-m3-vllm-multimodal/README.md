@@ -41,7 +41,7 @@ The conservative profile disables chunked prefill. Enable it only after a GPU
 load test covers dense, sparse, and combined pooling at the configured maximum
 sequence length.
 
-The pinned Triton 26.07/vLLM 0.24 runtime is required. Run a GPU smoke test
+The pinned Triton 26.09/vLLM 0.29 runtime is required. Run a GPU smoke test
 before production deployment and compare dense/sparse output with the
 [Python fallback](../bge-m3-hybrid/README.md) on representative multilingual
 queries.

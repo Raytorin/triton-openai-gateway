@@ -78,6 +78,21 @@ docker run --rm \
   tests/runtime_media_smoke.py
 ```
 
+Проверка контрактов реального API vLLM на CPU:
+
+```bash
+docker run --rm --network none \
+  --entrypoint python3 \
+  -v "$PWD:/workspace:ro" \
+  -w /workspace \
+  triton-openai-gateway:dev \
+  tests/runtime_vllm_smoke.py
+```
+
+Проверка охватывает контракты sampling, structured output, LoRA, pooling,
+метрик и жизненного цикла engine через установленные API vLLM без GPU inference.
+Отсутствие runtime-зависимостей завершает проверку с ошибкой, а не пропуском.
+
 Проверка shell и Helm:
 
 ```bash

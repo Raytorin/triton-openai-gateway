@@ -8,8 +8,8 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/Raytorin/triton-openai-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Raytorin/triton-openai-gateway/actions/workflows/ci.yml)
-[![Triton](https://img.shields.io/badge/NVIDIA%20Triton-26.07-76B900)](https://github.com/triton-inference-server/server)
-[![vLLM](https://img.shields.io/badge/vLLM-0.24.0-4C6EF5)](https://github.com/vllm-project/vllm)
+[![Triton](https://img.shields.io/badge/NVIDIA%20Triton-26.09-76B900)](https://github.com/triton-inference-server/server)
+[![vLLM](https://img.shields.io/badge/vLLM-0.29.0-4C6EF5)](https://github.com/vllm-project/vllm)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB)](https://www.python.org/)
 [![Maintainer](https://img.shields.io/badge/maintainer-Raytorin-181717)](https://github.com/Raytorin)
 
@@ -45,7 +45,7 @@ embeddings и reranking.
 | Совместимость клиентов | OpenAI-совместимый API для LiteLLM, LibreChat, SDK и внутренних клиентов |
 | Роли моделей | Text/VL chat, dense/hybrid embeddings и reranking |
 | Мультимодальные данные | Изображения, видео, аудио и PDF с контролируемой предобработкой |
-| Runtime | NVIDIA Triton `26.07`, vLLM `0.24.0` и Python `3.12` |
+| Runtime | NVIDIA Triton `26.09`, vLLM `0.29.0` и Python `3.12` |
 | Эксплуатация | Очереди допуска, отмена запросов, структурированные логи, Prometheus и OTLP-трассировка |
 | Развертывание | Docker-сборка с закреплённым digest и Helm charts для Kubernetes |
 
@@ -146,12 +146,12 @@ ASR-модели.
 ### 1. Сборка образа
 
 Базовый образ по умолчанию закреплён по digest и использует
-`26.07-vllm-python-py3`.
+`26.09-vllm-python-py3`.
 
 ```bash
 docker build \
   -f Dockerfile.triton-gateway \
-  -t triton-openai-gateway:26.07 .
+  -t triton-openai-gateway:26.09 .
 ```
 
 Версии добавленных Python-зависимостей закреплены и проверяются во время сборки.
@@ -185,7 +185,7 @@ model-repository/
 docker run --rm --gpus all --shm-size=8g \
   --env-file .env \
   -p 8000:8000 -p 8001:8001 -p 8002:8002 -p 8080:8080 \
-  triton-openai-gateway:26.07 \
+  triton-openai-gateway:26.09 \
   tritonserver \
   --model-repository=s3://S3_ENDPOINT/BUCKET/PREFIX \
   --model-control-mode=explicit \
@@ -198,7 +198,7 @@ docker run --rm --gpus all --shm-size=8g \
 helm upgrade --install triton-openai-gateway ./helm/triton-gateway \
   --namespace inference --create-namespace \
   --set image.repository=REGISTRY/triton-openai-gateway \
-  --set image.tag=26.07 \
+  --set image.tag=26.09 \
   --set triton.modelRepository=s3://S3_ENDPOINT/BUCKET/PREFIX \
   --set s3.existingSecret=triton-s3-credentials
 ```
@@ -253,7 +253,7 @@ Raw Triton HTTP, gRPC и metrics остаются доступными на по
 | [Архитектура](docs/architecture.ru.md) | Компоненты и полные цепочки запросов |
 | [Конфигурация](docs/configuration.ru.md) | Файлы модели, `gateway.json`, environment и Helm |
 | [Эксплуатация](docs/operations.ru.md) | Health, метрики, логи, tracing и диагностика |
-| [Миграция на Triton 26.07](docs/migration-26.07.ru.md) | Runtime pins, совместимость и production-проверка |
+| [Миграция на Triton 26.09](docs/migration-26.09.ru.md) | Runtime pins и ограничения совместимости |
 | [Sparse и hybrid embeddings](docs/sparse-embeddings.ru.md) | Запросы BGE-M3, параметры и формат sparse-векторов |
 | [Примеры API](examples/REQUEST_EXAMPLES.md) | Чат, media, tools, embeddings и rerank |
 | [Собственный backend](backends/vllm_multimodal/README.ru.md) | Контракт нативных мультимодальных input Triton |

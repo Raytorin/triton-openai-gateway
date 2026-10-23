@@ -114,7 +114,7 @@ curl -s "$GATEWAY_URL/v1/chat/completions" \
 Для pooling-модели, поддерживающей LoRA в vLLM, укажите
 `backend: "vllm_multimodal"` в `config.pbtxt`. Добавьте `"enable_lora": true` и
 `"runner": "pooling"` в её `model.json`, сохранив путь к модели и остальные
-настройки engine. В закреплённой версии vLLM 0.24 параметр `runner` поддерживается;
+настройки engine. В закреплённой версии vLLM 0.29 параметр `runner` поддерживается;
 устаревший параметр `task` добавлять не нужно. Если engine определяет задачу
 автоматически и она не указана явно, gateway оставляет проверку backend.
 Явная конфигурация только для генерации по-прежнему запрещает embeddings.
