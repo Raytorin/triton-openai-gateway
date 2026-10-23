@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Raytorin
 # SPDX-License-Identifier: Apache-2.0
 
+from copy import deepcopy
 import json
 from typing import Any
 
@@ -9,6 +10,7 @@ from fastapi import HTTPException
 from .cpu_work import checkpoint
 from .multimodal import normalize_message_content
 from .openai_contract import structured_outputs_parameter
+from .qwen import chat_template_accepts_keyword
 from .schemas import ChatCompletionRequest, ChatMessage
 from .settings import TRITON_DEFAULT_STOP_SEQUENCE, logger
 from .tool_parsers import normalize_tool_calls_for_template
@@ -21,7 +23,9 @@ CLIENT_ERROR_PREFIXES = (
 )
 
 
-def build_conversation(messages: list[ChatMessage]) -> list[dict[str, Any]]:
+def build_conversation(
+    messages: list[ChatMessage], *, preserve_reasoning: bool = False,
+) -> list[dict[str, Any]]:
     conversation: list[dict[str, Any]] = []
     for message in messages:
         content = normalize_message_content(message.content)
@@ -33,6 +37,10 @@ def build_conversation(messages: list[ChatMessage]) -> list[dict[str, Any]]:
             "content": content,
         }
         message_extra = getattr(message, "model_extra", None) or {}
+        if preserve_reasoning and message.role == "assistant":
+            reasoning = message_extra.get("reasoning_content", message_extra.get("reasoning"))
+            if isinstance(reasoning, str):
+                message_dict["reasoning_content"] = reasoning
         for key in ("tool_calls", "tool_call_id", "name"):
             if key in message_extra:
                 value = message_extra[key]
@@ -170,24 +178,61 @@ def _tool_prompt_fallback_conversation(
     return add_system_instruction(conversation, instruction)
 
 
+class RequestTokenizer:
+    """Carry validated template options without changing a cached tokenizer.
+
+    Context fitting and media token counting already share this tokenizer
+    interface. A request-local facade keeps every render on the same options.
+    """
+
+    def __init__(self, tokenizer, template_kwargs, *, strict: bool = False,
+                 chat_template: str | None = None, tools=None):
+        self._tokenizer = tokenizer
+        self._template_kwargs = dict(template_kwargs)
+        self._strict = strict
+        method = tokenizer.apply_chat_template
+        self._chat_template = chat_template if chat_template_accepts_keyword(method, "chat_template") else None
+        self._tools = deepcopy(tools) if tools and chat_template_accepts_keyword(method, "tools") else None
+
+    def __getattr__(self, name):
+        return getattr(self._tokenizer, name)
+
+    def __call__(self, *args, **kwargs):
+        return self._tokenizer(*args, **kwargs)
+
+    def apply_chat_template(self, conversation, **kwargs):
+        options = dict(kwargs)
+        options.update({key: value for key, value in self._template_kwargs.items()
+                        if self._strict or key != "enable_thinking"})
+        # Reinject controls and bind template selection on EVERY attempt. A
+        # TypeError may concern only tools=; render_chat_prompt can translate
+        # those tools to a system instruction while keeping all controls strict.
+        if self._chat_template is not None:
+            options["chat_template"] = self._chat_template
+        if self._tools:
+            options["tools"] = self._tools
+        return self._tokenizer.apply_chat_template(conversation, **options)
+
+
 def render_chat_prompt(
     tokenizer,
     conversation: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
     *,
     enable_thinking: bool = False,
+    add_generation_prompt: bool = True,
 ) -> str:
     checkpoint()
     attempts: list[dict[str, Any]] = [
         {
             "tokenize": False,
-            "add_generation_prompt": True,
+            "add_generation_prompt": add_generation_prompt,
             "enable_thinking": enable_thinking,
             **({"tools": tools} if tools else {}),
         },
         {
             "tokenize": False,
-            "add_generation_prompt": True,
+            "add_generation_prompt": add_generation_prompt,
             **({"tools": tools} if tools else {}),
         },
     ]
@@ -205,7 +250,7 @@ def render_chat_prompt(
             return tokenizer.apply_chat_template(
                 conversation,
                 tokenize=False,
-                add_generation_prompt=True,
+                add_generation_prompt=add_generation_prompt,
             )
 
         # Some tokenizers do not expose a tools= argument even when the model can
@@ -213,7 +258,7 @@ def render_chat_prompt(
         return tokenizer.apply_chat_template(
             _tool_prompt_fallback_conversation(conversation, tools),
             tokenize=False,
-            add_generation_prompt=True,
+            add_generation_prompt=add_generation_prompt,
         )
     except Exception as exc:
         raise _chat_template_error(exc) from exc
@@ -361,6 +406,12 @@ def build_sampling_parameters(
 
     if request.top_p is not None:
         sampling["top_p"] = float(request.top_p)
+
+    if request.top_k is not None:
+        sampling["top_k"] = request.top_k
+
+    if request.presence_penalty is not None:
+        sampling["presence_penalty"] = float(request.presence_penalty)
 
     stop = normalize_triton_stop_sequence(request.stop)
     if stop:

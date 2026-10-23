@@ -86,6 +86,73 @@ curl -sS "$GATEWAY_URL/v1/chat/completions" \
 Передайте `"include_reasoning": false`, чтобы скрыть reasoning в одном
 запросе, не меняя серверную policy.
 
+### Qwen3.6-27B-FP8: thinking включён и выключен
+
+Один раз загрузите `Qwen3.6-27B-FP8` с поддерживаемым переключаемым chat template
+и поместите policy из [`gateway.reasoning.json`](gateway.reasoning.json) в
+`gateway.json` модели. Режим `separate` разрешает оба варианта генерации.
+Проверьте, что `GATEWAY_REASONING_MODE` не заменяет его на `disabled`.
+Два полных файла запроса обращаются к одной загруженной модели:
+
+```bash
+# Выполняйте из корня репозитория.
+curl -sS "$GATEWAY_URL/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  --data-binary @examples/qwen3.6-27b-thinking/request-thinking.json | jq
+
+curl -sS "$GATEWAY_URL/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  --data-binary @examples/qwen3.6-27b-thinking/request-no-thinking.json | jq
+```
+
+[Thinking включён](qwen3.6-27b-thinking/request-thinking.json):
+`chat_template_kwargs.enable_thinking: true` и `include_reasoning: false`.
+Модель продолжает рассуждать, но ответ скрывает reasoning.
+[Thinking выключен](qwen3.6-27b-thinking/request-no-thinking.json):
+`enable_thinking: false` и `include_reasoning: true`. Запрос видимости не
+создаёт reasoning. Чтобы увидеть рассуждения первого запроса при `separate`,
+замените `include_reasoning` на `true`.
+Между запросами нет перезагрузки модели или изменения общей конфигурации.
+Effort не задан, поскольку требуется его поддержка фактическим шаблоном;
+`high` и `xhigh` не взаимозаменяемы. Это примеры запросов, а не результаты
+GPU-бенчмарка.
+
+### OpenAI SDK и LiteLLM
+
+В стандартном OpenAI SDK `extra_body` — аргумент клиента, который объединяется
+с верхним уровнем HTTP body. Gateway ожидает `chat_template_kwargs` на верхнем
+уровне, а не буквальный вложенный JSON-объект `extra_body`:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="dummy")
+response = client.chat.completions.create(
+    model="Qwen3.6-27B-FP8",
+    messages=[{"role": "user", "content": "Calculate 37 * 48."}],
+    max_tokens=1024,
+    extra_body={
+        "chat_template_kwargs": {"enable_thinking": True},
+        "include_reasoning": False,
+        "top_k": 20,
+    },
+    presence_penalty=0.0,
+)
+```
+
+Для LiteLLM используйте маршрут `openai/` из
+[`litellm.config.yaml`](litellm.config.yaml) с `drop_params: false`.
+В зависимости от определения параметров модели в LiteLLM для передачи поля
+верхнего уровня `reasoning_effort` может потребоваться настройка маршрута
+`allowed_openai_params: [reasoning_effort]`. Она разрешает только передачу;
+gateway по-прежнему проверяет effort по фактической модели и шаблону.
+Задавайте `reasoning_effort` только с поддерживающим его шаблоном, а
+`chat_template_kwargs` передавайте в `extra_body` при вызове через SDK.
+Передача HTTP body проверена локально с LiteLLM `1.103.0` и OpenAI SDK
+`2.54.0`; это не проверка поведения GPU inference.
+Подробности проверки и ограничений policy — в
+[конфигурации](../docs/configuration.ru.md#thinking-qwen-на-уровне-запроса).
+
 ## Lora adapter
 
 ```bash

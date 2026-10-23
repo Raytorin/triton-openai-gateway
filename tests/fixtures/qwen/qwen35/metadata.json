@@ -1,0 +1,14 @@
+{
+  "repo_id": "Qwen/Qwen3.5-27B",
+  "revision": "feea018b31f89dc0950e61da42577a7a4ab09169",
+  "source_file": "chat_template.jinja",
+  "source_url": "https://huggingface.co/Qwen/Qwen3.5-27B/resolve/feea018b31f89dc0950e61da42577a7a4ab09169/chat_template.jinja",
+  "source_sha256": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
+  "template_sha256": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
+  "license": "Apache-2.0",
+  "model_type": "qwen3_5",
+  "extraction": "byte-for-byte upstream file",
+  "license_declaration_url": "https://huggingface.co/Qwen/Qwen3.5-27B/blob/feea018b31f89dc0950e61da42577a7a4ab09169/README.md",
+  "readme_sha256": "4bcf87ecfbbb8e07a01b21415a970c8b53a5283bf6872b657040d3f45c9241f7",
+  "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+}

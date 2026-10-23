@@ -3,7 +3,7 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, StrictBool, StrictStr, field_validator, model_validator
 
 
 class ChatMessage(BaseModel):
@@ -38,6 +38,20 @@ class ResponseFormat(BaseModel):
         return self
 
 
+class ChatTemplateKwargs(BaseModel):
+    enable_thinking: StrictBool | None = None
+    preserve_thinking: StrictBool | None = None
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("enable_thinking", "preserve_thinking", mode="before")
+    @classmethod
+    def require_boolean(cls, value):
+        if type(value) is not bool:
+            raise ValueError("Thinking controls must be booleans")
+        return value
+
+
 class ChatCompletionRequest(BaseModel):
     model: str
     messages: list[ChatMessage]
@@ -47,6 +61,8 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: int | None = Field(default=None, gt=0, strict=True)
     max_completion_tokens: int | None = Field(default=None, gt=0, strict=True)
     top_p: float | None = None
+    top_k: int | None = Field(default=None, ge=-1, strict=True)
+    presence_penalty: float | None = Field(default=None, ge=-2, le=2)
     stop: str | list[str] | None = None
     repetition_penalty: float | None = None
     seed: int | None = Field(
@@ -58,9 +74,18 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
     debug: bool = False
     include_reasoning: bool | None = None
+    chat_template_kwargs: ChatTemplateKwargs | None = None
+    reasoning_effort: StrictStr | None = None
     lora_name: str | None = None
 
     model_config = {"extra": "allow"}
+
+    @field_validator("top_k")
+    @classmethod
+    def validate_top_k(cls, value):
+        if value == 0:
+            raise ValueError("top_k must be -1 or a positive integer")
+        return value
 
 
 class EmbeddingsRequest(BaseModel):
