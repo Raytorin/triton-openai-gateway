@@ -79,6 +79,21 @@ docker run --rm \
   tests/runtime_media_smoke.py
 ```
 
+Run the real vLLM API contract smoke test on CPU:
+
+```bash
+docker run --rm --network none \
+  --entrypoint python3 \
+  -v "$PWD:/workspace:ro" \
+  -w /workspace \
+  triton-openai-gateway:dev \
+  tests/runtime_vllm_smoke.py
+```
+
+This checks sampling, structured output, LoRA, pooling, metrics, and engine
+lifecycle contracts against the installed vLLM APIs without running GPU
+inference. Missing runtime dependencies fail the check instead of skipping it.
+
 Validate shell and Helm files when those areas change:
 
 ```bash

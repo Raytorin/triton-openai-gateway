@@ -10,15 +10,15 @@ separate prevents gateway-only keys from being passed to vLLM engine arguments.
 
 ## Runtime Compatibility
 
-The Dockerfile pins the NVIDIA Triton `26.07-vllm-python-py3` base image by
-digest. The build verifies Triton client `2.71.0`, vLLM `0.24.0`, Transformers
-`5.6.1`, Torch, FlashInfer, and all added media/runtime dependencies. Changing the base
+The Dockerfile pins the NVIDIA Triton `26.09-vllm-python-py3` base image by
+digest. The build verifies Triton client `2.73.0`, vLLM `0.29.0`, Transformers
+`5.16.1`, Torch, FlashInfer, and all added media/runtime dependencies. Changing the base
 image is an explicit compatibility migration, not a routine package upgrade.
 
 Build with the pinned default:
 
 ```bash
-docker build -f Dockerfile.triton-gateway -t triton-openai-gateway:26.07 .
+docker build -f Dockerfile.triton-gateway -t triton-openai-gateway:26.09 .
 ```
 
 Override the base only when you have validated the complete runtime matrix:
@@ -123,7 +123,7 @@ copying the example unchanged.
 ### Structured Output
 
 Clients request constrained JSON through the OpenAI `response_format` field.
-The gateway translates `json_object` and `json_schema` into Triton 26.07's
+The gateway translates `json_object` and `json_schema` into Triton 26.09's
 serialized vLLM `structured_outputs` parameter for both `vllm` and
 `vllm_multimodal` backends.
 
@@ -132,7 +132,7 @@ request so the schema constrains the visible `message.content`, not an internal
 reasoning block. The model's configured reasoning policy remains unchanged for
 ordinary chat requests.
 
-No extra engine setting is required in the stock image. vLLM `0.24.0` uses the
+No extra engine setting is required in the stock image. vLLM `0.29.0` uses the
 `auto` backend by default and the pinned Triton image includes `xgrammar`. To
 make the selection explicit, add one of these blocks to `model.json`:
 

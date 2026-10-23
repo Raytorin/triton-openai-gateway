@@ -11,15 +11,15 @@
 ## Совместимость runtime
 
 Dockerfile закрепляет базовый образ NVIDIA Triton
-`26.07-vllm-python-py3` по digest. При сборке проверяются Triton client `2.71.0`,
-vLLM `0.24.0`, Transformers `5.6.1`, Torch, FlashInfer и все добавленные
+`26.09-vllm-python-py3` по digest. При сборке проверяются Triton client `2.73.0`,
+vLLM `0.29.0`, Transformers `5.16.1`, Torch, FlashInfer и все добавленные
 зависимости для media и runtime. Замена базового образа является отдельной миграцией
 совместимости, а не обычным обновлением пакета.
 
 Сборка с закреплённым образом:
 
 ```bash
-docker build -f Dockerfile.triton-gateway -t triton-openai-gateway:26.07 .
+docker build -f Dockerfile.triton-gateway -t triton-openai-gateway:26.09 .
 ```
 
 Меняйте базовый образ только после проверки полной матрицы runtime:
@@ -125,7 +125,7 @@ watcher запишет путь до конкретного файла.
 
 Клиент запрашивает ограниченный JSON через OpenAI-поле `response_format`.
 Gateway переводит `json_object` и `json_schema` в сериализованный параметр
-Triton 26.07/vLLM `structured_outputs` для backend `vllm` и
+Triton 26.09/vLLM `structured_outputs` для backend `vllm` и
 `vllm_multimodal`.
 
 Для запроса со structured output gateway отключает thinking только на время
@@ -133,7 +133,7 @@ Triton 26.07/vLLM `structured_outputs` для backend `vllm` и
 внутренний reasoning block. Настроенная policy модели продолжает действовать
 для обычных chat-запросов.
 
-Для штатного образа дополнительная настройка engine не нужна. В vLLM `0.24.0`
+Для штатного образа дополнительная настройка engine не нужна. В vLLM `0.29.0`
 по умолчанию используется backend `auto`, а в закреплённом образе Triton уже
 есть `xgrammar`. При необходимости выбор можно явно указать в `model.json`:
 

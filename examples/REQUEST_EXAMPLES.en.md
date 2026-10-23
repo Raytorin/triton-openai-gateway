@@ -113,7 +113,7 @@ vectors silently. Requests without `lora_name` keep using the base model.
 For a pooling model that supports LoRA in vLLM, set
 `backend: "vllm_multimodal"` in `config.pbtxt`. Add `"enable_lora": true` and
 `"runner": "pooling"` to its `model.json`, retaining the model path and other
-engine settings. In the pinned vLLM 0.24 runtime, `runner` is a supported engine
+engine settings. In the pinned vLLM 0.29 runtime, `runner` is a supported engine
 option; do not add the legacy `task` option. If the engine detects the task
 automatically and no task is specified, the gateway leaves task validation to
 the backend. An explicit generation-only configuration still rejects embeddings.

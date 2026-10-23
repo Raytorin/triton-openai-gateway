@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Raytorin
 # SPDX-License-Identifier: Apache-2.0
 
-ARG BASE_IMAGE=nvcr.io/nvidia/tritonserver:26.07-vllm-python-py3@sha256:31e20bfbc65055d6b85553a00d45342a62c506874aa996c11ae53650151f05b1
+ARG BASE_IMAGE=nvcr.io/nvidia/tritonserver:26.09-vllm-python-py3@sha256:ff41460e8fb1a831e37d368f531e5f40761baae03a07adac2f4cde2fc2c953d1
 FROM ${BASE_IMAGE}
 
 ARG GATEWAY_VERSION=0.4.0
