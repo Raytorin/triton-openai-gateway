@@ -22,6 +22,7 @@ updates:
       - dependency-name: uvicorn
       - dependency-name: httpx
       - dependency-name: numpy
+      - dependency-name: ml-dtypes
       - dependency-name: sentencepiece
       - dependency-name: compressed-tensors
       - dependency-name: pillow
@@ -29,6 +30,7 @@ updates:
       - dependency-name: uvloop
       - dependency-name: opentelemetry-api
       - dependency-name: opentelemetry-sdk
+      - dependency-name: opentelemetry-exporter-otlp
       - dependency-name: opentelemetry-exporter-otlp-proto-http
       # Triton client follows the Triton release and currently requires protobuf < 7.
       - dependency-name: tritonclient

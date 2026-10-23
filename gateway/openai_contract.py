@@ -33,7 +33,7 @@ def structured_outputs_parameter(
             "json": response_format.json_schema.json_schema,
         }
 
-    # Triton 26.07 parses this nested object from a serialized JSON value.
+    # Triton's vLLM backend parses this nested object from serialized JSON.
     return json.dumps(structured_outputs, ensure_ascii=False, separators=(",", ":"))
 
 
