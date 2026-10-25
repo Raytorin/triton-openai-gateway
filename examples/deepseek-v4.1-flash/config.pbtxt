@@ -1,0 +1,12 @@
+name: "DeepSeek-V4.1-Flash"
+backend: "vllm_deepseek"
+max_batch_size: 0
+model_transaction_policy { decoupled: true }
+instance_group [{ kind: KIND_MODEL count: 1 }]
+parameters [
+  { key: "EXECUTION_ENV_PATH" value: { string_value: "/opt/envs/vllm032-cu129" } },
+  { key: "GPU_DEVICE_IDS" value: { string_value: "0" } },
+  { key: "REPORT_CUSTOM_METRICS" value: { string_value: "false" } },
+  { key: "STARTUP_TIMEOUT_SECONDS" value: { string_value: "1800" } },
+  { key: "SHUTDOWN_TIMEOUT_SECONDS" value: { string_value: "30" } }
+]

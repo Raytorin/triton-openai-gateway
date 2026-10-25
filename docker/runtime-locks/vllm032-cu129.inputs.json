@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "platform": "linux/amd64",
+  "python": {
+    "version": "3.12.15",
+    "build": "20261021",
+    "url": "https://releases.astral.sh/github/python-build-standalone/releases/download/20261021/cpython-3.12.15%2B20261021-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+    "sha256": "6d7521138fd33afddc1ccd08abb007d9a2829e38117c2576f9efdc0ec73ce772"
+  },
+  "cuda_toolkit_image": "nvidia/cuda:12.9.1-devel-ubuntu24.04@sha256:020bc241a628776338f4d4053fed4c38f6f7f3d7eb5919fecb8de313bb8ba47c",
+  "reference_image": "vllm/vllm-openai:v0.32.0-cu129-ubuntu2404@sha256:f99aa709b3f873aa1e1aadf5c1db35970119e8af9b36fe15d2a667aae0ed005c",
+  "reference_is_derived_environment": false,
+  "vllm_source_commit": "5df63a7203cdb9328d824a27b682e77c7b9928be",
+  "vllm_wheel_sha256": "9918be806fb2808c406547ff4f9f43870ac6ff28dc4b179291fcf532145bb50b",
+  "torch_wheel_sha256": "df28741fcd89e3da7cce2d48cbe5299d6732d510ac20f5d422d0b85edf18c327",
+  "vllm_metadata_sha256": "5ab3b4d2f84902891d7d6db2fc52e69d1c2e57ae297ddd6869023df8b706f776",
+  "torch_metadata_sha256": "24bc58739d12f19bf13eea193195dde6e6daa57d75da72ef18008c618a61722d",
+  "nccl_policy": "Use Torch wheel dependency nvidia-nccl-cu12==2.29.7 without optional reference-image overrides.",
+  "excluded_features": [
+    "optional KV connectors"
+  ],
+  "resolver": "uv 0.13.5; Python 3.12.15; x86_64-manylinux_2_39; wheel METADATA resolution",
+  "compiled_kernel_sources": {
+    "FlashMLA": "0eee43b12f034b657133cf2afca6a72ebb6efccf",
+    "DeepGEMM": "1e1842a833699298f7afc02eefb2ed168fff6938"
+  },
+  "lock_status": "pre-materialization; 204 core packages metadata-resolved, kernel closure pinned from actual shim metadata and official index hashes; full data-wheel metadata/install validation pending build",
+  "requirements_sha256": "f11725eb9367e93c6132a4a76cd90514e67fce48af8bf46111543262a42eb8ef",
+  "kernel_artifacts_sha256": "32506fe06953dad4fb915a6855f27255d3dbfcf91aa3f0ef43621bc8eac78a63",
+  "flashinfer_jit_shim_metadata_verified": true,
+  "core_native_abi_policy_sha256": "72c885cd564b0cc13476dce6dc638d947f77d72f71c071a53bfd619d4862e8e0"
+}

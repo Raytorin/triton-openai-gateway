@@ -5,12 +5,12 @@ import asyncio
 import json
 from functools import lru_cache
 from pathlib import Path
-import re
 from threading import Lock
 import time
 from typing import Any
 
 from fastapi import HTTPException
+from .model_config import read_model_config
 from .metrics import TOKENIZER_LOAD_DURATION, TOKENIZER_LOADS
 from .settings import MODELS_ACTIVE_DIR, TRUST_REMOTE_CODE, logger
 from .tool_parsers import detect_model_tool_parser
@@ -21,11 +21,10 @@ def _read_backend(config_path: str, modified_ns: int) -> str | None:
     # modified_ns is part of the cache key, so replacing config.pbtxt
     # invalidates the cached backend without explicit cache management.
     del modified_ns
-    text = Path(config_path).read_text(encoding="utf-8", errors="ignore")
-    match = re.search(r'^\s*backend\s*:\s*"([^"]+)"', text, re.MULTILINE)
-    if not match:
-        match = re.search(r"^\s*backend\s*:\s*([^\s\"]+)", text, re.MULTILINE)
-    return match.group(1).strip().lower() if match else None
+    try:
+        return read_model_config(config_path)['backend']
+    except (ValueError, SyntaxError, UnicodeError) as error:
+        raise HTTPException(500, f"Invalid model config {config_path}: {error}") from error
 
 
 @lru_cache(maxsize=256)
@@ -92,10 +91,16 @@ class ModelRegistry:
     def get_backend(self, model_name: str) -> str | None:
         model_path = self.resolve(model_name)
         config_path = model_path.parent / "config.pbtxt"
-        if not config_path.is_file():
-            return None
+        try:
+            modified_ns = config_path.stat().st_mtime_ns
+        except FileNotFoundError as error:
+            if not config_path.is_symlink():
+                return None  # Legacy models may omit config.pbtxt entirely.
+            raise HTTPException(500, f"Cannot read model config {config_path}: {error}") from error
+        except OSError as error:
+            raise HTTPException(500, f"Cannot read model config {config_path}: {error}") from error
 
-        return _read_backend(str(config_path), config_path.stat().st_mtime_ns)
+        return _read_backend(str(config_path), modified_ns)
 
     def get_capabilities(
         self,
@@ -104,6 +109,8 @@ class ModelRegistry:
     ) -> frozenset[str] | None:
         model_path = model_path or self.resolve(model_name)
         backend = self.get_backend(model_name)
+        if backend == "vllm_deepseek":
+            return frozenset({"chat"})
         model_json = model_path / "model.json"
         if not model_json.is_file() or backend is None:
             return None
@@ -119,6 +126,8 @@ class ModelRegistry:
         route: str,
         model_path: Path | None = None,
     ) -> None:
+        if route == "media" and self.get_backend(model_name) == "vllm_deepseek":
+            raise HTTPException(400, "DeepSeek V4.1 currently supports text generation only; media is unsupported")
         required_capability = "chat" if route in {"chat", "media"} else route
         capabilities = self.get_capabilities(model_name, model_path)
         if capabilities is None or required_capability in capabilities:
@@ -145,6 +154,8 @@ class ModelRegistry:
         raise HTTPException(status_code=400, detail=detail)
 
     def get_tool_parser(self, model_name: str) -> str | None:
+        if self.get_backend(model_name) == "vllm_deepseek":
+            return "deepseek_v41"
         return detect_model_tool_parser(self.resolve(model_name))
 
     def get_tokenizer(self, model_name: str):
@@ -181,10 +192,14 @@ class ModelRegistry:
             logger.info("Loading tokenizer for model '%s' from %s", model_name, tokenizer_path)
             started_at = time.monotonic()
             try:
-                tokenizer = AutoTokenizer.from_pretrained(
-                    tokenizer_path_str,
-                    trust_remote_code=TRUST_REMOTE_CODE,
-                )
+                from .deepseek import is_deepseek_profile
+                if self.get_backend(model_name) == "vllm_deepseek" or is_deepseek_profile(model_path):
+                    from transformers import TokenizersBackend
+                    tokenizer = TokenizersBackend.from_pretrained(tokenizer_path_str,
+                        local_files_only=True, trust_remote_code=False)
+                else:
+                    tokenizer = AutoTokenizer.from_pretrained(
+                        tokenizer_path_str, trust_remote_code=TRUST_REMOTE_CODE)
             except BaseException:
                 TOKENIZER_LOADS.labels(model_name, "error").inc()
                 raise

@@ -89,6 +89,10 @@ async def generate(request: ChatCompletionRequest, *, context_mode: str | None =
     registry.validate_route(request.model, "chat", model_path)
     conversation = reclassify_media_content(build_conversation(request.messages))
     route = "media" if extract_media_payloads(conversation).has_any else "chat"
+    registry.validate_route(request.model, route, model_path)
+    if registry.get_backend(request.model) == "vllm_deepseek":
+        from .deepseek import validate_request
+        validate_request(request)
     lease = await admission.acquire(route, request.model, model_path)
     configure_generation_telemetry(
         route=route, model=request.model,
@@ -224,7 +228,14 @@ async def _generate_context_summary(
     }
     backend = registry.get_backend(summary_model)
     try:
-        if backend == "python":
+        if backend == "vllm_deepseek":
+            from .deepseek import generate as generate_deepseek
+            summary_result = await generate_deepseek(
+                ChatCompletionRequest(model=summary_model, messages=[]),
+                summary_tokenizer, summary_prompt, sampling_parameters,
+                summary_reasoning, None, headers={}, extensions={})
+            generated_text = summary_result["choices"][0]["message"]["content"]
+        elif backend == "python":
             generated_text = await call_triton_python_chat(
                 summary_model,
                 summary_prompt,
@@ -311,7 +322,7 @@ def _chat_stream_headers(
 
 async def _generate(request: ChatCompletionRequest, *, context_mode: str | None = None):
     backend = registry.get_backend(request.model)
-    is_vllm_backend = backend in {"vllm", "vllm_multimodal"}
+    is_vllm_backend = backend in {"vllm", "vllm_multimodal", "vllm_deepseek"}
     tokenizer, model_path = await registry.get_tokenizer_async(request.model)
     shared_tokenizer = tokenizer
     tools = selected_tools(request.tools, request.tool_choice)
@@ -334,10 +345,14 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
     tokenizer = RequestTokenizer(tokenizer, reasoning_settings.template_kwargs,
         strict=reasoning_settings.requires_template_kwargs,
         chat_template=reasoning_settings.resolved_chat_template, tools=tools)
-    conversation = build_conversation(request.messages, preserve_reasoning=reasoning_settings.qwen_profile)
-    conversation, system_message_count, moved_system_messages = (
-        normalize_system_messages(conversation)
-    )
+    conversation = build_conversation(request.messages, preserve_reasoning=(
+        reasoning_settings.qwen_profile or reasoning_settings.deepseek_profile))
+    if reasoning_settings.deepseek_profile:
+        conversation = [{**message, "role": "system" if message["role"] == "developer" else message["role"]}
+                        for message in conversation]
+        system_message_count = moved_system_messages = 0
+    else:
+        conversation, system_message_count, moved_system_messages = normalize_system_messages(conversation)
     if system_message_count > 1 or moved_system_messages:
         log_event(
             logger,
@@ -483,7 +498,7 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
             request.tool_choice,
             has_tool_result=has_tool_result(conversation),
         )
-        if tools
+        if tools and not reasoning_settings.deepseek_profile
         else None,
     )
     media = extract_media_payloads(conversation)
@@ -709,6 +724,14 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         prompt_tokens=prompt_tokens,
         reserved_media_tokens=reserved_media_tokens,
     )
+
+    if backend == "vllm_deepseek":
+        from .deepseek import generate as generate_deepseek
+        return await generate_deepseek(request, tokenizer, prompt, sampling_parameters,
+            reasoning_settings, tools,
+            headers=_chat_stream_headers(reasoning_settings, context_preparation, budget),
+            extensions={"reasoning_status": reasoning_settings.response_status(),
+                        "context_status": context_preparation.response_status()})
 
     if request.stream:
         if backend == "python":

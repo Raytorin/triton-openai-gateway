@@ -1,0 +1,105 @@
+# syntax=docker/dockerfile:1.7
+# SPDX-License-Identifier: Apache-2.0
+# First build the unchanged default image locally, then explicitly opt into this recipe.
+ARG GATEWAY_IMAGE=triton-openai-gateway:qwen-local
+FROM nvidia/cuda:12.9.1-devel-ubuntu24.04@sha256:020bc241a628776338f4d4053fed4c38f6f7f3d7eb5919fecb8de313bb8ba47c AS cuda129
+FROM ${GATEWAY_IMAGE} AS environment
+SHELL ["/usr/bin/env", "-u", "BASH_ENV", "-u", "ENV", "/bin/bash", "-euo", "pipefail", "-c"]
+
+# Independent Python distribution, never a copy of the base image's site-packages.
+ADD --checksum=sha256:6d7521138fd33afddc1ccd08abb007d9a2829e38117c2576f9efdc0ec73ce772 https://releases.astral.sh/github/python-build-standalone/releases/download/20261021/cpython-3.12.15%2B20261021-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz /tmp/deepseek-python.tar.gz
+RUN mkdir -p /opt/envs/vllm032-cu129 \
+    && tar -xzf /tmp/deepseek-python.tar.gz -C /opt/envs/vllm032-cu129 --strip-components=1 \
+    && rm /tmp/deepseek-python.tar.gz \
+    && rm -f /opt/envs/vllm032-cu129/lib/python3.12/EXTERNALLY-MANAGED \
+    && printf '%s\n' 'export VIRTUAL_ENV=/opt/envs/vllm032-cu129' \
+       'export PATH="$VIRTUAL_ENV/bin:$PATH"' 'unset PYTHONHOME' > /opt/envs/vllm032-cu129/bin/activate
+
+# Keep the native compiler, runtime headers and NVVM coherent with cu129 wheels.
+COPY --from=cuda129 /usr/local/cuda-12.9/bin/ /opt/cuda/12.9/bin/
+COPY --from=cuda129 /usr/local/cuda-12.9/targets/ /opt/cuda/12.9/targets/
+COPY --from=cuda129 /usr/local/cuda-12.9/nvvm/ /opt/cuda/12.9/nvvm/
+RUN ln -s targets/x86_64-linux/include /opt/cuda/12.9/include \
+    && ln -s targets/x86_64-linux/lib /opt/cuda/12.9/lib64 \
+    && python3 - <<'PY'
+from pathlib import Path
+root = Path('/opt/cuda/12.9')
+for path in root.rglob('*'):
+    if path.is_symlink():
+        target = str(path.readlink())
+        if target.startswith('/usr/local/cuda-12.9/'):
+            path.unlink(); path.symlink_to(target.replace('/usr/local/cuda-12.9/', str(root) + '/', 1))
+        elif not path.resolve().is_relative_to(root):
+            # Tools such as Nsight/compute-sanitizer live outside the toolkit and
+            # are not part of the model process's nvcc/ptxas execution environment.
+            path.unlink()
+PY
+
+COPY docker/runtime-locks/vllm032-cu129.requirements.txt /tmp/deepseek.requirements.txt
+COPY docker/runtime-locks/vllm032-cu129.inputs.json /tmp/deepseek.inputs.json
+RUN python3 - <<'PYINPUT'
+import hashlib, json
+from pathlib import Path
+assert hashlib.sha256(Path('/tmp/deepseek.requirements.txt').read_bytes()).hexdigest() == json.loads(Path('/tmp/deepseek.inputs.json').read_text())['requirements_sha256']
+PYINPUT
+COPY backends/vllm_deepseek/launch.py backends/vllm_deepseek/runtime.py /opt/tritonserver/backends/vllm_deepseek/
+RUN /opt/envs/vllm032-cu129/bin/python3.12 -I /opt/tritonserver/backends/vllm_deepseek/launch.py --exec /opt/envs/vllm032-cu129/bin/python3.12 -m ensurepip \
+    && /opt/envs/vllm032-cu129/bin/python3.12 -I /opt/tritonserver/backends/vllm_deepseek/launch.py --exec /opt/envs/vllm032-cu129/bin/python3.12 -m pip download \
+       --require-hashes --only-binary=:all: --dest /tmp/deepseek-wheelhouse \
+       --index-url https://pypi.org/simple \
+       --extra-index-url https://download.pytorch.org/whl/cu129 \
+       --extra-index-url https://flashinfer.ai/whl --extra-index-url https://flashinfer.ai/whl/cu129 \
+       --find-links https://wheels.vllm.ai/0.32.0/cu129/vllm/ -r /tmp/deepseek.requirements.txt
+COPY docker/repair-decord-metadata.py /opt/tritonserver/tools/deepseek/
+RUN --network=none /opt/envs/vllm032-cu129/bin/python3.12 -I /opt/tritonserver/backends/vllm_deepseek/launch.py --exec /opt/envs/vllm032-cu129/bin/python3.12 -m pip install \
+       --no-index --find-links /tmp/deepseek-wheelhouse --require-hashes \
+       --only-binary=:all: --no-compile -r /tmp/deepseek.requirements.txt \
+    && /opt/envs/vllm032-cu129/bin/python3.12 -I /opt/tritonserver/backends/vllm_deepseek/launch.py --exec /opt/envs/vllm032-cu129/bin/python3.12 -B /opt/tritonserver/tools/deepseek/repair-decord-metadata.py \
+    && /opt/envs/vllm032-cu129/bin/python3.12 -I /opt/tritonserver/backends/vllm_deepseek/launch.py --exec /opt/envs/vllm032-cu129/bin/python3.12 -m pip check \
+    && rm -rf /tmp/deepseek-wheelhouse
+
+COPY backends/vllm_deepseek /opt/tritonserver/backends/vllm_deepseek
+RUN chmod 0755 /opt/tritonserver/backends/vllm_deepseek/triton_python_backend_stub \
+    && ln -s ../python/triton_python_backend_utils.py /opt/tritonserver/backends/vllm_deepseek/triton_python_backend_utils.py
+COPY backends/vllm_multimodal /opt/tritonserver/backends/vllm_multimodal
+COPY docker/verify-deepseek-runtime.py docker/deepseek-runtime-manifest.py /opt/tritonserver/tools/deepseek/
+COPY docker/runtime-locks/vllm032-cu129.inputs.json /opt/tritonserver/tools/deepseek/inputs.json
+COPY docker/runtime-locks/vllm032-cu129.kernel-artifacts.json /opt/runtime-artifacts/vllm032-cu129/kernel-artifacts.json
+RUN --network=none mkdir -p /opt/runtime-artifacts/vllm032-cu129 \
+    && VIRTUAL_ENV=/opt/envs/vllm032-cu129 PYTHONDONTWRITEBYTECODE=1 \
+       /opt/envs/vllm032-cu129/bin/python3.12 -I /opt/tritonserver/backends/vllm_deepseek/launch.py --exec /opt/envs/vllm032-cu129/bin/python3.12 /opt/tritonserver/tools/deepseek/verify-deepseek-runtime.py --imports --spawn \
+    && /opt/envs/vllm032-cu129/bin/python3.12 /opt/tritonserver/tools/deepseek/deepseek-runtime-manifest.py create \
+       --inputs /opt/tritonserver/tools/deepseek/inputs.json --manifest /opt/runtime-manifests/vllm032-cu129.json
+
+FROM ${GATEWAY_IMAGE} AS deepseek
+COPY --from=environment /opt/envs/vllm032-cu129 /opt/envs/vllm032-cu129
+COPY --from=environment /opt/cuda/12.9 /opt/cuda/12.9
+COPY --from=environment /opt/runtime-artifacts/vllm032-cu129 /opt/runtime-artifacts/vllm032-cu129
+COPY --from=environment /opt/runtime-manifests/vllm032-cu129.json /opt/runtime-manifests/vllm032-cu129.json
+COPY --from=environment /opt/tritonserver/tools/deepseek /opt/tritonserver/tools/deepseek
+COPY backends/vllm_deepseek /opt/tritonserver/backends/vllm_deepseek
+RUN chmod 0755 /opt/tritonserver/backends/vllm_deepseek/triton_python_backend_stub \
+    && ln -s ../python/triton_python_backend_utils.py /opt/tritonserver/backends/vllm_deepseek/triton_python_backend_utils.py
+COPY backends/vllm_multimodal /opt/tritonserver/backends/vllm_multimodal
+# The recipe is an output-only CPU parser in the retained gateway Python.
+# --no-deps leaves NVIDIA's Qwen/BGE environment and the isolated engine intact.
+COPY docker/deepseek-output-parser-requirements.txt /tmp/deepseek-output-parser-requirements.txt
+RUN python3 -m pip install --no-cache-dir --no-deps --only-binary=:all: --require-hashes \
+       -r /tmp/deepseek-output-parser-requirements.txt \
+    && python3 -c 'import deepseek_recipe; assert deepseek_recipe.__version__ == "0.2.0"' \
+    && rm /tmp/deepseek-output-parser-requirements.txt
+COPY gateway /opt/tritonserver/gateway
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /opt/tritonserver/licenses/triton-openai-gateway/
+COPY docker/triton-chat-gateway-requirements.txt /tmp/triton-chat-gateway-requirements.txt
+COPY docker/verify-runtime.py /tmp/verify-qwen-runtime.py
+# Retained system Python/Torch/vLLM/Pydantic must still satisfy the Qwen contract.
+RUN python3 /tmp/verify-qwen-runtime.py \
+    && rm /tmp/verify-qwen-runtime.py /tmp/triton-chat-gateway-requirements.txt \
+    && /opt/envs/vllm032-cu129/bin/python3.12 /opt/tritonserver/tools/deepseek/deepseek-runtime-manifest.py verify \
+       --manifest /opt/runtime-manifests/vllm032-cu129.json
+
+# Admission tooling stays outside the hashed Python/CUDA environment.
+COPY gateway/model_config.py /usr/local/libexec/triton-openai-gateway/
+COPY watch_triton.sh /usr/local/bin/watch_triton.sh
+RUN chmod 0755 /usr/local/bin/watch_triton.sh
+COPY scripts/validate_deepseek_checkpoint.py docker/smoke-deepseek-stub.py /opt/tritonserver/tools/deepseek/

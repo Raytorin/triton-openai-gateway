@@ -32,6 +32,7 @@ class ReasoningSettings:
     response_field: str
     supported: bool
     qwen_profile: bool = False
+    deepseek_profile: bool = False
     requires_template_kwargs: bool = False
     resolved_chat_template: str | None = None
     _template_options: tuple[tuple[str, Any], ...] = ()
@@ -99,7 +100,13 @@ def load_reasoning_settings(
             raise HTTPException(status_code=400, detail=f"{name} must be a boolean")
     if reasoning_effort is not None and not isinstance(reasoning_effort, str):
         raise HTTPException(status_code=400, detail="reasoning_effort must be a string")
-    qwen_profile, capabilities = qwen_template_capabilities(model_path, tokenizer, tools=tools)
+    from .deepseek import is_deepseek_profile, template_capabilities
+    deepseek_profile = is_deepseek_profile(model_path, tokenizer)
+    if deepseek_profile:
+        qwen_profile = False
+        capabilities = template_capabilities(model_path, tokenizer, tools=tools)
+    else:
+        qwen_profile, capabilities = qwen_template_capabilities(model_path, tokenizer, tools=tools)
     config_path = model_path / "gateway.json"
     configured = _read_reasoning_settings(
         str(config_path),
@@ -147,6 +154,7 @@ def load_reasoning_settings(
         response_field=configured.response_field,
         supported=configured.supported,
         qwen_profile=qwen_profile,
+        deepseek_profile=deepseek_profile,
         resolved_chat_template=capabilities.template,
         requires_template_kwargs=(
             enable_thinking is not None or preserve_thinking is not None

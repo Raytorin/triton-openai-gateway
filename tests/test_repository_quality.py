@@ -96,6 +96,23 @@ def test_shared_test_and_runtime_requirement_pins_match():
     assert not mismatches, f"Test and runtime pins differ: {mismatches}"
 
 
+def test_optional_deepseek_parser_is_pinned_for_tests():
+    verifier = runpy.run_path(str(ROOT / "docker" / "verify-runtime.py"))
+    read_pins = verifier["read_pinned_requirements"]
+    test_requirements = read_pins(ROOT / "requirements-test.txt")
+    parser_requirements = read_pins(
+        ROOT / "docker" / "deepseek-output-parser-requirements.txt"
+    )
+    assert parser_requirements, "Optional parser requirement is missing"
+
+    mismatches = {
+        package: (pin.split()[0], test_requirements.get(package))
+        for package, pin in parser_requirements.items()
+        if test_requirements.get(package) != pin.split()[0]
+    }
+    assert not mismatches, f"Optional parser and test pins differ: {mismatches}"
+
+
 def test_external_github_actions_are_pinned_to_commit_shas():
     unpinned = []
     for workflow in (ROOT / ".github" / "workflows").glob("*.y*ml"):
