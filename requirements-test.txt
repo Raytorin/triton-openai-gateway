@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Raytorin
 # SPDX-License-Identifier: Apache-2.0
 
-av==18.1.0
+av==19.0.2
 cffconvert==2.0.0
 decord==0.6.0
 deepseek-recipe==0.2.0
@@ -20,7 +20,7 @@ pip-audit==2.10.1
 prometheus-client==0.26.0
 protobuf==6.33.6
 pydantic==2.10.6
-pymupdf==1.28.2
+pymupdf==2.0
 pytest==9.1.1
 pytest-cov==7.1.0
 python-rapidjson==1.25
