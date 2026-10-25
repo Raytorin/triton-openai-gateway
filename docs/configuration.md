@@ -130,7 +130,9 @@ serialized vLLM `structured_outputs` parameter for both `vllm` and
 For a structured-output request, the gateway disables model thinking for that
 request so the schema constrains the visible `message.content`, not an internal
 reasoning block. The model's configured reasoning policy remains unchanged for
-ordinary chat requests.
+ordinary chat requests. An explicit `chat_template_kwargs.enable_thinking: true`
+with `json_object` or `json_schema` is rejected with HTTP 400; omitting it or
+setting it to `false` retains the non-thinking structured-output path.
 
 No extra engine setting is required in the stock image. vLLM `0.29.0` uses the
 `auto` backend by default and the pinned Triton image includes `xgrammar`. To
@@ -386,6 +388,55 @@ before producing final content, the gateway returns empty `content` with
 `"reasoning"` for clients following the vLLM schema.
 
 See [`examples/gateway.reasoning.json`](../examples/gateway.reasoning.json).
+
+#### Per-request Qwen thinking
+
+Only `/v1/chat/completions` accepts the following generation controls:
+
+```json
+{
+  "chat_template_kwargs": {
+    "enable_thinking": true,
+    "preserve_thinking": false
+  }
+}
+```
+
+`enable_thinking` selects whether the template generates a thinking turn.
+`preserve_thinking` controls retention of earlier reasoning only for templates
+that implement it; it does not enable thinking. Both fields require JSON
+booleans (`true`/`false`), not strings or integers. `include_reasoning` controls
+response visibility only: hiding reasoning does not turn generation off.
+
+Server policy resolves environment variables before model `gateway.json`,
+then defaults to `disabled` when neither is set. Missing request controls leave
+that policy and the template's defaults in effect. `disabled` is a hard ban:
+explicit `enable_thinking: true` fails with HTTP 400. `hidden` cannot be
+revealed by `include_reasoning: true`. Under `separate`, a supporting switchable
+Qwen template accepts both thinking and non-thinking requests for the same
+loaded model. Request controls never change shared model/tokenizer state.
+
+Capabilities are validated against the actual resolved chat template's
+fingerprint and profile, not just the model name. A fixed non-thinking template
+accepts `false` and rejects `true`; a fixed thinking template accepts `true`
+when server policy permits it and rejects `false`. Unknown keys or invalid
+subfield types in `chat_template_kwargs` fail with HTTP 422; an unsupported
+control or value fails with HTTP 400 before inference.
+
+Top-level `reasoning_effort` is accepted only when the template consumes it,
+using that template's allowed values. `high` and `xhigh` are distinct and are
+never globally aliased. For example, the supported Qwen3.8 template accepts
+`low`, `medium`, and `xhigh`, with a template default of `xhigh`; older Qwen
+templates may not consume effort at all. The Qwen3.6 examples intentionally
+omit effort. `preserve_thinking` likewise requires template support.
+
+The Responses API contract is unchanged and does not accept these reasoning
+controls. Chat sampling also accepts `top_k` (`-1` or a positive integer) and
+`presence_penalty` (from `-2` to `2`); these are passed to generation.
+
+See the [paired Qwen3.6 requests](../examples/REQUEST_EXAMPLES.en.md#qwen36-27b-fp8-thinking-on-and-off)
+for generation on/off and visibility examples. Local template and request
+validation does not establish GPU performance or model quality.
 
 ## Environment Variables
 

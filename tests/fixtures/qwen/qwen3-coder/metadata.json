@@ -1,0 +1,14 @@
+{
+  "repo_id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+  "revision": "573fa3901e5799703b1e60825b0ec024a4c0f1d3",
+  "source_file": "tokenizer_config.json",
+  "source_url": "https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct/resolve/573fa3901e5799703b1e60825b0ec024a4c0f1d3/tokenizer_config.json",
+  "source_sha256": "60f6e8cb15c98dd07300a3cc465ea662de245d2095e4245616af21b2324db3fc",
+  "template_sha256": "5a38bfa05833266240066aedc497decc9b00cc0d3e3b8cceea98cf530196ab06",
+  "license": "Apache-2.0",
+  "model_type": "qwen3_moe",
+  "extraction": "chat_template JSON string, UTF-8 without added newline",
+  "license_declaration_url": "https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct/blob/573fa3901e5799703b1e60825b0ec024a4c0f1d3/README.md",
+  "readme_sha256": "98e8f0e00f2d6c7f1743fc4ef2b6297dcc57bec73d71f36588aed984370ac3f3",
+  "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+}

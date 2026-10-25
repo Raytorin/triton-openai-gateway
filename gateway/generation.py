@@ -38,6 +38,7 @@ from .multimodal import (
 from .observability import log_event, set_request_model
 from .openai_contract import normalize_system_messages
 from .prompt import (
+    RequestTokenizer,
     render_chat_prompt,
     render_and_count_prompt,
     add_system_instruction,
@@ -194,6 +195,11 @@ async def _generate_context_summary(
     summary_tokenizer, summary_model_path = await registry.get_tokenizer_async(
         summary_model
     )
+    summary_reasoning = await run_cpu(load_reasoning_settings,
+        summary_model_path, tokenizer=summary_tokenizer, force_disable=True)
+    summary_tokenizer = RequestTokenizer(summary_tokenizer, summary_reasoning.template_kwargs,
+        strict=summary_reasoning.requires_template_kwargs,
+        chat_template=summary_reasoning.resolved_chat_template)
     summary_conversation = build_summary_conversation(
         previous_summary,
         source_text,
@@ -307,9 +313,28 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
     backend = registry.get_backend(request.model)
     is_vllm_backend = backend in {"vllm", "vllm_multimodal"}
     tokenizer, model_path = await registry.get_tokenizer_async(request.model)
+    shared_tokenizer = tokenizer
     tools = selected_tools(request.tools, request.tool_choice)
     tool_parser = registry.get_tool_parser(request.model) if tools else None
-    conversation = build_conversation(request.messages)
+    structured_response = (
+        request.response_format is not None
+        and request.response_format.type in {"json_object", "json_schema"}
+    )
+    controls = request.chat_template_kwargs
+    reasoning_settings = await run_cpu(load_reasoning_settings,
+        model_path,
+        include_reasoning=request.include_reasoning,
+        force_disable=structured_response,
+        tokenizer=tokenizer,
+        enable_thinking=controls.enable_thinking if controls is not None else None,
+        preserve_thinking=controls.preserve_thinking if controls is not None else None,
+        reasoning_effort=request.reasoning_effort,
+        tools=tools,
+    )
+    tokenizer = RequestTokenizer(tokenizer, reasoning_settings.template_kwargs,
+        strict=reasoning_settings.requires_template_kwargs,
+        chat_template=reasoning_settings.resolved_chat_template, tools=tools)
+    conversation = build_conversation(request.messages, preserve_reasoning=reasoning_settings.qwen_profile)
     conversation, system_message_count, moved_system_messages = (
         normalize_system_messages(conversation)
     )
@@ -325,15 +350,6 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
     log_chat_request_debug(request, conversation, tools, tool_parser)
     media_settings = load_vllm_media_settings(model_path)
     context_settings = load_context_compression_settings(model_path)
-    structured_response = (
-        request.response_format is not None
-        and request.response_format.type in {"json_object", "json_schema"}
-    )
-    reasoning_settings = load_reasoning_settings(
-        model_path,
-        include_reasoning=request.include_reasoning,
-        force_disable=structured_response,
-    )
     limits = load_generation_limits(model_path, thinking=reasoning_settings.enable_thinking)
     requested = requested_output_limit(request)
     if requested is not None and requested > limits.cap:
@@ -434,10 +450,17 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
                     tokenizer=embedding_tokenizer,
                     dimensions=media_settings.pdf_embedding_dimensions,
                 )
+            # Preprocessing may generate summaries of media. Those auxiliary
+            # calls must not inherit the main request's thinking overrides.
+            media_reasoning = await run_cpu(load_reasoning_settings,
+                model_path, tokenizer=shared_tokenizer, force_disable=True)
+            media_tokenizer = RequestTokenizer(shared_tokenizer, media_reasoning.template_kwargs,
+                strict=media_reasoning.requires_template_kwargs,
+                chat_template=media_reasoning.resolved_chat_template)
             conversation = await prepare_vllm_media_conversation(
                 request.model,
                 model_path,
-                tokenizer,
+                media_tokenizer,
                 conversation,
                 request_media,
                 sampling_parameters,

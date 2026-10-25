@@ -66,7 +66,7 @@ def serve():
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             captured.append({"path": self.path, "body": body})
-            with patch("gateway.responses.generation.generate", generate):
+            with patch("gateway.responses.generation.generate", generate), patch("gateway.app.generate", generate):
                 response = TestClient(app).post(self.path, json=body)
             self.send_response(response.status_code)
             for k,v in response.headers.items():
@@ -172,8 +172,67 @@ def check_clients(url):
     assert boundary[1]["body"]["max_output_tokens"] == 16
     for index in range(2, 10, 2):
         assert boundary[index+1]["body"]["max_output_tokens"] == 16
+    # Actual installed LiteLLM -> localhost HTTP -> gateway schema boundary.
+    # Generation is deterministic above; these checks prove wire forwarding,
+    # not capability validation or real-model thinking. In particular, high and
+    # xhigh must reach the gateway unchanged so its model policy can decide.
+    chat_start = len(captured)
+    chat_cases = [
+        {},
+        {"extra_body": {"chat_template_kwargs": {"enable_thinking": True}}},
+        {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
+        {"extra_body": {"chat_template_kwargs": {"preserve_thinking": True}}},
+        {"extra_body": {"chat_template_kwargs": {"preserve_thinking": False}}},
+        {"reasoning_effort": "high", "allowed_openai_params": ["reasoning_effort"]},
+        {"reasoning_effort": "xhigh", "allowed_openai_params": ["reasoning_effort"]},
+        {"reasoning_effort": "xhigh", "allowed_openai_params": ["reasoning_effort"],
+         "extra_body": {"chat_template_kwargs": {"enable_thinking": True, "preserve_thinking": True}}},
+    ]
+    for case in chat_cases:
+        result = litellm.completion(
+            model="openai/qwen-fixture", api_base=url+"/v1", api_key="local-fixture",
+            messages=[{"role": "user", "content": "Hello"}], drop_params=False,
+            **case,
+        )
+        assert result.choices[0].message.content == "It is sunny"
+    # Same model_list/litellm_params placement as examples/litellm.config.yaml.
+    router = litellm.Router(model_list=[{
+        "model_name": "Qwen3-Example",
+        "litellm_params": {"model": "openai/qwen-fixture", "api_base": url+"/v1",
+                           "api_key": "local-fixture", "timeout": 300,
+                           "allowed_openai_params": ["reasoning_effort"]},
+    }])
+    for effort in ("high", "xhigh"):
+        case = {"reasoning_effort": effort,
+                "extra_body": {"chat_template_kwargs": {"enable_thinking": True}}}
+        result = router.completion(model="Qwen3-Example", drop_params=False,
+                                   messages=[{"role": "user", "content": "Hello"}], **case)
+        assert result.choices[0].message.content == "It is sunny"
+        chat_cases.append(case)
+    captured = httpx.get(url+"/captured").json()
+    wire_chat = captured[chat_start:]
+    assert len(wire_chat) == len(chat_cases)
+    for case, received in zip(chat_cases, wire_chat, strict=True):
+        assert received["path"] == "/v1/chat/completions"
+        body = received["body"]
+        expected_template = case.get("extra_body", {}).get("chat_template_kwargs")
+        if expected_template is None:
+            assert "chat_template_kwargs" not in body, body
+        else:
+            assert body["chat_template_kwargs"] == expected_template, body
+            for key, value in expected_template.items():
+                assert type(body["chat_template_kwargs"][key]) is bool
+                assert body["chat_template_kwargs"][key] is value
+        if "reasoning_effort" in case:
+            assert body["reasoning_effort"] == case["reasoning_effort"], body
+        else:
+            assert "reasoning_effort" not in body, body
+        assert "allowed_openai_params" not in body
+        assert "extra_body" not in body
+    print("litellm: actual HTTP chat bodies preserve thinking booleans, effort high/xhigh, and omission")
     print(json.dumps({"openai": version("openai"), "litellm": version("litellm"),
-        "requests": len(captured), "route": "/v1/responses", "injected_default_limit": False,
+        "requests": len(captured), "routes": ["/v1/responses", "/v1/chat/completions"],
+        "chat_thinking_wire_cases": len(chat_cases), "reasoning_effort_forwarding": ["high", "xhigh"], "injected_default_limit": False,
         "litellm_minimum_explicit_limit": 16, "litellm_invalid_integer_limits_normalized": True,
         "sdk_incomplete_requires_terminal_event_handling": True,
         "litellm_incomplete_event_type": "response.completed"}))
