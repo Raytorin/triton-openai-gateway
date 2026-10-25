@@ -101,4 +101,5 @@ RUN python3 /tmp/verify-qwen-runtime.py \
 # Admission tooling stays outside the hashed Python/CUDA environment.
 COPY gateway/model_config.py /usr/local/libexec/triton-openai-gateway/
 COPY watch_triton.sh /usr/local/bin/watch_triton.sh
+RUN chmod 0755 /usr/local/bin/watch_triton.sh
 COPY scripts/validate_deepseek_checkpoint.py docker/smoke-deepseek-stub.py /opt/tritonserver/tools/deepseek/
