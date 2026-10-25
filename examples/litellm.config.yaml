@@ -6,6 +6,9 @@ model_list:
       api_base: http://triton-inference-server:8080/v1
       api_key: dummy
       timeout: 300
+      # Permit forwarding on routes where LiteLLM does not detect effort support.
+      # The gateway validates values against the actual chat template.
+      allowed_openai_params: [reasoning_effort]
 
 litellm_settings:
   # Keep OpenAI response_format, seed, and other supported parameters.

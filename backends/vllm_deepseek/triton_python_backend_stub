@@ -1,0 +1,11 @@
+#!/opt/envs/vllm032-cu129/bin/python3.12 -I
+# SPDX-License-Identifier: Apache-2.0
+# Selected only for vllm_deepseek. Preserve Triton's stock stub argv/IPC ABI.
+import importlib.util
+from pathlib import Path
+
+path = Path(__file__).resolve().parent / 'launch.py'
+spec = importlib.util.spec_from_file_location('deepseek_stub_launcher', path)
+launcher = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(launcher)
+launcher.stock_stub()

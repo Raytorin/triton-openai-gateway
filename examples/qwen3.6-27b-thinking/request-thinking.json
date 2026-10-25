@@ -1,0 +1,17 @@
+{
+  "model": "Qwen3.6-27B-FP8",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Calculate 37 * 48 and give a short answer."
+    }
+  ],
+  "max_tokens": 1024,
+  "temperature": 0.6,
+  "top_k": 20,
+  "presence_penalty": 0.0,
+  "chat_template_kwargs": {
+    "enable_thinking": true
+  },
+  "include_reasoning": false
+}

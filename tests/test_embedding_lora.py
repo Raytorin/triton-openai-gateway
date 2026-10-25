@@ -1,5 +1,6 @@
 """Exercise the real request adapter with lightweight Triton/vLLM doubles."""
 import importlib.util
+import json
 from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
@@ -173,6 +174,7 @@ async def test_dense_endpoint_forwards_lora_for_every_batch_item(lora_name):
         patch.object(gateway_app, "call_triton_embeddings", infer),
     ):
         response = await gateway_app.create_embeddings.__wrapped__(request)
+    response = json.loads(response.body)
     assert response["usage"]["prompt_tokens"] == 2
     assert [item["index"] for item in response["data"]] == [0, 1]
     assert [call.args[1] for call in infer.await_args_list] == [[10], [20]]

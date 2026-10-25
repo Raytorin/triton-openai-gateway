@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "status": "pre-materialization; build verifies all hashes and dependency metadata before network-disabled installation",
+  "artifacts": [
+    {
+      "name": "flashinfer-cubin",
+      "version": "0.7.0.post1",
+      "url": "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_cubin-0.7.0.post1-py3-none-any.whl",
+      "sha256": "f5b5fbf6e914b358219b845ed3ee586ffc1ae3c9768c8b135115ac14afbceed3",
+      "source_index": "https://flashinfer.ai/whl/flashinfer-cubin/",
+      "verification": "official-index-hash; full-wheel metadata pending build"
+    },
+    {
+      "name": "flashinfer-jit-cache",
+      "version": "0.7.0.post1+cu129",
+      "url": "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1+cu129-cp39-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "314d97ea8c3d288d0afce09e9f3dc823a83d4a219c02b85097de71ee143cf0fb",
+      "source_index": "https://flashinfer.ai/whl/cu129/flashinfer-jit-cache/",
+      "verification": "wheel-metadata-and-hash"
+    },
+    {
+      "name": "flashinfer-jit-cache-sm80",
+      "version": "0.7.0.post1+cu129",
+      "url": "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm80-0.7.0.post1+cu129-cp39-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "0dd174661cbcc2a741cfc10c021e10f0a5e65828404ea0b919a4fc87bf8f6b32",
+      "source_index": "https://flashinfer.ai/whl/cu129/flashinfer-jit-cache-sm80/",
+      "verification": "official-index-hash; full-wheel metadata pending build"
+    },
+    {
+      "name": "flashinfer-jit-cache-sm89",
+      "version": "0.7.0.post1+cu129",
+      "url": "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm89-0.7.0.post1+cu129-cp39-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "b78d2d0cb014a7ccff6a1df140e7cc294753ec7b1289c00d956d3306d0c18356",
+      "source_index": "https://flashinfer.ai/whl/cu129/flashinfer-jit-cache-sm89/",
+      "verification": "official-index-hash; full-wheel metadata pending build"
+    },
+    {
+      "name": "flashinfer-jit-cache-sm90a",
+      "version": "0.7.0.post1+cu129",
+      "url": "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm90a-0.7.0.post1+cu129-cp39-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "b4bcb97736293842b0c6237ce9c78f4601e5c1d95fe7f21e8994e10705c2a5d5",
+      "source_index": "https://flashinfer.ai/whl/cu129/flashinfer-jit-cache-sm90a/",
+      "verification": "official-index-hash; full-wheel metadata pending build"
+    },
+    {
+      "name": "flashinfer-jit-cache-sm100a",
+      "version": "0.7.0.post1+cu129",
+      "url": "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm100a-0.7.0.post1+cu129-cp39-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "9c367ff488f9011e95d9314ca11474bf4eaa2505582bb235dc59bdf50b86c039",
+      "source_index": "https://flashinfer.ai/whl/cu129/flashinfer-jit-cache-sm100a/",
+      "verification": "official-index-hash; full-wheel metadata pending build"
+    },
+    {
+      "name": "flashinfer-jit-cache-sm103a",
+      "version": "0.7.0.post1+cu129",
+      "url": "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm103a-0.7.0.post1+cu129-cp39-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "bc13a77e38857a924f11127ce89fa319488cbac44990ceca08634b0c9d06fff3",
+      "source_index": "https://flashinfer.ai/whl/cu129/flashinfer-jit-cache-sm103a/",
+      "verification": "official-index-hash; full-wheel metadata pending build"
+    },
+    {
+      "name": "flashinfer-jit-cache-sm120f",
+      "version": "0.7.0.post1+cu129",
+      "url": "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm120f-0.7.0.post1+cu129-cp39-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "4a77c64acbd629cb7e771f76a0bdb865753d1cadc9e4a710ee0b5cb520c2f337",
+      "source_index": "https://flashinfer.ai/whl/cu129/flashinfer-jit-cache-sm120f/",
+      "verification": "official-index-hash; full-wheel metadata pending build"
+    }
+  ]
+}

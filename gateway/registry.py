@@ -5,12 +5,12 @@ import asyncio
 import json
 from functools import lru_cache
 from pathlib import Path
-import re
 from threading import Lock
 import time
 from typing import Any
 
 from fastapi import HTTPException
+from .model_config import read_model_config
 from .metrics import TOKENIZER_LOAD_DURATION, TOKENIZER_LOADS
 from .settings import MODELS_ACTIVE_DIR, TRUST_REMOTE_CODE, logger
 from .tool_parsers import detect_model_tool_parser
@@ -21,11 +21,10 @@ def _read_backend(config_path: str, modified_ns: int) -> str | None:
     # modified_ns is part of the cache key, so replacing config.pbtxt
     # invalidates the cached backend without explicit cache management.
     del modified_ns
-    text = Path(config_path).read_text(encoding="utf-8", errors="ignore")
-    match = re.search(r'^\s*backend\s*:\s*"([^"]+)"', text, re.MULTILINE)
-    if not match:
-        match = re.search(r"^\s*backend\s*:\s*([^\s\"]+)", text, re.MULTILINE)
-    return match.group(1).strip().lower() if match else None
+    try:
+        return read_model_config(config_path)['backend']
+    except (ValueError, SyntaxError, UnicodeError) as error:
+        raise HTTPException(500, f"Invalid model config {config_path}: {error}") from error
 
 
 @lru_cache(maxsize=256)
@@ -65,6 +64,8 @@ class ModelRegistry:
     def __init__(self):
         self._cache: dict[str, tuple[str, Any]] = {}
         self._lock = Lock()
+        self._model_locks: dict[str, Any] = {}
+        self._loads: dict[tuple[asyncio.AbstractEventLoop, str, Path, Path], asyncio.Task] = {}
 
     def list_models(self) -> list[str]:
         if not MODELS_ACTIVE_DIR.exists():
@@ -90,10 +91,16 @@ class ModelRegistry:
     def get_backend(self, model_name: str) -> str | None:
         model_path = self.resolve(model_name)
         config_path = model_path.parent / "config.pbtxt"
-        if not config_path.is_file():
-            return None
+        try:
+            modified_ns = config_path.stat().st_mtime_ns
+        except FileNotFoundError as error:
+            if not config_path.is_symlink():
+                return None  # Legacy models may omit config.pbtxt entirely.
+            raise HTTPException(500, f"Cannot read model config {config_path}: {error}") from error
+        except OSError as error:
+            raise HTTPException(500, f"Cannot read model config {config_path}: {error}") from error
 
-        return _read_backend(str(config_path), config_path.stat().st_mtime_ns)
+        return _read_backend(str(config_path), modified_ns)
 
     def get_capabilities(
         self,
@@ -102,6 +109,8 @@ class ModelRegistry:
     ) -> frozenset[str] | None:
         model_path = model_path or self.resolve(model_name)
         backend = self.get_backend(model_name)
+        if backend == "vllm_deepseek":
+            return frozenset({"chat"})
         model_json = model_path / "model.json"
         if not model_json.is_file() or backend is None:
             return None
@@ -117,6 +126,8 @@ class ModelRegistry:
         route: str,
         model_path: Path | None = None,
     ) -> None:
+        if route == "media" and self.get_backend(model_name) == "vllm_deepseek":
+            raise HTTPException(400, "DeepSeek V4.1 currently supports text generation only; media is unsupported")
         required_capability = "chat" if route in {"chat", "media"} else route
         capabilities = self.get_capabilities(model_name, model_path)
         if capabilities is None or required_capability in capabilities:
@@ -143,17 +154,36 @@ class ModelRegistry:
         raise HTTPException(status_code=400, detail=detail)
 
     def get_tool_parser(self, model_name: str) -> str | None:
+        if self.get_backend(model_name) == "vllm_deepseek":
+            return "deepseek_v41"
         return detect_model_tool_parser(self.resolve(model_name))
 
     def get_tokenizer(self, model_name: str):
+        model_path, tokenizer_path = self._tokenizer_location(model_name)
+        return self._load_tokenizer(model_name, model_path, tokenizer_path)
+
+    def _tokenizer_location(self, model_name: str) -> tuple[Path, Path]:
         model_path = self.resolve(model_name)
         tokenizer_path = self.resolve_tokenizer_path(model_path)
+        return model_path, tokenizer_path
+
+    def _load_tokenizer(self, model_name: str, model_path: Path, tokenizer_path: Path):
         tokenizer_path_str = str(tokenizer_path)
 
         with self._lock:
             cached = self._cache.get(model_name)
             if cached and cached[0] == tokenizer_path_str:
                 return cached[1], model_path
+
+            model_lock = self._model_locks.setdefault(model_name, Lock())
+
+        # Only the same model shares a loading lock. Never hold the cache
+        # lock across imports, filesystem reads or third-party loading code.
+        with model_lock:
+            with self._lock:
+                cached = self._cache.get(model_name)
+                if cached and cached[0] == tokenizer_path_str:
+                    return cached[1], model_path
 
             # Transformers 5 imports PyTorch eagerly and noticeably delays
             # Uvicorn startup. Import it only when a tokenizer must be loaded.
@@ -162,10 +192,14 @@ class ModelRegistry:
             logger.info("Loading tokenizer for model '%s' from %s", model_name, tokenizer_path)
             started_at = time.monotonic()
             try:
-                tokenizer = AutoTokenizer.from_pretrained(
-                    tokenizer_path_str,
-                    trust_remote_code=TRUST_REMOTE_CODE,
-                )
+                from .deepseek import is_deepseek_profile
+                if self.get_backend(model_name) == "vllm_deepseek" or is_deepseek_profile(model_path):
+                    from transformers import TokenizersBackend
+                    tokenizer = TokenizersBackend.from_pretrained(tokenizer_path_str,
+                        local_files_only=True, trust_remote_code=False)
+                else:
+                    tokenizer = AutoTokenizer.from_pretrained(
+                        tokenizer_path_str, trust_remote_code=TRUST_REMOTE_CODE)
             except BaseException:
                 TOKENIZER_LOADS.labels(model_name, "error").inc()
                 raise
@@ -175,13 +209,36 @@ class ModelRegistry:
                 TOKENIZER_LOAD_DURATION.labels(model_name).observe(
                     time.monotonic() - started_at
                 )
-            self._cache[model_name] = (tokenizer_path_str, tokenizer)
+            with self._lock:
+                self._cache[model_name] = (tokenizer_path_str, tokenizer)
             return tokenizer, model_path
 
     async def get_tokenizer_async(self, model_name: str):
-        # Loading a Hugging Face tokenizer performs filesystem work and may
-        # import model-specific Python. Keep it outside the ASGI event loop.
-        return await asyncio.to_thread(self.get_tokenizer, model_name)
+        # Resolve before selecting a shared task: a model may be replaced while
+        # its previous tokenizer is still loading. Keep filesystem work off loop.
+        model_path, tokenizer_path = await asyncio.to_thread(self._tokenizer_location, model_name)
+        # Share one in-flight task per model version and loop. Duplicate callers
+        # must not fill the thread executor with waiters on a threading.Lock.
+        key = (asyncio.get_running_loop(), model_name, model_path, tokenizer_path)
+        with self._lock:
+            task = self._loads.get(key)
+            if task is None:
+                task = asyncio.create_task(asyncio.to_thread(
+                    self._load_tokenizer, model_name, model_path, tokenizer_path,
+                ))
+                self._loads[key] = task
+                task.add_done_callback(lambda done: self._finish_load(key, done))
+        # A disconnected waiter does not cancel loading for the others.
+        return await asyncio.shield(task)
+
+    def _finish_load(self, key, task: asyncio.Task) -> None:
+        with self._lock:
+            if self._loads.get(key) is task:
+                del self._loads[key]
+        # Retrieve errors even when every waiter disconnected; future calls
+        # can retry after either success or failure.
+        if not task.cancelled():
+            task.exception()
 
     async def preload_tokenizers(self) -> None:
         models = self.list_models()

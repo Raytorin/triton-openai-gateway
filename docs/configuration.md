@@ -10,15 +10,15 @@ separate prevents gateway-only keys from being passed to vLLM engine arguments.
 
 ## Runtime Compatibility
 
-The Dockerfile pins the NVIDIA Triton `26.07-vllm-python-py3` base image by
-digest. The build verifies Triton client `2.71.0`, vLLM `0.24.0`, Transformers
-`5.6.1`, Torch, FlashInfer, and all added media/runtime dependencies. Changing the base
+The Dockerfile pins the NVIDIA Triton `26.09-vllm-python-py3` base image by
+digest. The build verifies Triton client `2.73.0`, vLLM `0.29.0`, Transformers
+`5.16.1`, Torch, FlashInfer, and all added media/runtime dependencies. Changing the base
 image is an explicit compatibility migration, not a routine package upgrade.
 
 Build with the pinned default:
 
 ```bash
-docker build -f Dockerfile.triton-gateway -t triton-openai-gateway:26.07 .
+docker build -f Dockerfile.triton-gateway -t triton-openai-gateway:26.09 .
 ```
 
 Override the base only when you have validated the complete runtime matrix:
@@ -123,16 +123,18 @@ copying the example unchanged.
 ### Structured Output
 
 Clients request constrained JSON through the OpenAI `response_format` field.
-The gateway translates `json_object` and `json_schema` into Triton 26.07's
+The gateway translates `json_object` and `json_schema` into Triton 26.09's
 serialized vLLM `structured_outputs` parameter for both `vllm` and
 `vllm_multimodal` backends.
 
 For a structured-output request, the gateway disables model thinking for that
 request so the schema constrains the visible `message.content`, not an internal
 reasoning block. The model's configured reasoning policy remains unchanged for
-ordinary chat requests.
+ordinary chat requests. An explicit `chat_template_kwargs.enable_thinking: true`
+with `json_object` or `json_schema` is rejected with HTTP 400; omitting it or
+setting it to `false` retains the non-thinking structured-output path.
 
-No extra engine setting is required in the stock image. vLLM `0.24.0` uses the
+No extra engine setting is required in the stock image. vLLM `0.29.0` uses the
 `auto` backend by default and the pinned Triton image includes `xgrammar`. To
 make the selection explicit, add one of these blocks to `model.json`:
 
@@ -387,6 +389,55 @@ before producing final content, the gateway returns empty `content` with
 
 See [`examples/gateway.reasoning.json`](../examples/gateway.reasoning.json).
 
+#### Per-request Qwen thinking
+
+Only `/v1/chat/completions` accepts the following generation controls:
+
+```json
+{
+  "chat_template_kwargs": {
+    "enable_thinking": true,
+    "preserve_thinking": false
+  }
+}
+```
+
+`enable_thinking` selects whether the template generates a thinking turn.
+`preserve_thinking` controls retention of earlier reasoning only for templates
+that implement it; it does not enable thinking. Both fields require JSON
+booleans (`true`/`false`), not strings or integers. `include_reasoning` controls
+response visibility only: hiding reasoning does not turn generation off.
+
+Server policy resolves environment variables before model `gateway.json`,
+then defaults to `disabled` when neither is set. Missing request controls leave
+that policy and the template's defaults in effect. `disabled` is a hard ban:
+explicit `enable_thinking: true` fails with HTTP 400. `hidden` cannot be
+revealed by `include_reasoning: true`. Under `separate`, a supporting switchable
+Qwen template accepts both thinking and non-thinking requests for the same
+loaded model. Request controls never change shared model/tokenizer state.
+
+Capabilities are validated against the actual resolved chat template's
+fingerprint and profile, not just the model name. A fixed non-thinking template
+accepts `false` and rejects `true`; a fixed thinking template accepts `true`
+when server policy permits it and rejects `false`. Unknown keys or invalid
+subfield types in `chat_template_kwargs` fail with HTTP 422; an unsupported
+control or value fails with HTTP 400 before inference.
+
+Top-level `reasoning_effort` is accepted only when the template consumes it,
+using that template's allowed values. `high` and `xhigh` are distinct and are
+never globally aliased. For example, the supported Qwen3.8 template accepts
+`low`, `medium`, and `xhigh`, with a template default of `xhigh`; older Qwen
+templates may not consume effort at all. The Qwen3.6 examples intentionally
+omit effort. `preserve_thinking` likewise requires template support.
+
+The Responses API contract is unchanged and does not accept these reasoning
+controls. Chat sampling also accepts `top_k` (`-1` or a positive integer) and
+`presence_penalty` (from `-2` to `2`); these are passed to generation.
+
+See the [paired Qwen3.6 requests](../examples/REQUEST_EXAMPLES.en.md#qwen36-27b-fp8-thinking-on-and-off)
+for generation on/off and visibility examples. Local template and request
+validation does not establish GPU performance or model quality.
+
 ## Environment Variables
 
 Helm values are the preferred Kubernetes interface. Direct container users can
@@ -431,7 +482,16 @@ and exits so container shutdown can finish. Restarting interrupts in-flight gate
 
 Chat and Responses render templates, tokenize prompts, fit context, and count
 output usage in a bounded worker pool. The pool also handles CPU portions of
-summary preparation; inference remains asynchronous.
+summary preparation; inference remains asynchronous. Dense embeddings tokenize
+inputs in this pool. Dense and hybrid embedding responses are encoded one vector
+at a time in the pool, without a second traversal by FastAPI on the event loop.
+`GATEWAY_EMBEDDING_MAX_CONCURRENCY` (default `8`) bounds both inference calls and
+worker tasks within each embedding request. A failed or cancelled batch drains
+its outstanding backend calls before releasing admission capacity.
+
+Tokenizer loading is shared by concurrent requests for the same model. Loading
+another model does not hold a registry-wide cache lock. Cold loading can still
+contend for Python's GIL; `TOKENIZER_PRELOAD=true` starts loading at startup.
 
 | Environment variable | Default | Meaning |
 | --- | ---: | --- |
@@ -451,6 +511,12 @@ Monitor `triton_gateway_cpu_active`, `triton_gateway_cpu_queued`,
 `triton_gateway_cpu_duration_seconds`. CPU metrics contain no request or model IDs.
 
 ### Admission Control
+
+A request receives its global and model/route inflight slots together. Waiting
+for a busy model does not consume global inflight capacity needed by other
+models. Every waiting request counts toward both queue limits and uses the
+shorter of their queue timeouts. Queue overflow or expiry returns HTTP `429`.
+
 
 Global defaults use `GATEWAY_MAX_INFLIGHT_REQUESTS`,
 `GATEWAY_MAX_QUEUE_SIZE`, and `GATEWAY_QUEUE_TIMEOUT_SECONDS`. Route overrides

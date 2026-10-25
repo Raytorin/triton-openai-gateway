@@ -1,0 +1,12 @@
+{
+  "repo_id": "deepseek-ai/DeepSeek-V4.1-Flash",
+  "revision": "314113f8a7dadb388215396ba5fbee2c610a04d6",
+  "source_file": "chat_template.jinja",
+  "source_url": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/resolve/314113f8a7dadb388215396ba5fbee2c610a04d6/chat_template.jinja",
+  "template_sha256": "d959d804d5101b79a49b6ff1bf3c54cd5affa9a5a78c503d925f3090040b31c3",
+  "license": "MIT",
+  "license_url": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/resolve/314113f8a7dadb388215396ba5fbee2c610a04d6/LICENSE",
+  "license_sha256": "1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7",
+  "model_type": "deepseek_v41",
+  "extraction": "byte-for-byte upstream Jinja; MIT license normalized to LF line endings"
+}

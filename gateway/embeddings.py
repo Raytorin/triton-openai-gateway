@@ -1,15 +1,20 @@
 # SPDX-FileCopyrightText: 2026 Raytorin
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
 import array
 import base64
+import anyio
 from dataclasses import dataclass
 from functools import lru_cache
 import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
+
+from .cpu_work import checkpoint
+from .metrics import SPARSE_EMBEDDING_SIZE
 
 from .schemas import EmbeddingsRequest, HybridEmbeddingsRequest
 
@@ -262,6 +267,7 @@ def tokenize_embedding_inputs(tokenizer, model_inputs: list[str | list[int]]) ->
     tokenized_inputs: list[list[int]] = []
 
     for model_input in model_inputs:
+        checkpoint()
         if isinstance(model_input, list):
             tokenized_inputs.append(model_input)
             continue
@@ -282,3 +288,73 @@ def encode_embedding(embedding: list[float], encoding_format: str) -> list[float
         return base64.b64encode(array.array("f", embedding).tobytes()).decode("utf-8")
 
     raise HTTPException(status_code=400, detail=f"Unsupported encoding_format: {encoding_format}")
+
+
+async def run_embedding_batch(model_inputs, infer, concurrency: int):
+    """Bound task count as well as backend calls; drain all workers on failure."""
+    pending = iter(enumerate(model_inputs))
+    results = [None] * len(model_inputs)
+
+    async def worker():
+        for index, model_input in pending:
+            value, tokens = await infer(model_input)
+            results[index] = (index, value, tokens)
+
+    tasks = [asyncio.create_task(worker()) for _ in range(min(concurrency, len(model_inputs)))]
+    batch = asyncio.gather(*tasks)
+    try:
+        await asyncio.shield(batch)
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        drained = asyncio.gather(*tasks, return_exceptions=True)
+        interrupted = False
+        with anyio.CancelScope(shield=True):
+            while not drained.done():
+                try:
+                    await asyncio.shield(drained)
+                except asyncio.CancelledError:
+                    interrupted = True
+        if batch.done() and not batch.cancelled():
+            batch.exception()
+        if interrupted:
+            raise asyncio.CancelledError()
+    return results
+
+
+def render_embedding_response(model, results, encoding_format, usage, output_types=None) -> Response:
+    """Encode one vector at a time in a CPU worker, avoiding FastAPI's full walk.
+
+    A single json.dumps of a large batch holds the GIL for the entire C encoder
+    call, even in a thread. Per-item encoding lets other threads run between
+    vectors and provides cooperative cancellation points.
+    """
+    metadata = {
+        "object": "list" if output_types is None else "hybrid_embedding.list",
+        "model": model,
+        "usage": usage,
+    }
+    if output_types is not None:
+        metadata["output_types"] = output_types
+
+    def encode(value):
+        return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+
+    parts = [encode(metadata)[:-1], b',"data":[']
+    for index, result, _ in results:
+        checkpoint()
+        item = {"object": "embedding" if output_types is None else "hybrid_embedding", "index": index}
+        if output_types is None:
+            item["embedding"] = encode_embedding(result, encoding_format)
+        else:
+            if "dense" in result:
+                item["embedding"] = encode_embedding(result["dense"], encoding_format)
+            if "sparse" in result:
+                item["sparse_embedding"] = result["sparse"]
+                SPARSE_EMBEDDING_SIZE.labels(model).observe(len(result["sparse"]["indices"]))
+        if index:
+            parts.append(b",")
+        parts.append(encode(item))
+    parts.append(b"]}")
+    return Response(b"".join(parts), media_type="application/json")

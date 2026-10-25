@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 import numpy as np
+from fastapi import HTTPException
 
 from gateway.triton_client import (
     _stream_grpc_results,
@@ -78,6 +79,36 @@ class AsyncTritonClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(client.iterator.cancelled)
         to_thread.assert_not_called()
 
+    async def test_invalid_embeddings_close_transport_before_returning_error(self):
+        for hybrid, payload in (
+            (False, b"not json"),
+            (False, b"{}"),
+            (False, b'["not a number"]'),
+            (True, b"not json"),
+            (True, b"[]"),
+            (True, b'{"dense": ["not a number"]}'),
+        ):
+            with self.subTest(hybrid=hybrid, payload=payload):
+                result = _Result(
+                    {"text_output": np.asarray([payload], dtype=np.object_)}
+                )
+                client = _Client([(result, None)])
+                with patch(
+                    "gateway.triton_client.get_grpc_client",
+                    new=AsyncMock(return_value=client),
+                ):
+                    with self.assertRaises(HTTPException) as error:
+                        if hybrid:
+                            await call_triton_hybrid_embeddings(
+                                "embedding-model", "query", None, ["dense"], None
+                            )
+                        else:
+                            await call_triton_embeddings(
+                                "embedding-model", "query", None
+                            )
+                    self.assertEqual(error.exception.status_code, 502)
+                    self.assertTrue(client.iterator.cancelled)
+
     async def test_hybrid_embeddings_decode_dense_and_sparse_output(self):
         result = _Result(
             {
@@ -114,6 +145,7 @@ class AsyncTritonClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(embedding["dense"], [0.1, 0.2])
         self.assertEqual(embedding["sparse"]["indices"], [42])
         self.assertEqual(prompt_tokens, 3)
+        self.assertFalse(client.iterator.cancelled)
 
     async def test_early_consumer_close_cancels_triton_stream(self):
         result = _Result({"text_output": np.asarray([b"partial"], dtype=np.object_)})
