@@ -23,7 +23,7 @@ opentelemetry-exporter-otlp-proto-http==1.45.1
 # Critical transitive dependencies are pinned as well. Triton client 2.73
 # requires grpcio >= 1.81.1, protobuf >= 6.30,<7 and ml-dtypes <= 0.5.4.
 # Keep the base image's grpcio; ml-dtypes 0.5.4 also supports NumPy 1.26.
-av==18.1.0
+av==19.0.2
 decord==0.6.0
 grpcio==1.84.0
 ml-dtypes==0.5.4
