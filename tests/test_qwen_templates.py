@@ -316,6 +316,46 @@ def test_selected_named_template_is_bound_for_request_retries(tmp_path):
     assert '<tools>' in rendered and 'weather' in rendered
 
 
+@pytest.mark.parametrize('thinking, effort, preserve', [(False, None, True), (True, 'low', False)])
+def test_delegating_renderer_tools_fallback_keeps_selected_template_and_controls(
+    tmp_path, thinking, effort, preserve,
+):
+    from gateway.prompt import RequestTokenizer, render_chat_prompt
+
+    class DelegatingTokenizer(NamedQwenTemplateTokenizer):
+        def apply_chat_template(self, conversation, **kwargs):
+            # Remote-code tokenizers can accept arbitrary outer kwargs while
+            # delegating rendering to a narrower interface without tools=.
+            return self._render(conversation, **kwargs)
+
+        def _render(self, conversation, *, tokenize=False, add_generation_prompt=True,
+                    chat_template=None, enable_thinking=True, preserve_thinking=True,
+                    reasoning_effort='xhigh'):
+            return super().apply_chat_template(conversation, tokenize=tokenize,
+                add_generation_prompt=add_generation_prompt, chat_template=chat_template,
+                enable_thinking=enable_thinking, preserve_thinking=preserve_thinking,
+                reasoning_effort=reasoning_effort)
+
+    model, _ = _model(tmp_path, 'qwen36')
+    tokenizer = DelegatingTokenizer('qwen36', 'qwen38')
+    settings = load_reasoning_settings(model, tokenizer=tokenizer, tools=TOOLS,
+        enable_thinking=thinking, preserve_thinking=preserve, reasoning_effort=effort)
+    wrapped = RequestTokenizer(tokenizer, settings.template_kwargs,
+        strict=settings.requires_template_kwargs,
+        chat_template=settings.resolved_chat_template, tools=TOOLS)
+    history = [{'role': 'user', 'content': 'Old'},
+               {'role': 'assistant', 'content': 'Prior answer', 'reasoning_content': 'PRIVATE HISTORY'},
+               {'role': 'user', 'content': 'Continue'}]
+
+    rendered = render_chat_prompt(wrapped, history, TOOLS, enable_thinking=thinking)
+
+    assert '<tools>' in rendered and 'weather' in rendered
+    assert rendered.endswith('<think>\n' if thinking else '<think>\n\n</think>\n\n')
+    assert ('PRIVATE HISTORY' in rendered) is preserve
+    if effort is not None:
+        assert 'Reasoning effort is set to low.' in rendered
+
+
 def test_no_tools_signature_probes_the_same_default_used_by_tools_translation(tmp_path):
     from gateway.prompt import RequestTokenizer, render_chat_prompt
 

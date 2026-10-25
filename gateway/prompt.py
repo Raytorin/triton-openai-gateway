@@ -200,7 +200,7 @@ class RequestTokenizer:
     def __call__(self, *args, **kwargs):
         return self._tokenizer(*args, **kwargs)
 
-    def apply_chat_template(self, conversation, **kwargs):
+    def apply_chat_template(self, conversation, *, _native_tools: bool = True, **kwargs):
         options = dict(kwargs)
         options.update({key: value for key, value in self._template_kwargs.items()
                         if self._strict or key != "enable_thinking"})
@@ -209,7 +209,7 @@ class RequestTokenizer:
         # those tools to a system instruction while keeping all controls strict.
         if self._chat_template is not None:
             options["chat_template"] = self._chat_template
-        if self._tools:
+        if self._tools and _native_tools:
             options["tools"] = self._tools
         return self._tokenizer.apply_chat_template(conversation, **options)
 
@@ -259,6 +259,9 @@ def render_chat_prompt(
             _tool_prompt_fallback_conversation(conversation, tools),
             tokenize=False,
             add_generation_prompt=add_generation_prompt,
+            # Tools are now in the system instruction. Keep the validated
+            # template and controls without reinjecting the rejected keyword.
+            **({"_native_tools": False} if isinstance(tokenizer, RequestTokenizer) else {}),
         )
     except Exception as exc:
         raise _chat_template_error(exc) from exc
