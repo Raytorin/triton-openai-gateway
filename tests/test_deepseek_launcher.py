@@ -149,10 +149,12 @@ def test_facade_rejects_foreign_native_mapping_introduced_by_shared_import(tmp_p
     # Isolate the no-GPU preconditions; keep the real mapping guard and dlopen.
     (backend/'runtime.py').write_text(f'''import importlib.util
 from pathlib import Path
+import sys
 spec=importlib.util.spec_from_file_location('real_runtime',{str(ROOT/'backends/vllm_deepseek/runtime.py')!r})
 real=importlib.util.module_from_spec(spec);spec.loader.exec_module(real)
-ENV_ROOT=Path({str(tmp_path/'env')!r})
+ENV_ROOT=Path(sys.base_prefix)
 CUDA_ROOT=Path({str(tmp_path/'cuda')!r})
+real.validate_native_maps(ENV_ROOT,CUDA_ROOT)
 def bootstrap(**kwargs): return {{}}
 def validate_module_origins(root): return {{}}
 def validate_native_maps(): return real.validate_native_maps(ENV_ROOT,CUDA_ROOT)

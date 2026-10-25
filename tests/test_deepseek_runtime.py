@@ -245,7 +245,8 @@ def test_preflight_failure_never_starts_engine(monkeypatch):
 
 
 @pytest.mark.parametrize('library', ['libtorch_cuda.so','libc10_cuda.so','libnvrtc.so.12',
-    'libcudart.so.12','libcublas.so.12','libcudnn.so.9','libnccl.so.2','libnvshmem_host.so.3'])
+    'libcudart.so.12','libcublas.so.12','libcudnn.so.9','libnccl.so.2','libnvshmem_host.so.3',
+    'libpython3.12.so.1.0'])
 def test_foreign_engine_library_mapping_is_rejected(library, tmp_path):
     runtime=load_runtime()
     mapping=f'7f000000-7f001000 r-xp 00000000 00:01 1 /legacy/{library}\n'
