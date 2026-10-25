@@ -757,6 +757,30 @@ def _validate_hybrid_embedding_payload(
     return result
 
 
+async def stream_triton_text_deltas(model_name, prompt, sampling_parameters):
+    """Consume Triton wire deltas after GenerateRequest.create_response slicing.
+
+    The engine's cumulative RequestOutput.text is a different boundary. Input
+    echo is already disabled by _build_grpc_generate_inputs, so each tensor is
+    forwarded exactly once, including identical or shared-prefix deltas.
+    """
+    inputs = _build_grpc_generate_inputs(prompt, sampling_parameters, [], stream=True)
+    outputs = [grpcclient.InferRequestedOutput("text_output")]
+    try:
+        async with aclosing(_stream_grpc_results(
+            "generate-stream", model_name, inputs, outputs, streaming=True)) as results:
+            async for item in results:
+                delta = "".join(_decode_numpy_strings(item.as_numpy("text_output")))
+                if delta:
+                    yield delta
+    except HTTPException:
+        raise
+    except (InferenceServerException, AioRpcError) as exc:
+        raise _triton_grpc_error("DeepSeek generation gRPC infer", exc) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"DeepSeek generation gRPC request failed: {exc}") from exc
+
+
 async def call_triton_multimodal(
     model_name: str,
     prompt: str,

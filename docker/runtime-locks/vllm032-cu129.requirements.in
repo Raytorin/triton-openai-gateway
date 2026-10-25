@@ -1,0 +1,11 @@
+vllm @ https://wheels.vllm.ai/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm-0.32.0%2Bcu129-cp38-abi3-manylinux_2_28_x86_64.whl#sha256=9918be806fb2808c406547ff4f9f43870ac6ff28dc4b179291fcf532145bb50b
+torch @ https://download-r2.pytorch.org/whl/cu129/torch-2.13.0%2Bcu129-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=df28741fcd89e3da7cce2d48cbe5299d6732d510ac20f5d422d0b85edf18c327
+flashinfer-python==0.7.0.post1
+compressed-tensors==0.17.0
+xgrammar==0.2.8
+# Shared backend imports media modules at import time, though facade rejects media.
+av
+pymupdf
+
+pip
+decord

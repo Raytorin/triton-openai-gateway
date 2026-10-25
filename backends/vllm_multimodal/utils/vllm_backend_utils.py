@@ -133,6 +133,7 @@ async def build_async_engine_client_from_engine_args(
     from vllm.v1.engine.async_llm import AsyncLLM
 
     async_llm: AsyncLLM | None = None
+    primary_error: BaseException | None = None
 
     try:
         async_llm = AsyncLLM.from_vllm_config(
@@ -149,6 +150,16 @@ async def build_async_engine_client_from_engine_args(
         await async_llm.reset_mm_cache()
 
         yield async_llm
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
         if async_llm:
-            async_llm.shutdown()
+            try:
+                async_llm.shutdown()
+            except BaseException as cleanup_error:
+                if primary_error is None:
+                    raise
+                primary_error.add_note(
+                    f"vLLM engine shutdown failed: {type(cleanup_error).__name__}: {cleanup_error}"
+                )

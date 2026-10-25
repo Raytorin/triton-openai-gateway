@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "base_image": "nvcr.io/nvidia/tritonserver:26.09-vllm-python-py3@sha256:ff41460e8fb1a831e37d368f531e5f40761baae03a07adac2f4cde2fc2c953d1",
+  "stub": {
+    "path": "/opt/tritonserver/backends/python/triton_python_backend_stub",
+    "sha256": "6787eda25a9aa9fb4815fc58e06bb21fc67db99c10b2a94e662ffae983af8bf8"
+  },
+  "libraries": [
+    {
+      "path": "/usr/local/cuda-13.4/targets/x86_64-linux/lib/libcudart.so.13.4.49",
+      "soname": "libcudart.so.13",
+      "sha256": "a77eeb711d350a7791a45a07f37cd3b2ae61c71da4db1bf50cc8bd45d33b5b72"
+    }
+  ]
+}

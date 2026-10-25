@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Raytorin
+# SPDX-License-Identifier: Apache-2.0
+# Optional gateway frontend only; Linux amd64 cp310-abi3 CPU wheel.
+# Install separately with --no-deps --only-binary=:all: --require-hashes.
+deepseek-recipe==0.2.0 --hash=sha256:259812bf382bc82668b672707c5922095cc4f5f60a6c514ff89640bb62a746f7

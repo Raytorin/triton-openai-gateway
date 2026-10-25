@@ -24,3 +24,5 @@ tests
 .env.*
 models
 media
+
+.superpowers/

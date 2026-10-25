@@ -31,7 +31,17 @@ from typing import Dict, List, Optional, Union
 
 import triton_python_backend_utils as pb_utils
 from vllm.config import VllmConfig
-from vllm.v1.metrics.loggers import StatLoggerBase, build_1_2_5_buckets
+from vllm.v1.metrics.loggers import StatLoggerBase
+
+try:
+    from vllm.v1.metrics.buckets import histogram_buckets
+except ImportError:
+    # NVIDIA vLLM 0.29 retains the original helper and bucket boundaries.
+    from vllm.v1.metrics.loggers import build_1_2_5_buckets
+else:
+    def build_1_2_5_buckets(max_model_len):
+        return histogram_buckets("request_tokens", max_model_len)
+
 from vllm.v1.metrics.stats import IterationStats, MultiModalCacheStats, SchedulerStats
 
 

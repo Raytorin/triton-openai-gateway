@@ -12,16 +12,36 @@ MODELS_ACTIVE_DIR="${MODELS_ACTIVE_DIR:-${WATCHER_MODEL_DIR%/}/models-active}"
 # Remember published links so an external unlink is an unload, not a signal
 # to publish the same temporary checkout again on the next scan.
 declare -A published_targets=()
+WATCHER_SOURCE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+read_model_field() {
+  local helper="${WATCHER_SOURCE_ROOT}/gateway/model_config.py"
+  [[ -f "${helper}" ]] || helper="${WATCHER_SOURCE_ROOT}/../libexec/triton-openai-gateway/model_config.py"
+  python3 "${helper}" "$(dirname -- "$1")/config.pbtxt" "$2"
+}
+
+read_model_backend() {
+  local config_path
+  config_path="$(dirname -- "$1")/config.pbtxt"
+  if [[ ! -e "${config_path}" && ! -L "${config_path}" ]]; then
+    return 0
+  fi
+  read_model_field "$1" backend
+}
 
 cleanup_unlinked_target() {
   local target="$1"
-  python3 - "${WATCHER_MODEL_DIR}" "${MODELS_ACTIVE_DIR}" "${target}" <<'CLEANUP'
+  local backend
+  backend="$(read_model_backend "${target}")" || return 1
+  python3 - "${WATCHER_MODEL_DIR}" "${MODELS_ACTIVE_DIR}" "${target}" "${backend}" <<'CLEANUP'
+import os
 import pathlib
 import re
 import shutil
 import sys
 
-root, active, target = map(pathlib.Path, sys.argv[1:])
+root, active, target = map(pathlib.Path, sys.argv[1:4])
+backend = sys.argv[4]
 root, active = root.resolve(), active.resolve()
 # Only direct folder*/numeric-version checkouts belong to this watcher.
 # Never follow a checkout/version symlink into another repository.
@@ -35,6 +55,16 @@ if (checkout.parent != root or not checkout.name.startswith("folder")
     raise SystemExit(0)
 links = [link.resolve() for link in active.iterdir() if link.is_symlink()]
 if any(link == target or target in link.parents for link in links):
+    raise SystemExit(0)
+# A previous DeepSeek stub may still be loading. Retain temporary checkout
+# metadata until an operator has confirmed unloading; never republish it.
+if backend == "vllm_deepseek" or (target / ".deepseek-retired").exists() or (target / ".deepseek-retired").is_symlink():
+    if target.is_dir():
+        try:
+            fd = os.open(target / ".deepseek-retired", os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+            os.close(fd)
+        except FileExistsError:
+            pass
     raise SystemExit(0)
 try:
     if target.is_dir():
@@ -81,23 +111,47 @@ sync_model_json() {
   local target_dir="$1"
   local model_file="${target_dir}/model.json"
   local status=0
+  local backend
+  backend="$(read_model_backend "${target_dir}")" || return 1
 
-  if python3 - "${model_file}" "${target_dir}" <<'PY'
+  if python3 - "${model_file}" "${target_dir}" "${WATCHER_SOURCE_ROOT}" "${backend}" <<'PY'
+import importlib.util
 import json
+import os
 import pathlib
+import re
+import stat
 import sys
+import tempfile
 
-file_path, target_dir = sys.argv[1], pathlib.Path(sys.argv[2])
+file_path, target_dir, source_root = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+backend = sys.argv[4]
 model_path = str(target_dir)
 changed = False
 
 try:
-    with open(file_path, "r", encoding="utf-8") as fh:
-        data = json.load(fh)
-except (OSError, json.JSONDecodeError):
-    raise SystemExit(4)
-
-if not isinstance(data, dict):
+    before = file_path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("model.json must be a regular file, not a final symlink")
+    if backend == "vllm_deepseek":
+        helper = source_root / "backends/vllm_deepseek/checkpoint_preflight.py"
+        if not helper.is_file():
+            helper = pathlib.Path('/opt/tritonserver/backends/vllm_deepseek/checkpoint_preflight.py')
+        spec = importlib.util.spec_from_file_location('checkpoint_preflight', helper)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        data = module.read_json(file_path)
+        module.validate_checkpoint(data)
+        # Validate exactly the root passed to vLLM. No writes to weight snapshots.
+        model_path = data['model']
+    else:
+        fd = os.open(file_path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'r', encoding='utf-8') as fh:
+            data = json.load(fh)
+    if not isinstance(data, dict):
+        raise ValueError("model.json must contain an object")
+except (OSError, ValueError, ImportError, AttributeError) as error:
+    print(f"checkpoint/config admission failed for {file_path}: {error}", file=sys.stderr)
     raise SystemExit(4)
 
 if str(data.get("load_format", "")).lower() == "gguf":
@@ -106,22 +160,38 @@ if str(data.get("load_format", "")).lower() == "gguf":
         raise SystemExit(5)
     model_path = str(gguf_files[0])
 
-# vLLM 0.22 removed this AsyncEngineArgs parameter. Rewrite only the temporary
-# S3 checkout; the source model repository remains untouched.
 if "swap_space" in data:
     del data["swap_space"]
     changed = True
-
 if data.get("model") != model_path:
     data["model"] = model_path
     changed = True
-
 if not changed:
     raise SystemExit(0)
 
-with open(file_path, "w", encoding="utf-8") as fh:
-    json.dump(data, fh, ensure_ascii=False, indent=2)
-    fh.write("\n")
+# Same-filesystem replace: readers see complete old/new JSON. Never follow the
+# final path, and preserve existing permissions/ownership rather than tempfile's.
+temporary = None
+try:
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=file_path.parent, prefix='.model-json-', delete=False) as fh:
+        temporary = fh.name
+        os.fchown(fh.fileno(), before.st_uid, before.st_gid)
+        os.fchmod(fh.fileno(), stat.S_IMODE(before.st_mode))
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    current = file_path.lstat()
+    if (current.st_dev,current.st_ino,current.st_mtime_ns,current.st_size) != (before.st_dev,before.st_ino,before.st_mtime_ns,before.st_size):
+        raise ValueError('model.json changed during atomic replacement')
+    os.replace(temporary, file_path)
+    temporary = None
+except (OSError, ValueError) as error:
+    print(f"atomic model config update failed for {file_path}: {error}", file=sys.stderr)
+    raise SystemExit(4)
+finally:
+    if temporary is not None:
+        os.unlink(temporary)
 
 raise SystemExit(3)
 PY
@@ -151,25 +221,22 @@ PY
 
 resolve_model_name() {
   local target_dir="$1"
+  local model_name
+  if [[ -e "${target_dir}/../config.pbtxt" || -L "${target_dir}/../config.pbtxt" ]]; then
+    model_name="$(read_model_field "${target_dir}" name)" || return 1
+    if [[ -n "${model_name}" ]]; then
+      printf '%s\n' "${model_name}"
+      return 0
+    fi
+  fi
 
   python3 - "${target_dir}" <<'PY'
 import json
 import pathlib
-import re
 import sys
 
 target_dir = pathlib.Path(sys.argv[1]).resolve()
 model_root = target_dir.parent
-
-config_pbtxt = model_root / "config.pbtxt"
-if config_pbtxt.is_file():
-    text = config_pbtxt.read_text(encoding="utf-8", errors="ignore")
-    match = re.search(r'^\s*name\s*:\s*"([^"]+)"', text, re.MULTILINE)
-    if not match:
-        match = re.search(r'^\s*name\s*:\s*([^\s"]+)', text, re.MULTILINE)
-    if match:
-        print(match.group(1))
-        raise SystemExit(0)
 
 model_json = target_dir / "model.json"
 if model_json.is_file():
@@ -230,7 +297,7 @@ sync_model_symlink() {
   local target_dir="$1"
   local model_name link_path existing_target
 
-  model_name="$(resolve_model_name "${target_dir}")"
+  model_name="$(resolve_model_name "${target_dir}")" || return 0
   [[ -n "${model_name}" && "${model_name}" != "." && "${model_name}" != ".." && "${model_name}" != */* ]] || return 0
 
   mkdir -p "${MODELS_ACTIVE_DIR}"
@@ -283,6 +350,11 @@ scan_target() {
   version_dir="$(basename "${target}")"
 
   [[ "${version_dir}" =~ ${VERSION_DIR_REGEX} ]] || return 0
+  local backend
+  backend="$(read_model_backend "${target}")" || return 0
+  if [[ -e "${target}/.deepseek-retired" || -L "${target}/.deepseek-retired" ]]; then
+    return 0
+  fi
   [[ -f "${target}/model.json" || -f "${target}/model.py" ]] || return 0
 
   if [[ -f "${target}/model.json" ]]; then

@@ -55,6 +55,50 @@ def serve():
             yield GenerationEvent("chat-1", 123, request.model, {}, finish, usage)
         return GenerationStream(events(), headers)
 
+    def deepseek_response(body, record):
+        # Reuse the pinned Jinja fixture renderer, not the deterministic API
+        # result double above. Only gRPC/model execution is replaced here.
+        from contextlib import ExitStack
+        import tempfile
+        from types import SimpleNamespace
+        sys.path.insert(0, str(ROOT / "tests"))
+        from test_deepseek_protocol import Tokenizer
+        from deepseek_backend_wire import production_text_wire
+        from gateway.admission import AdmissionLease
+        from gateway import generation, triton_client as tc
+        tokenizer = Tokenizer()
+        with tempfile.TemporaryDirectory(prefix="deepseek-client-") as folder:
+            model_path = Path(folder)
+            (model_path / "model.json").write_text(json.dumps({"model": "/fixed/DeepSeek-V4.1-Flash", "max_model_len": 32768}))
+            (model_path / "gateway.json").write_text('{"reasoning":{"mode":"separate"}}')
+            def inputs(prompt, sampling, images, stream, **kwargs):
+                record["backend_prompt"] = prompt
+                record["backend_sampling"] = sampling
+                return [SimpleNamespace(prompt=prompt)]
+            async def backend(operation, model, inputs, outputs, **kwargs):
+                prompt = inputs[0].prompt
+                text = "It is sunny"
+                if "Weather?" in prompt and "<tool_result>" not in prompt:
+                    text = ('<｜DSML｜ calls><｜DSML｜ invoke name="weather">'
+                            '<｜DSML｜ parameter name="city" string="true">Paris</｜DSML｜ parameter>'
+                            '</｜DSML｜ invoke></｜DSML｜ calls>')
+                if prompt.endswith("<think>"):
+                    text = "Inspect first.</think>" + text
+                with production_text_wire() as serialize:
+                    for end in range(3, len(text) + 3, 3):
+                        yield serialize(text[:end])
+            with ExitStack() as stack:
+                for name, replacement in {
+                    "resolve": lambda *args: model_path,
+                    "get_backend": lambda *args: "vllm_deepseek",
+                    "get_tokenizer_async": AsyncMock(return_value=(tokenizer, model_path)),
+                }.items():
+                    stack.enter_context(patch.object(generation.registry, name, replacement))
+                stack.enter_context(patch.object(generation.admission, "acquire", AsyncMock(return_value=AdmissionLease([]))))
+                stack.enter_context(patch.object(tc, "_build_grpc_generate_inputs", inputs))
+                stack.enter_context(patch.object(tc, "_stream_grpc_results", backend))
+                return TestClient(app).post("/v1/chat/completions", json=body)
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -66,8 +110,11 @@ def serve():
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             captured.append({"path": self.path, "body": body})
-            with patch("gateway.responses.generation.generate", generate), patch("gateway.app.generate", generate):
-                response = TestClient(app).post(self.path, json=body)
+            if body.get("model") == "deepseek-fixture":
+                response = deepseek_response(body, captured[-1])
+            else:
+                with patch("gateway.responses.generation.generate", generate), patch("gateway.app.generate", generate):
+                    response = TestClient(app).post(self.path, json=body)
             self.send_response(response.status_code)
             for k,v in response.headers.items():
                 if k.lower() not in {"transfer-encoding", "connection"}:
@@ -230,9 +277,57 @@ def check_clients(url):
         assert "allowed_openai_params" not in body
         assert "extra_body" not in body
     print("litellm: actual HTTP chat bodies preserve thinking booleans, effort high/xhigh, and omission")
+    # Run real clients through the production DeepSeek prompt/transport/parser.
+    # Only the external model engine is replaced in serve().
+    deep_start = len(captured)
+    weather = {"type": "function", "function": {"name": "weather", "parameters": {
+        "type": "object", "properties": {"city": {"type": "string"}}}}}
+    for name in ("openai", "litellm"):
+        for enabled in (True, False):
+            for streaming in (False, True):
+                for use_tools in (False, True):
+                    params = {"messages": [{"role": "user", "content": "Weather?" if use_tools else "Hello"}],
+                              "stream": streaming,
+                              "extra_body": {"chat_template_kwargs": {"enable_thinking": enabled}}}
+                    if use_tools:
+                        params["tools"] = [weather]
+                    if name == "openai":
+                        result = client.chat.completions.create(model="deepseek-fixture", **params)
+                    else:
+                        result = litellm.completion(model="openai/deepseek-fixture", api_base=url+"/v1",
+                            api_key="local-fixture", drop_params=False, **params)
+                    content = ""; reasoning = ""; calls = {}
+                    messages = [part.choices[0].delta for part in result] if streaming else [result.choices[0].message]
+                    for message in messages:
+                        content += message.content or ""
+                        reasoning += getattr(message, "reasoning_content", None) or ""
+                        for index, call in enumerate(message.tool_calls or []):
+                            dst = calls.setdefault(getattr(call, "index", None) or index, {"id": "", "name": "", "arguments": ""})
+                            dst["id"] += call.id or ""
+                            dst["name"] += call.function.name or ""
+                            dst["arguments"] += call.function.arguments or ""
+                    assert reasoning == ("Inspect first." if enabled else ""), (name, enabled, streaming, reasoning)
+                    assert content == ("" if use_tools else "It is sunny"), (name, content)
+                    record = httpx.get(url+"/captured").json()[-1]
+                    assert record["backend_prompt"].endswith("<think>" if enabled else "</think>"), record
+                    assert record["body"]["chat_template_kwargs"]["enable_thinking"] is enabled
+                    assert "chat_template_kwargs" not in record["backend_sampling"]
+                    if use_tools:
+                        call = calls[0]
+                        assert call["id"].startswith("call_") and call["name"] == "weather"
+                        assert json.loads(call["arguments"]) == {"city": "Paris"}
+                        followup = client.chat.completions.create(model="deepseek-fixture", tools=[weather],
+                            messages=[*params["messages"], {"role": "assistant", "content": "", "tool_calls": [{
+                                "id": call["id"], "type": "function", "function": {"name": "weather", "arguments": call["arguments"]}}]},
+                                {"role": "tool", "tool_call_id": call["id"], "content": "sunny"}])
+                        assert followup.choices[0].message.content == "It is sunny"
+                        assert "<tool_result>sunny</tool_result>" in httpx.get(url+"/captured").json()[-1]["backend_prompt"]
+    captured = httpx.get(url+"/captured").json()
+    deep_requests = len(captured) - deep_start
+    print("openai/litellm: DeepSeek real gateway on/off, SSE, DSML tool IDs/arguments and replay passed")
     print(json.dumps({"openai": version("openai"), "litellm": version("litellm"),
         "requests": len(captured), "routes": ["/v1/responses", "/v1/chat/completions"],
-        "chat_thinking_wire_cases": len(chat_cases), "reasoning_effort_forwarding": ["high", "xhigh"], "injected_default_limit": False,
+        "deepseek_production_gateway_requests": deep_requests, "chat_thinking_wire_cases": len(chat_cases), "reasoning_effort_forwarding": ["high", "xhigh"], "injected_default_limit": False,
         "litellm_minimum_explicit_limit": 16, "litellm_invalid_integer_limits_normalized": True,
         "sdk_incomplete_requires_terminal_event_handling": True,
         "litellm_incomplete_event_type": "response.completed"}))

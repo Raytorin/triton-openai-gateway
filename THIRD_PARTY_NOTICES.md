@@ -57,3 +57,16 @@ The archives at `helm/*/charts/dcgm-exporter-4.8.2.tgz` contain version `4.8.2`
 of the [NVIDIA DCGM Exporter Helm chart](https://github.com/NVIDIA/dcgm-exporter).
 The chart is distributed under the Apache License 2.0. Its templates retain
 their NVIDIA copyright and license headers.
+
+## DeepSeek template fixture and optional output parser
+
+The immutable `tests/fixtures/deepseek/v41-flash/chat_template.jinja` fixture is
+from `deepseek-ai/DeepSeek-V4.1-Flash`, revision
+`314113f8a7dadb388215396ba5fbee2c610a04d6`, under the MIT License. Its adjacent
+`LICENSE` and `metadata.json` preserve the upstream notice and provenance.
+
+The optional DeepSeek gateway image installs `deepseek-recipe` 0.2.0 as an
+output-only CPU parser, under the MIT License, Copyright (c) 2026 DeepSeek.
+The installed wheel retains its `LICENSE`, `THIRD_PARTY_LICENSES`, and SBOM in
+`deepseek_recipe-0.2.0.dist-info`. Those notices also cover the wheel's bundled
+native dependencies. The default gateway image does not require this package.
