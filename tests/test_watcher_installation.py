@@ -19,7 +19,7 @@ def install_watcher(tmp_path,dockerfile):
     for line in (ROOT/dockerfile).read_text().splitlines():
         if not line.startswith('COPY '):continue
         words=shlex.split(line)
-        if len(words)!=3 or words[0]!='COPY' or words[1] not in ('watch_triton.sh','gateway/model_config.py','gateway'):
+        if len(words)!=3 or words[0]!='COPY' or words[1] not in ('watch_triton.sh','gateway/model_config.py','gateway/model_cleanup.py','gateway'):
             continue
         destination=image/words[2].lstrip('/')
         if words[2].endswith('/'):destination/=Path(words[1]).name
@@ -40,7 +40,8 @@ def install_watcher(tmp_path,dockerfile):
 
 def scan(watcher,launcher,root,commands='scan_once'):
     active=root/'models-active';active.mkdir(exist_ok=True)
-    return subprocess.run(['bash','-c','source "$1"; '+commands,'bash',str(watcher)],env={**os.environ,'PATH':str(launcher)+os.pathsep+os.environ['PATH'],'WATCHER_MODEL_DIR':str(root),'MODELS_ACTIVE_DIR':str(active)},text=True,capture_output=True,timeout=8)
+    proc=root/'proc';proc.mkdir(exist_ok=True)
+    return subprocess.run(['bash','-c','source "$1"; '+commands,'bash',str(watcher)],env={**os.environ,'PATH':str(launcher)+os.pathsep+os.environ['PATH'],'WATCHER_MODEL_DIR':str(root),'MODELS_ACTIVE_DIR':str(active),'WATCHER_CLEANUP_GRACE_SECONDS':'0','WATCHER_CLEANUP_INTERVAL_SECONDS':'0','WATCHER_PROC_ROOT':str(proc)},text=True,capture_output=True,timeout=8)
 
 
 @pytest.mark.parametrize('dockerfile',['Dockerfile.triton-gateway','Dockerfile.triton-gateway-deepseek'])

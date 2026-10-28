@@ -38,7 +38,8 @@ def checkout(tmp_path,snapshot,version='1',folder='folderA',deepseek=True):
 
 def run(tmp_path,commands):
     active=tmp_path/'models-active';active.mkdir(exist_ok=True)
-    return subprocess.run(['bash','-c','source "$1"; '+commands,'bash',str(ROOT/'watch_triton.sh')],env={**os.environ,'WATCHER_MODEL_DIR':str(tmp_path),'MODELS_ACTIVE_DIR':str(active)},capture_output=True,text=True,timeout=5)
+    proc=tmp_path/'proc';proc.mkdir(exist_ok=True)
+    return subprocess.run(['bash','-c','source "$1"; '+commands,'bash',str(ROOT/'watch_triton.sh')],env={**os.environ,'WATCHER_MODEL_DIR':str(tmp_path),'MODELS_ACTIVE_DIR':str(active),'WATCHER_CLEANUP_GRACE_SECONDS':os.environ.get('WATCHER_CLEANUP_GRACE_SECONDS','0'),'WATCHER_CLEANUP_INTERVAL_SECONDS':'0','WATCHER_PROC_ROOT':os.environ.get('WATCHER_PROC_ROOT',str(proc))},capture_output=True,text=True,timeout=8)
 
 def test_external_root_preserved_and_partial_checkpoint_retried(tmp_path,snapshot,config_text):
     target=checkout(tmp_path,snapshot)

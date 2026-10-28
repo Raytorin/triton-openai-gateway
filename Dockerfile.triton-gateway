@@ -22,6 +22,7 @@ RUN python3 -m pip install --no-cache-dir -r /tmp/triton-chat-gateway-requiremen
     && rm -f /tmp/triton-chat-gateway-requirements.txt /tmp/verify-runtime.py
 
 COPY gateway/model_config.py /usr/local/libexec/triton-openai-gateway/
+COPY gateway/model_cleanup.py /usr/local/libexec/triton-openai-gateway/
 COPY watch_triton.sh /usr/local/bin/watch_triton.sh
 COPY docker/80-watch-triton.sh /opt/nvidia/entrypoint.d/80-watch-triton.sh
 COPY docker/90-triton-chat-gateway.sh /opt/nvidia/entrypoint.d/90-triton-chat-gateway.sh

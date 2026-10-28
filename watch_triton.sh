@@ -12,6 +12,16 @@ MODELS_ACTIVE_DIR="${MODELS_ACTIVE_DIR:-${WATCHER_MODEL_DIR%/}/models-active}"
 # Remember published links so an external unlink is an unload, not a signal
 # to publish the same temporary checkout again on the next scan.
 declare -A published_targets=()
+declare -A config_signatures=() config_backends=() config_failed=() cleanup_attempted=()
+cleanup_recovery_error=""
+cleanup_recovery_pending=false
+WATCHER_CLEANUP_GRACE_SECONDS="${WATCHER_CLEANUP_GRACE_SECONDS:-300}"
+WATCHER_CLEANUP_INTERVAL_SECONDS="${WATCHER_CLEANUP_INTERVAL_SECONDS:-30}"
+WATCHER_PROC_ROOT="${WATCHER_PROC_ROOT:-/proc}"
+if [[ ! "${WATCHER_CLEANUP_GRACE_SECONDS}" =~ ^[0-9]+$ || ! "${WATCHER_CLEANUP_INTERVAL_SECONDS}" =~ ^[0-9]+$ ]]; then
+  echo "watcher cleanup grace and interval must be non-negative integer seconds" >&2
+  exit 2
+fi
 WATCHER_SOURCE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 read_model_field() {
@@ -29,59 +39,74 @@ read_model_backend() {
   read_model_field "$1" backend
 }
 
-cleanup_unlinked_target() {
-  local target="$1"
-  local backend
-  backend="$(read_model_backend "${target}")" || return 1
-  python3 - "${WATCHER_MODEL_DIR}" "${MODELS_ACTIVE_DIR}" "${target}" "${backend}" <<'CLEANUP'
-import os
-import pathlib
-import re
-import shutil
-import sys
+# Called directly (not through command substitution), so failure caching survives
+# each scan. Both link and target stat identities invalidate an old result.
+prepare_model_backend() {
+  local target="$1" config signature result
+  config="$(dirname -- "${target}")/config.pbtxt"
+  signature="$(stat -c '%d:%i:%s:%y:%z' -- "${config}" 2>/dev/null || true)
+$(stat -Lc '%d:%i:%s:%y:%z' -- "${config}" 2>/dev/null || true)"
+  if [[ "${config_signatures[${config}]+present}" && "${config_signatures[${config}]}" == "${signature}" ]]; then
+    MODEL_BACKEND="${config_backends[${config}]-}"
+    return "${config_failed[${config}]}"
+  fi
+  config_signatures["${config}"]="${signature}"
+  if result="$(read_model_backend "${target}" 2>&1)"; then
+    config_backends["${config}"]="${result}"
+    config_failed["${config}"]=0
+    MODEL_BACKEND="${result}"
+    return 0
+  fi
+  config_backends["${config}"]=""
+  config_failed["${config}"]=1
+  MODEL_BACKEND=""
+  printf '%s\n' "${result}" >&2
+  return 1
+}
 
-root, active, target = map(pathlib.Path, sys.argv[1:4])
-backend = sys.argv[4]
-root, active = root.resolve(), active.resolve()
-# Only direct folder*/numeric-version checkouts belong to this watcher.
-# Never follow a checkout/version symlink into another repository.
-if target.is_symlink() or target.parent.is_symlink():
-    raise SystemExit(0)
-target = target.resolve()
-checkout = target.parent
-if (checkout.parent != root or not checkout.name.startswith("folder")
-        or not re.fullmatch(r"[0-9]+", target.name)
-        or checkout == active or checkout in active.parents):
-    raise SystemExit(0)
-links = [link.resolve() for link in active.iterdir() if link.is_symlink()]
-if any(link == target or target in link.parents for link in links):
-    raise SystemExit(0)
-# A previous DeepSeek stub may still be loading. Retain temporary checkout
-# metadata until an operator has confirmed unloading; never republish it.
-if backend == "vllm_deepseek" or (target / ".deepseek-retired").exists() or (target / ".deepseek-retired").is_symlink():
-    if target.is_dir():
-        try:
-            fd = os.open(target / ".deepseek-retired", os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-            os.close(fd)
-        except FileExistsError:
-            pass
-    raise SystemExit(0)
-try:
-    if target.is_dir():
-        shutil.rmtree(target)
-        print(f"removed inactive model version {target}", flush=True)
-    # Other versions may still be downloading or active. Preserve those and
-    # shared metadata until the last version has gone.
-    if checkout.is_dir() and not any(
-        child.is_dir() and re.fullmatch(r"[0-9]+", child.name)
-        for child in checkout.iterdir()
-    ) and not any(link == checkout or checkout in link.parents for link in links):
-        shutil.rmtree(checkout)
-        print(f"removed inactive model checkout {checkout}", flush=True)
-except OSError as exc:
-    print(f"model cleanup failed for {target}: {exc}", file=sys.stderr)
-    raise SystemExit(1)
-CLEANUP
+model_cleanup_helper() {
+  local helper="${WATCHER_SOURCE_ROOT}/gateway/model_cleanup.py"
+  [[ -f "${helper}" ]] || helper="${WATCHER_SOURCE_ROOT}/../libexec/triton-openai-gateway/model_cleanup.py"
+  printf '%s\n' "${helper}"
+}
+
+recover_pending_cleanup() {
+  local pending result
+  for pending in "${WATCHER_MODEL_DIR}"/.watcher-cleanup-*; do
+    [[ -d "${pending}" && ! -L "${pending}" ]] || continue
+    if result="$(python3 "$(model_cleanup_helper)" --recover "${WATCHER_MODEL_DIR}" "${MODELS_ACTIVE_DIR}" 2>&1)"; then
+      [[ -z "${result}" ]] || printf '%s\n' "${result}"
+      cleanup_recovery_error=""
+      cleanup_recovery_pending=false
+      return 0
+    fi
+    if [[ "${result}" != "${cleanup_recovery_error}" ]]; then
+      printf '%s\n' "${result}" >&2
+      cleanup_recovery_error="${result}"
+    fi
+    cleanup_recovery_pending=true
+    return 1
+  done
+  cleanup_recovery_error=""
+  cleanup_recovery_pending=false
+}
+
+cleanup_unlinked_target() {
+  local target="$1" mode="${2:-version}" helper
+  [[ "${cleanup_recovery_pending}" == false ]] || return 1
+  prepare_model_backend "${target}" || return 1
+  if [[ "${cleanup_attempted[${target}]+present}" ]] && (( SECONDS - cleanup_attempted[${target}] < 10#${WATCHER_CLEANUP_INTERVAL_SECONDS} )); then
+    return 1
+  fi
+  cleanup_attempted["${target}"]="${SECONDS}"
+  helper="$(model_cleanup_helper)"
+  if python3 "${helper}" "${WATCHER_MODEL_DIR}" "${MODELS_ACTIVE_DIR}" "${target}" \
+    "${MODEL_BACKEND}" "${WATCHER_CLEANUP_GRACE_SECONDS}" "${WATCHER_PROC_ROOT}" "${mode}"; then
+    unset 'cleanup_attempted[$target]'
+    return 0
+  else
+    return "$?"
+  fi
 }
 
 remember_existing_links() {
@@ -112,7 +137,8 @@ sync_model_json() {
   local model_file="${target_dir}/model.json"
   local status=0
   local backend
-  backend="$(read_model_backend "${target_dir}")" || return 1
+  prepare_model_backend "${target_dir}" || return 1
+  backend="${MODEL_BACKEND}"
 
   if python3 - "${model_file}" "${target_dir}" "${WATCHER_SOURCE_ROOT}" "${backend}" <<'PY'
 import importlib.util
@@ -180,6 +206,9 @@ try:
         json.dump(data, fh, ensure_ascii=False, indent=2)
         fh.write("\n")
         fh.flush()
+        # Path normalization must not change the source revision's priority,
+        # including on the first scan or after a watcher restart.
+        os.utime(fh.fileno(), ns=(before.st_atime_ns, before.st_mtime_ns))
         os.fsync(fh.fileno())
     current = file_path.lstat()
     if (current.st_dev,current.st_ino,current.st_mtime_ns,current.st_size) != (before.st_dev,before.st_ino,before.st_mtime_ns,before.st_size):
@@ -351,11 +380,33 @@ scan_target() {
 
   [[ "${version_dir}" =~ ${VERSION_DIR_REGEX} ]] || return 0
   local backend
-  backend="$(read_model_backend "${target}")" || return 0
+  prepare_model_backend "${target}" || return 0
+  backend="${MODEL_BACKEND}"
   if [[ -e "${target}/.deepseek-retired" || -L "${target}/.deepseek-retired" ]]; then
     return 0
   fi
+  if [[ -e "${target}/.watcher-retired.json" || -L "${target}/.watcher-retired.json" ]]; then
+    cleanup_unlinked_target "${target}" || true
+    return 0
+  fi
   [[ -f "${target}/model.json" || -f "${target}/model.py" ]] || return 0
+
+  # Select before path repair: rewriting an old model.json must not make an
+  # unpublished duplicate appear newer than the currently selected copy.
+  local model_name existing_target
+  model_name="$(resolve_model_name "${target}")" || return 0
+  [[ -n "${model_name}" && "${model_name}" != "." && "${model_name}" != ".." && "${model_name}" != */* ]] || return 0
+  if [[ -L "${MODELS_ACTIVE_DIR}/${model_name}" ]]; then
+    existing_target="$(readlink -m -- "${MODELS_ACTIVE_DIR}/${model_name}")"
+    if [[ "${existing_target}" != "$(readlink -f -- "${target}")" ]] && ! prefer_target "${target}" "${existing_target}"; then
+      # Preserve distinct versions and backend changes; only an older duplicate
+      # of the same model/version can be collected without publication.
+      if [[ "$(basename -- "${existing_target}")" == "${version_dir}" ]] && prepare_model_backend "${existing_target}" && [[ "${MODEL_BACKEND}" == "${backend}" ]]; then
+        cleanup_unlinked_target "${target}" || true
+      fi
+      return 0
+    fi
+  fi
 
   if [[ -f "${target}/model.json" ]]; then
     sync_model_json "${target}" || return 0
@@ -367,10 +418,21 @@ scan_once() {
   local folder
   local target
 
+  recover_pending_cleanup || true
   cleanup_stale_symlinks
   cleanup_removed_links
 
   while IFS= read -r folder; do
+    # A deferred metadata recovery must not freeze unrelated valid models.
+    # Do not use the legacy missing-config fallback while files are staged.
+    if [[ "${cleanup_recovery_pending}" == true && ! -f "${folder}/config.pbtxt" ]]; then
+      continue
+    fi
+    # An unloaded version may already be gone while its shared metadata is
+    # waiting for the grace period. Keep collecting it after watcher restarts.
+    if [[ -e "${folder}/.watcher-retired.json" || -L "${folder}/.watcher-retired.json" ]]; then
+      cleanup_unlinked_target "${folder}/0" empty || true
+    fi
     while IFS= read -r target; do
       scan_target "${target}"
     done < <(find "${folder}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
