@@ -409,6 +409,10 @@ class RequestContextMiddleware:
         level = logging.ERROR if status_code >= 500 else (
             logging.WARNING if status_code >= 400 else logging.INFO
         )
+        if (scope.get("method") in {"GET", "HEAD"}
+                and scope.get("path") in {"/health", "/ready"}
+                and 200 <= status_code < 300):
+            level = logging.DEBUG
         log_event(
             self.logger,
             "http.request.completed",
