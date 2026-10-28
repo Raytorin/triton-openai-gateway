@@ -27,6 +27,10 @@ curl -fsS http://127.0.0.1:8080/ready
 Triton reports ready. A model can still be loading when strict Triton readiness
 is disabled; inspect the repository index for per-model state.
 
+Successful GET/HEAD probes to `/health` and `/ready` produce completion logs
+only at DEBUG. At the default INFO level, periodic probes are quiet; errors and
+redirects keep their normal log levels, and HTTP metrics remain enabled.
+
 ## Model Lifecycle
 
 List repository state:
@@ -46,8 +50,12 @@ curl -fsS -X POST \
 ```
 
 During S3 load, the watcher logs the temporary `model.json` update and active
-symlink. After unload, the temporary directory disappears and the stale link is
-removed.
+symlink. Unlinked/replaced copies are retired and collected after 300 seconds of
+unchanged files by default, provided no process or active link still uses them.
+Older unpublished duplicates of the same model/version are collected too.
+Malformed configs are retained and an identical parse failure is logged only
+once until the config changes. See [cleanup settings](configuration.md#model-repository-layout)
+and the watcher environment variables in the configuration reference.
 
 ## Metrics
 

@@ -53,13 +53,30 @@ For the S3 repository flow, the watcher creates a stable link under
 version. The root follows `WATCHER_MODEL_DIR`, `TMP_ROOT`, Triton's
 `TMPDIR`, then `/tmp`, in that order.
 
-The watcher tracks published links. After a link is removed, it deletes the
-corresponding temporary version on the next scan (normally within one second).
-When replacing a link, cleanup follows the switch immediately. The enclosing
-`folder*` checkout and metadata are removed once no numeric versions or active
-references remain. Other versions, shared active references, and paths outside
-the watcher root are preserved; the source S3 repository is untouched. Never
-published directories are not treated as garbage: Triton may still be loading them.
+The watcher retires replaced/unlinked versions and older, unpublished duplicates
+of the same model, backend, and numeric version. Selection happens before path
+repair and preserves the original `model.json` timestamp during repair, so a
+rewritten copy cannot look newer, including after a watcher restart.
+Retirement is recorded in `.watcher-retired.json`; these copies are not published
+again after a watcher restart. Removal requires 300 seconds of unchanged file
+metadata by default and is retried at most every 30 seconds. A resumed download
+restarts the grace period. Active symlinks and process references through open
+files, memory maps, or working directories defer removal; an unavailable process
+inventory also defers it. Empty checkout metadata is collected after the same
+grace period, without recursively deleting newly appeared versions.
+Shared metadata is staged with a persistent journal before an empty checkout is
+removed. If a download appears or cleanup is interrupted, the watcher restores
+the metadata before model discovery, preserving any newer files written by the
+downloader. If recovery must be deferred, cleanup pauses and copies without a
+config are not published; unrelated models with valid configs remain available.
+
+Other numeric versions, external checkpoints and symlink targets are preserved.
+The existing conservative DeepSeek retirement policy is unchanged: shared
+DeepSeek checkpoints require an operator-confirmed unload. Unidentifiable or
+malformed configurations are retained; a repeated config failure is logged once
+per file identity and retried when that file changes. The source S3 repository
+is never modified. Retirement markers belong to local `folder*` checkouts and
+must not be copied into a source model repository.
 
 ## `config.pbtxt`
 
@@ -453,6 +470,9 @@ set the corresponding environment variables.
 | `TMP_ROOT` | unset | Backward-compatible watcher root alias |
 | `TMPDIR` | system value | Triton temporary directory and automatic watcher fallback |
 | `MODELS_ACTIVE_DIR` | `<watcher-root>/models-active` | Stable active-model links |
+| `WATCHER_CLEANUP_GRACE_SECONDS` | `300` | Unchanged-file grace period before collecting retired local copies |
+| `WATCHER_CLEANUP_INTERVAL_SECONDS` | `30` | Minimum interval between cleanup attempts for one copy |
+| `WATCHER_PROC_ROOT` | `/proc` | Process inventory mount used to protect in-use copies; use a complete container inventory |
 | `GATEWAY_PORT` | `8080` | FastAPI listen port |
 | `REQUEST_TIMEOUT_SECONDS` | `600` | Upstream request timeout |
 | `GATEWAY_MAX_REQUEST_BODY_BYTES` | `268435456` | Maximum HTTP request body |
