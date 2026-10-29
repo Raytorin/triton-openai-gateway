@@ -23,6 +23,10 @@ from fastapi import HTTPException
 from grpc.aio import AioRpcError
 
 from .cpu_work import run_cpu
+from .generation_metadata import (
+    GenerationMetadata, GenerationMetadataState, GenerationOutput, metadata_of,
+    resolve_finish_reason, log_completion, GenerationMetadataError,
+)
 from .debug import log_chat_response_debug
 from .multimodal import MediaPayload, MediaPayloads
 from .metrics import (
@@ -59,6 +63,98 @@ logger = logging.getLogger("triton-chat-gateway")
 REASONING_STREAM_HOLDBACK_CHARS = 12
 
 
+# Client identity plus bounded lifetime avoids stale capabilities after model reload.
+_generation_metadata_capabilities = {}
+_GENERATION_METADATA_TTL = 30.0
+
+
+async def _supports_generation_metadata(model_name: str, transport: str = "grpc") -> bool:
+    client = await get_grpc_client() if transport == "grpc" else get_http_client()
+    key = (transport, id(client), model_name)
+    now = time.monotonic()
+    cached = _generation_metadata_capabilities.get(key)
+    if cached and cached[0] is client and now - cached[1] < _GENERATION_METADATA_TTL:
+        return cached[2]
+    supported = False
+    try:
+        if transport == "grpc":
+            data = await client.get_model_metadata(model_name, as_json=True, client_timeout=2.0)
+        else:
+            response = await client.get(f"{TRITON_BASE_URL}/v2/models/{quote(model_name, safe='')}",
+                                        timeout=2.0, headers=_request_headers())
+            response.raise_for_status()
+            data = response.json()
+        if isinstance(data, dict):
+            inputs = {item.get("name") for item in data.get("inputs", []) if isinstance(item, dict)}
+            outputs = {item.get("name") for item in data.get("outputs", []) if isinstance(item, dict)}
+            supported = "return_generation_metadata" in inputs and "generation_metadata" in outputs
+    except Exception:
+        # Optional capability discovery must not retry or execute generation.
+        supported = False
+    if len(_generation_metadata_capabilities) >= 256:
+        _generation_metadata_capabilities.clear()
+    _generation_metadata_capabilities[key] = (client, now, supported)
+    return supported
+
+
+async def _generation_outputs(model_name, inputs):
+    supported = await _supports_generation_metadata(model_name)
+    outputs = [grpcclient.InferRequestedOutput("text_output")]
+    if supported:
+        flag = grpcclient.InferInput("return_generation_metadata", [1], "BOOL")
+        flag.set_data_from_numpy(np.asarray([True], dtype=np.bool_))
+        inputs.append(flag)
+        outputs.append(grpcclient.InferRequestedOutput("generation_metadata"))
+    return outputs, supported
+
+
+def _read_grpc_generation_metadata(item, state, expected):
+    if not expected:
+        return
+    payload = item.as_numpy("generation_metadata")
+    if payload is not None:
+        values = _decode_numpy_strings(payload)
+        if len(values) != 1:
+            raise GenerationMetadataError("Invalid generation metadata tensor from Triton")
+        state.update_json(values[0])
+
+
+def _read_http_generation_metadata(payload, state):
+    if not isinstance(payload, dict):
+        raise GenerationMetadataError("Invalid generation response from Triton")
+    value = payload.get("generation_metadata")
+    if value is None:
+        outputs = payload.get("outputs", [])
+        if not isinstance(outputs, list) or any(not isinstance(output, dict) for output in outputs):
+            raise GenerationMetadataError("Invalid generation output tensors from Triton")
+        for output in outputs:
+            if output.get("name") == "generation_metadata":
+                value = output.get("data")
+                break
+    if value is None:
+        return
+    if isinstance(value, list):
+        if len(value) != 1:
+            raise GenerationMetadataError("Invalid generation metadata tensor from Triton")
+        value = value[0]
+    state.update_json(value)
+
+
+def _http_generation_payload(response):
+    try:
+        return response.json()
+    except ValueError as error:
+        raise GenerationMetadataError("Invalid generation JSON from Triton") from error
+
+
+def _check_generation_metadata(state, expected, *, stopped_locally=False):
+    if expected and state.metadata is None and not stopped_locally:
+        raise GenerationMetadataError("Triton omitted advertised generation metadata")
+    resolve_finish_reason(state.metadata, stopped_locally=stopped_locally)
+
+
+
+
 def _process_completed_generation(
     request: ChatCompletionRequest,
     tokenizer,
@@ -67,7 +163,8 @@ def _process_completed_generation(
     reasoning_settings: ReasoningSettings | None,
 ) -> tuple[str, ReasoningResult, dict[str, Any]]:
     settings = reasoning_settings or DISABLED_REASONING_SETTINGS
-    raw_generated_text = strip_prompt_echo(prompt, generated_text)
+    raw_generated_text = GenerationOutput(strip_prompt_echo(prompt, generated_text), metadata_of(generated_text))
+    log_completion(request.model, raw_generated_text, metadata_of(raw_generated_text))
     reasoning_result = split_reasoning_output(raw_generated_text, settings)
     content, _ = sanitize_generated_text(reasoning_result.content)
     usage = build_usage(
@@ -94,7 +191,7 @@ def _process_completed_generation(
         reasoning_tokens=reasoning_tokens,
         content_tokens=content_tokens,
     )
-    return content, reasoning_result, usage
+    return GenerationOutput(content, metadata_of(generated_text)), reasoning_result, usage
 
 
 def _reasoning_delta(
@@ -135,6 +232,7 @@ def get_http_client() -> httpx.AsyncClient:
 
 
 async def close_http_client() -> None:
+    _generation_metadata_capabilities.clear()
     global _http_client
     if _http_client is not None and not _http_client.is_closed:
         await _http_client.aclose()
@@ -152,6 +250,7 @@ async def get_grpc_client() -> grpc_aio.InferenceServerClient:
 
 
 async def close_grpc_client() -> None:
+    _generation_metadata_capabilities.clear()
     global _grpc_client
     async with _grpc_client_lock:
         client = _grpc_client
@@ -765,14 +864,18 @@ async def stream_triton_text_deltas(model_name, prompt, sampling_parameters):
     forwarded exactly once, including identical or shared-prefix deltas.
     """
     inputs = _build_grpc_generate_inputs(prompt, sampling_parameters, [], stream=True)
-    outputs = [grpcclient.InferRequestedOutput("text_output")]
+    outputs, metadata_expected = await _generation_outputs(model_name, inputs)
+    metadata_state = GenerationMetadataState()
     try:
         async with aclosing(_stream_grpc_results(
             "generate-stream", model_name, inputs, outputs, streaming=True)) as results:
             async for item in results:
+                _read_grpc_generation_metadata(item, metadata_state, metadata_expected)
                 delta = "".join(_decode_numpy_strings(item.as_numpy("text_output")))
-                if delta:
-                    yield delta
+                if delta or metadata_expected:
+                    metadata = metadata_state.metadata or (GenerationMetadata() if metadata_expected else None)
+                    yield GenerationOutput(delta, metadata)
+        _check_generation_metadata(metadata_state, metadata_expected)
     except HTTPException:
         raise
     except (InferenceServerException, AioRpcError) as exc:
@@ -795,7 +898,8 @@ async def call_triton_multimodal(
         stream=False,
         media=media,
     )
-    outputs = [grpcclient.InferRequestedOutput("text_output")]
+    outputs, metadata_expected = await _generation_outputs(model_name, inputs)
+    metadata_state = GenerationMetadataState()
     last_text = ""
 
     try:
@@ -805,10 +909,12 @@ async def call_triton_multimodal(
             inputs,
             outputs,
         ):
+            _read_grpc_generation_metadata(item, metadata_state, metadata_expected)
             text_chunks = _decode_numpy_strings(item.as_numpy("text_output"))
             if text_chunks:
                 last_text = "".join(text_chunks)
-        return last_text
+        _check_generation_metadata(metadata_state, metadata_expected)
+        return GenerationOutput(last_text, metadata_state.metadata)
     except HTTPException:
         raise
     except (InferenceServerException, AioRpcError) as exc:
@@ -859,7 +965,8 @@ async def stream_triton_multimodal_to_openai(
         stream=True,
         media=media,
     )
-    outputs = [grpcclient.InferRequestedOutput("text_output")]
+    outputs, metadata_expected = await _generation_outputs(request.model, inputs)
+    metadata_state = GenerationMetadataState()
     settings = reasoning_settings or DISABLED_REASONING_SETTINGS
 
     yield sse_event(
@@ -883,9 +990,12 @@ async def stream_triton_multimodal_to_openai(
             )
         ) as results:
             async for item in results:
+                _read_grpc_generation_metadata(item, metadata_state, metadata_expected)
                 for text_chunk in _decode_numpy_strings(item.as_numpy("text_output")):
                     event_text = strip_prompt_echo(prompt, text_chunk)
-                    if event_text.startswith(raw_generated_text):
+                    if metadata_expected:
+                        raw_generated_text += event_text
+                    elif event_text.startswith(raw_generated_text):
                         raw_generated_text = event_text
                     else:
                         raw_generated_text += event_text
@@ -962,6 +1072,9 @@ async def stream_triton_multimodal_to_openai(
             detail=f"Triton multimodal gRPC stream failed: {exc}",
         ) from exc
 
+    _check_generation_metadata(metadata_state, metadata_expected, stopped_locally=stop_requested)
+    raw_generated_text = GenerationOutput(raw_generated_text, metadata_state.metadata)
+    log_completion(request.model, raw_generated_text, metadata_state.metadata)
     reasoning_result = split_reasoning_output(raw_generated_text, settings)
     final_text, _ = sanitize_generated_text(reasoning_result.content)
     reasoning_delta, emitted_reasoning = _reasoning_delta(
@@ -1025,16 +1138,10 @@ async def stream_triton_multimodal_to_openai(
             created,
             request.model,
             {},
-            finish_reason=(
-                "length"
-                if (
-                    (reasoning_result.incomplete and not final_text)
-                    or completion_reached_token_limit(
-                        usage,
-                        sampling_parameters,
-                    )
-                )
-                else "stop"
+            finish_reason=resolve_finish_reason(
+                metadata_state.metadata,
+                token_limit_reached=completion_reached_token_limit(usage, sampling_parameters),
+                stopped_locally=stop_requested,
             ),
             usage=usage,
         )
@@ -1210,6 +1317,7 @@ async def stream_triton_to_openai(
     emitted_reasoning = ""
     raw_generated_text = ""
     role_sent = False
+    stop_requested = False
     generate_stream_url = f"{TRITON_BASE_URL}/v2/models/{quote(request.model, safe='')}/generate_stream"
     payload = {
         "text_input": prompt,
@@ -1219,6 +1327,11 @@ async def stream_triton_to_openai(
         },
     }
     settings = reasoning_settings or DISABLED_REASONING_SETTINGS
+
+    metadata_expected = await _supports_generation_metadata(request.model, "http")
+    metadata_state = GenerationMetadataState()
+    if metadata_expected:
+        payload["return_generation_metadata"] = True
 
     with triton_call("generate-stream", request.model, "http"):
         async with get_http_client().stream(
@@ -1248,14 +1361,20 @@ async def stream_triton_to_openai(
             role_sent = True
 
             async for event in iter_sse_json_events(response):
+                if not isinstance(event, dict):
+                    raise GenerationMetadataError("Invalid generation stream event from Triton")
                 if "error" in event:
                     raise HTTPException(
                         status_code=502,
                         detail=f"Triton generate_stream returned error: {event['error']}",
                     )
 
+                if metadata_expected:
+                    _read_http_generation_metadata(event, metadata_state)
                 event_text = strip_prompt_echo(prompt, extract_text_output(event))
-                if event_text.startswith(raw_generated_text):
+                if metadata_expected:
+                    raw_generated_text += event_text
+                elif event_text.startswith(raw_generated_text):
                     raw_generated_text = event_text
                 else:
                     raw_generated_text += event_text
@@ -1316,8 +1435,12 @@ async def stream_triton_to_openai(
                     emitted_text = safe_text
 
                 if should_stop:
+                    stop_requested = True
                     break
 
+    _check_generation_metadata(metadata_state, metadata_expected, stopped_locally=stop_requested)
+    raw_generated_text = GenerationOutput(raw_generated_text, metadata_state.metadata)
+    log_completion(request.model, raw_generated_text, metadata_state.metadata)
     reasoning_result = split_reasoning_output(raw_generated_text, settings)
     final_text, _ = sanitize_generated_text(reasoning_result.content)
     reasoning_delta, emitted_reasoning = _reasoning_delta(
@@ -1381,16 +1504,10 @@ async def stream_triton_to_openai(
             created,
             request.model,
             {},
-            finish_reason=(
-                "length"
-                if (
-                    (reasoning_result.incomplete and not final_text)
-                    or completion_reached_token_limit(
-                        usage,
-                        sampling_parameters,
-                    )
-                )
-                else "stop"
+            finish_reason=resolve_finish_reason(
+                metadata_state.metadata,
+                token_limit_reached=completion_reached_token_limit(usage, sampling_parameters),
+                stopped_locally=stop_requested,
             ),
             usage=usage,
         )
@@ -1408,6 +1525,11 @@ async def call_triton(model_name: str, prompt: str, sampling_parameters: dict[st
         },
     }
 
+    metadata_expected = await _supports_generation_metadata(model_name, "http")
+    metadata_state = GenerationMetadataState()
+    if metadata_expected:
+        payload["return_generation_metadata"] = True
+
     with triton_call("generate", model_name, "http"):
         response = await get_http_client().post(
             generate_url,
@@ -1423,7 +1545,11 @@ async def call_triton(model_name: str, prompt: str, sampling_parameters: dict[st
                 ),
             )
 
-    return extract_text_output(response.json())
+    data = _http_generation_payload(response)
+    if metadata_expected:
+        _read_http_generation_metadata(data, metadata_state)
+    _check_generation_metadata(metadata_state, metadata_expected)
+    return GenerationOutput(extract_text_output(data), metadata_state.metadata)
 
 
 async def call_triton_python_chat(
@@ -1452,6 +1578,12 @@ async def call_triton_python_chat(
         ],
     })
 
+    metadata_expected = await _supports_generation_metadata(model_name, "http")
+    metadata_state = GenerationMetadataState()
+    if metadata_expected:
+        payload["inputs"].append({"name": "return_generation_metadata", "shape": [1], "datatype": "BOOL", "data": [True]})
+        payload["outputs"].append({"name": "generation_metadata"})
+
     with triton_call("python-chat", model_name, "http"):
         response = await get_http_client().post(
             infer_url,
@@ -1468,7 +1600,11 @@ async def call_triton_python_chat(
                 detail=detail,
             )
 
-    return extract_text_output(response.json())
+    data = _http_generation_payload(response)
+    if metadata_expected:
+        _read_http_generation_metadata(data, metadata_state)
+    _check_generation_metadata(metadata_state, metadata_expected)
+    return GenerationOutput(extract_text_output(data), metadata_state.metadata)
 
 
 async def stream_python_chat_to_openai(
@@ -1491,6 +1627,8 @@ async def stream_python_chat_to_openai(
             conversation,
             sampling_parameters,
         )
+    except GenerationMetadataError:
+        raise
     except HTTPException as exc:
         error_text = _friendly_error_message(exc.detail)
         usage = await run_cpu(build_usage, tokenizer, prompt, "")
@@ -1546,13 +1684,10 @@ async def stream_python_chat_to_openai(
         )
     )
 
-    finish_reason = (
-        "length"
-        if (
-            (reasoning_result.incomplete and not remaining_text)
-            or completion_reached_token_limit(usage, sampling_parameters)
-        )
-        else "stop"
+    finish_reason = resolve_finish_reason(
+        metadata_of(generated_text),
+        token_limit_reached=completion_reached_token_limit(usage, sampling_parameters),
+        tool_calls=bool(tool_calls),
     )
     settings = reasoning_settings or DISABLED_REASONING_SETTINGS
     if settings.expose_reasoning and reasoning_result.reasoning:
@@ -1647,13 +1782,10 @@ async def stream_tool_aware_response(
         )
     )
 
-    finish_reason = (
-        "length"
-        if (
-            (reasoning_result.incomplete and not remaining_text)
-            or completion_reached_token_limit(usage, sampling_parameters)
-        )
-        else "stop"
+    finish_reason = resolve_finish_reason(
+        metadata_of(generated_text),
+        token_limit_reached=completion_reached_token_limit(usage, sampling_parameters),
+        tool_calls=bool(tool_calls),
     )
     settings = reasoning_settings or DISABLED_REASONING_SETTINGS
     if settings.expose_reasoning and reasoning_result.reasoning:
@@ -1756,13 +1888,10 @@ async def stream_tool_aware_multimodal_response(
         )
     )
 
-    finish_reason = (
-        "length"
-        if (
-            (reasoning_result.incomplete and not remaining_text)
-            or completion_reached_token_limit(usage, sampling_parameters)
-        )
-        else "stop"
+    finish_reason = resolve_finish_reason(
+        metadata_of(generated_text),
+        token_limit_reached=completion_reached_token_limit(usage, sampling_parameters),
+        tool_calls=bool(tool_calls),
     )
     settings = reasoning_settings or DISABLED_REASONING_SETTINGS
     if settings.expose_reasoning and reasoning_result.reasoning:

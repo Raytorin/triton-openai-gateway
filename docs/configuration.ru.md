@@ -399,7 +399,9 @@ admission допускает один активный rerank-запрос и о
 Скрытие reasoning не останавливает его генерацию моделью. Рассуждение и итоговый
 ответ используют общий `max_tokens`; если модель исчерпала бюджет до
 формирования ответа, gateway возвращает пустой `content` и
-`finish_reason: "length"`.
+`finish_reason: "length"`. Сам по себе незакрытый блок reasoning или пустой текст
+не доказывает исчерпания лимита. Если backend передал причину остановки движка,
+она имеет приоритет над эвристикой по тексту.
 
 `parser: "auto"` определяет поддерживаемые Qwen chat templates. Также
 доступны явные parser-ы `qwen3` и `think_tags`. Для LiteLLM и
@@ -502,6 +504,11 @@ effort. Поэтому примеры Qwen3.6 не задают effort. Для `
 | `GATEWAY_STARTUP_GRACE_SECONDS` | `60` | Ожидание первого успешного ответа |
 | `GATEWAY_STOP_GRACE_SECONDS` | `10` | Ожидание завершения после SIGTERM |
 | `GATEWAY_RESTART_DELAY_SECONDS` | `2` | Пауза перед повторным запуском |
+| `GATEWAY_RUN_DIR` | `/tmp/triton-gateway-<uid>` | Закрытый каталог состояния supervisor и CLI; тот же пользователь ОС, права `0700` |
+
+Команды `triton-gateway status` и `triton-gateway restart` внутри контейнера
+показывают состояние и перезапускают только gateway. Таймауты и коды возврата
+описаны в [разделе эксплуатации](operations.ru.md#состояние-и-перезапуск-gateway).
 
 ### CPU-подготовка
 
@@ -606,7 +613,9 @@ Chat принимает `max_completion_tokens` и legacy-алиас `max_tokens
 Без параметра/null выбирается 4096 токенов, при thinking — 8192, с уменьшением
 до свободного контекста без удаления уже помещающейся истории. Явный лимит
 молча не уменьшается. Thinking и аргументы функций входят в общий бюджет.
-Usage пока оценивается повторной токенизацией.
+Prompt/completion totals берутся из накопительных счётчиков движка, если backend
+поддерживает generation metadata; иначе оцениваются повторной токенизацией.
+Выделение reasoning-токенов из текста по-прежнему является оценкой.
 
 Глобальные defaults: `GATEWAY_DEFAULT_OUTPUT_TOKENS=4096`,
 `GATEWAY_REASONING_DEFAULT_OUTPUT_TOKENS=8192`, `GATEWAY_MAX_OUTPUT_TOKENS=32768`.
@@ -624,3 +633,16 @@ context. Служебное огромное значение tokenizer не с�
 Применяется существующий safety margin. Внутренние summary-вызовы сохраняют
 свои бюджеты. Заголовки `X-Output-Token-Limit`, `X-Output-Token-Limit-Source`,
 `X-Token-Usage-Source` и структурированные логи показывают принятое решение.
+`X-Token-Usage-Source: backend-preferred` обозначает политику предпочтения данных
+backend с fallback на оценку, а не гарантию наличия каждого счётчика. Лог выбора
+бюджета до inference по-прежнему содержит оценку размера входа.
+
+Общий vLLM backend объявляет optional tensors `return_generation_metadata` (BOOL)
+и `generation_metadata` (BYTES). JSON envelope версии 1 передаёт `finished`,
+`prompt_tokens` и для каждого choice — истинные finish/stop reasons, накопительное
+число completion tokens и ID первого/последнего токена. Прежний
+`num_output_tokens` остаётся счётчиком дельт. Возможность определяется до inference
+и кешируется не дольше 30 секунд; повторная генерация для согласования протокола
+не выполняется. Старые backend получают прежнюю форму запроса. Abort/error,
+некорректная metadata или отсутствие объявленного финального результата дают
+ошибку upstream вместо успешного `length`.

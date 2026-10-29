@@ -476,8 +476,10 @@ def build_usage(
                 tokenizer(reasoning_text, add_special_tokens=False).input_ids
             ),
         }
+    from .generation_metadata import apply_engine_usage, metadata_of
     from .generation_telemetry import observe_generation_usage
 
+    usage = apply_engine_usage(usage, metadata_of(generated_text))
     observe_generation_usage(usage)
     return usage
 

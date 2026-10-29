@@ -135,6 +135,12 @@ class TritonPythonModel:
                 "optional": True,
             },
             {
+                "name": "return_generation_metadata",
+                "data_type": "TYPE_BOOL",
+                "dims": [1],
+                "optional": True,
+            },
+            {
                 "name": "return_cumulative_logprob",
                 "data_type": "TYPE_BOOL",
                 "dims": [1],
@@ -171,6 +177,7 @@ class TritonPythonModel:
         outputs = [
             {"name": "text_output", "data_type": "TYPE_STRING", "dims": [-1]},
             {"name": "finish_reason", "data_type": "TYPE_STRING", "dims": [-1]},
+            {"name": "generation_metadata", "data_type": "TYPE_STRING", "dims": [1]},
             {"name": "cumulative_logprob", "data_type": "TYPE_FP32", "dims": [-1]},
             {"name": "logprobs", "data_type": "TYPE_STRING", "dims": [-1]},
             {"name": "num_input_tokens", "data_type": "TYPE_UINT32", "dims": [1]},

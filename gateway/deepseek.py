@@ -19,6 +19,7 @@ from fastapi import HTTPException
 
 from .cpu_work import run_cpu
 from .generation_types import GenerationEvent, GenerationStream
+from .generation_metadata import GenerationOutput, log_completion, metadata_of, resolve_finish_reason
 from .prompt import build_usage, completion_reached_token_limit
 from .qwen import TemplateCapabilities, _metadata_locations, _read_json, _resolved_template
 
@@ -257,8 +258,8 @@ class DeepSeekOutput:
                     self.stopped = True
         return events
 
-    def finish(self, *, length=False):
-        length = length and not self.stopped
+    def finish(self, *, length=False, authoritative=False):
+        length = length and (authoritative or not self.stopped)
         if self.pending and not self.finished:
             if not length:
                 _invalid('incomplete service marker or DSML block')
@@ -277,7 +278,7 @@ class DeepSeekOutput:
                 _invalid('parser changed tool name or typed arguments')
         if self.required and not calls and not length:
             _invalid('required tool call is missing')
-        reason = 'length' if length or self.in_reasoning else 'tool_calls' if calls else 'stop'
+        reason = 'length' if length else 'tool_calls' if calls else 'stop'
         return events, reason
 
     def close(self):
@@ -295,17 +296,29 @@ async def generate(request, tokenizer, prompt, sampling, settings, tools, *, hea
         try:
             for delta in parser.start():
                 yield event(delta)
+            metadata = None
             async with aclosing(tc.stream_triton_text_deltas(request.model, prompt, sampling)) as source:
                 async for text in source:
-                    for delta in parser.feed(text):
-                        yield event(delta)
-                    if parser.finished:
+                    metadata = metadata_of(text) or metadata
+                    # EOS may finish the recipe before the engine sends its
+                    # final token counts. Drain metadata without parsing tails.
+                    if not parser.finished:
+                        for delta in parser.feed(text):
+                            yield event(delta)
+                    if metadata is not None and metadata.finished:
                         break
-            usage = await run_cpu(build_usage, tokenizer, prompt, parser.raw, reasoning_text=parser.reasoning)
+                    if parser.finished and metadata is None:
+                        break
+            raw = GenerationOutput(parser.raw, metadata)
+            usage = await run_cpu(build_usage, tokenizer, prompt, raw, reasoning_text=parser.reasoning)
+            log_completion(request.model, raw, metadata)
+            finish_reason = resolve_finish_reason(metadata,
+                token_limit_reached=completion_reached_token_limit(usage, sampling) and not parser.stopped,
+                stopped_locally=parser.stopped and metadata is None)
             counted_reasoning = parser.reasoning
-            deltas, reason = parser.finish(length=completion_reached_token_limit(usage, sampling))
+            deltas, reason = parser.finish(length=finish_reason == 'length', authoritative=metadata is not None)
             if parser.reasoning != counted_reasoning:
-                usage = await run_cpu(build_usage, tokenizer, prompt, parser.raw, reasoning_text=parser.reasoning)
+                usage = await run_cpu(build_usage, tokenizer, prompt, raw, reasoning_text=parser.reasoning)
             for delta in deltas:
                 yield event(delta)
             yield event({}, finish_reason=reason, usage=usage)

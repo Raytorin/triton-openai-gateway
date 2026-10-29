@@ -31,6 +31,35 @@ Successful GET/HEAD probes to `/health` and `/ready` produce completion logs
 only at DEBUG. At the default INFO level, periodic probes are quiet; errors and
 redirects keep their normal log levels, and HTTP metrics remain enabled.
 
+## Gateway Status And Restart
+
+Run these commands inside the gateway container, as the same OS user that runs
+the supervisor:
+
+```bash
+triton-gateway status
+triton-gateway restart
+triton-gateway restart --timeout 120
+```
+
+`status` reports the supervisor, gateway PID and generation, gateway `/health`,
+and Triton live/ready checks. Exit code `0` means the supervisor and gateway
+process are valid and `/health` succeeds; Triton readiness is reported separately.
+Missing or stale supervisor state, an unsafe runtime directory, or an unhealthy
+gateway returns a nonzero code. `/health` does not verify inference or individual models.
+
+`restart` asks the existing supervisor to replace only Uvicorn and waits for the
+new process to pass `/health`. Triton and loaded models stay running. Active HTTP
+and SSE requests are interrupted. Concurrent requests share an in-progress
+restart. The default wait is 90 seconds; a timeout returns a nonzero code and
+does not cancel a restart already submitted to the supervisor.
+
+The supervisor and CLI share a private runtime directory,
+`/tmp/triton-gateway-<uid>` by default. It must belong to that user with mode
+`0700`. If `GATEWAY_RUN_DIR` is customized, use the same value for both. The
+command is installed when the image is rebuilt; existing images do not gain it
+automatically. See [watchdog settings](configuration.md#gateway-watchdog).
+
 ## Model Lifecycle
 
 List repository state:
@@ -131,6 +160,18 @@ Safe debug mode logs roles, tool-call IDs, parser selection, token counts, and
 finish reason. It does not log prompts or tool results. Enable
 `DEBUG_LOG_PAYLOADS=true` only for controlled diagnostics because payload
 previews may contain sensitive user data.
+
+The backend emits `generation.completed` once per engine completion, with
+cumulative counts and finish diagnostics. Empty decoded output raises its level
+to WARNING. The gateway also emits `generation.empty_output` with metadata
+availability, engine reason, counts and first/last token IDs. Neither event logs
+prompt/output text or raw string stop reasons; string reasons are represented
+by type and length. An empty final wire delta after earlier text is not an empty
+completion.
+
+A streaming HTTP 200 is committed before generation finishes. A later upstream
+failure is an SSE error; this metadata change does not defer response headers
+or automatically classify empty EOS as overload.
 
 ### Context Compaction Validation
 
