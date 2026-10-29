@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # First build the unchanged default image locally, then explicitly opt into this recipe.
 ARG GATEWAY_IMAGE=triton-openai-gateway:qwen-local
-FROM nvidia/cuda:12.9.1-devel-ubuntu24.04@sha256:020bc241a628776338f4d4053fed4c38f6f7f3d7eb5919fecb8de313bb8ba47c AS cuda129
+FROM nvidia/cuda:13.4.3-devel-ubuntu24.04@sha256:5626a7d0ecafe3e7c115a452f6b05f20f214f8509346196a7835b205dc5b7fd9 AS cuda129
 FROM ${GATEWAY_IMAGE} AS environment
 SHELL ["/usr/bin/env", "-u", "BASH_ENV", "-u", "ENV", "/bin/bash", "-euo", "pipefail", "-c"]
 
