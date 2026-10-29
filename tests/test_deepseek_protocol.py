@@ -107,6 +107,7 @@ def endpoint(tmp_path):
             stack.enter_context(patch.object(generation.registry, name, replacement))
         stack.enter_context(patch.object(generation.admission, 'acquire', acquire))
         stack.enter_context(patch.object(tc, '_build_grpc_generate_inputs', inputs))
+        stack.enter_context(patch.object(tc, 'get_grpc_client', AsyncMock(return_value=object())))
         stack.enter_context(patch.object(tc, '_stream_grpc_results', stream))
         yield state
 
@@ -500,7 +501,8 @@ async def test_delta_transport_preserves_shared_prefixes_and_closes_source():
                 yield SimpleNamespace(as_numpy=lambda name, text=text: np.asarray([text.encode()], dtype=np.object_))
         finally:
             closed.append(True)
-    with patch.object(tc, '_stream_grpc_results', results):
+    with (patch.object(tc, 'get_grpc_client', AsyncMock(return_value=object())),
+          patch.object(tc, '_stream_grpc_results', results)):
         actual = [text async for text in tc.stream_triton_text_deltas('alias', 'prompt', {'max_tokens': 20})]
     assert actual == ['ha', 'ha!', 'ha']
     assert closed == [True]
@@ -569,7 +571,8 @@ async def test_production_serializer_deltas_reach_consumer_exactly_once(cumulati
                     yield response
             finally:
                 closed.append(True)
-        with patch.object(tc, '_stream_grpc_results', results):
+        with (patch.object(tc, 'get_grpc_client', AsyncMock(return_value=object())),
+          patch.object(tc, '_stream_grpc_results', results)):
             actual = [delta async for delta in tc.stream_triton_text_deltas('alias', 'prompt', {'max_tokens': 20})]
     assert received == wire
     assert ''.join(actual) == whole

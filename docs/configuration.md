@@ -397,7 +397,9 @@ elevate a stricter server policy.
 Hiding reasoning does not stop the model from generating it. Reasoning and the
 final answer share `max_tokens`; if the model consumes the complete budget
 before producing final content, the gateway returns empty `content` with
-`finish_reason: "length"`.
+`finish_reason: "length"`. An incomplete reasoning block or empty text alone
+does not establish that the output budget was exhausted. When available, the
+engine finish reason takes precedence over text-based heuristics.
 
 `parser: "auto"` detects supported Qwen chat templates. Explicit
 `qwen3` and `think_tags` parsers are also available. Use
@@ -497,6 +499,11 @@ and exits so container shutdown can finish. Restarting interrupts in-flight gate
 | `GATEWAY_STARTUP_GRACE_SECONDS` | `60` | Startup grace until first successful response |
 | `GATEWAY_STOP_GRACE_SECONDS` | `10` | Shutdown grace after SIGTERM |
 | `GATEWAY_RESTART_DELAY_SECONDS` | `2` | Delay before restarting |
+| `GATEWAY_RUN_DIR` | `/tmp/triton-gateway-<uid>` | Private supervisor/CLI state directory; same OS user, owner-only mode `0700` |
+
+Use `triton-gateway status` and `triton-gateway restart` inside the container to
+inspect or restart only the gateway. See [gateway process control](operations.md#gateway-status-and-restart)
+for deadlines and exit codes.
 
 ### CPU Preparation
 
@@ -600,7 +607,9 @@ accepted; conflicting values return 400. Limits must be positive integers.
 Omitted/null limits select 4096 tokens normally or 8192 with thinking enabled,
 reduced to the available context without discarding an already fitting history.
 Explicit limits are never silently clamped. Thinking and function arguments
-count toward the same output budget. Usage is currently estimated by tokenization.
+count toward the same output budget. Prompt and completion totals use cumulative
+engine counts when the backend supports generation metadata; otherwise the
+gateway estimates them by tokenization. Reasoning segmentation remains estimated.
 
 Global environment defaults: `GATEWAY_DEFAULT_OUTPUT_TOKENS=4096`,
 `GATEWAY_REASONING_DEFAULT_OUTPUT_TOKENS=8192`, `GATEWAY_MAX_OUTPUT_TOKENS=32768`.
@@ -618,3 +627,16 @@ Do not use tokenizer sentinel values as runtime context limits. The existing
 context safety margin applies. Internal summary calls retain their own budgets.
 `X-Output-Token-Limit`, `X-Output-Token-Limit-Source` and `X-Token-Usage-Source`
 report the decision; structured logs include the input/media/context reserves.
+`X-Token-Usage-Source: backend-preferred` describes this preference/fallback policy,
+not a guarantee that every backend supplies every counter. The pre-inference
+budget log still describes an estimate of the input size.
+
+The shared vLLM backend advertises optional `return_generation_metadata` (BOOL)
+and `generation_metadata` (BYTES) tensors. The version-1 JSON envelope carries
+`finished`, `prompt_tokens` and per-choice engine finish/stop reasons, cumulative
+completion counts and first/last token IDs. Existing `num_output_tokens` remains
+a delta counter. Support is discovered before inference and cached for at most
+30 seconds; generation is never retried to negotiate the extension. Legacy
+backends receive the original request shape. Abort/error, malformed metadata or
+a missing advertised terminal result become upstream errors, not successful
+`length` completions.

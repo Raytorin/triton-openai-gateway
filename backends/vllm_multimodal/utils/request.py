@@ -179,6 +179,7 @@ class GenerateRequest(RequestBase):
         # additional outputs
         additional_outputs = {
             "return_finish_reason": None,
+            "return_generation_metadata": None,
             "return_cumulative_logprob": None,
             "return_logprobs": None,
             "return_num_input_tokens": None,
@@ -282,8 +283,41 @@ class GenerateRequest(RequestBase):
         )
 
         status = "completed"
+        choices_with_text = set()
+        completion_logged = False
         try:
             async for response in response_iterator:
+                choices_with_text.update(
+                    output.index for output in response.outputs if output.text
+                )
+                if response.finished and not completion_logged:
+                    metadata = self._generation_metadata(response)
+                    diagnostic_outputs = []
+                    for output in metadata["outputs"]:
+                        diagnostic = dict(output)
+                        stop_reason = diagnostic.pop("stop_reason")
+                        diagnostic["empty_text"] = output["index"] not in choices_with_text
+                        if isinstance(stop_reason, str):
+                            diagnostic["stop_reason_type"] = "str"
+                            diagnostic["stop_reason_length"] = len(stop_reason)
+                        elif stop_reason is not None:
+                            diagnostic["stop_reason"] = stop_reason
+                        diagnostic_outputs.append(diagnostic)
+                    log_event(
+                        self.logger,
+                        "generation.completed",
+                        level=(
+                            "warning"
+                            if any(output["empty_text"] for output in diagnostic_outputs)
+                            else "info"
+                        ),
+                        model=self.model_name,
+                        request_id=self.request_id,
+                        engine_request_id=self.id,
+                        prompt_tokens=metadata["prompt_tokens"],
+                        outputs=diagnostic_outputs,
+                    )
+                    completion_logged = True
                 yield response
         except asyncio.CancelledError:
             status = "cancelled"
@@ -319,6 +353,32 @@ class GenerateRequest(RequestBase):
                 duration_ms=round((time.monotonic() - started_at) * 1000, 3),
             )
 
+    @staticmethod
+    def _generation_metadata(request_output: RequestOutput) -> dict:
+        """Describe the cumulative engine snapshot independently of wire deltas."""
+        prompt_token_ids = request_output.prompt_token_ids
+        outputs = []
+        for output in request_output.outputs:
+            token_ids = output.token_ids
+            outputs.append(
+                {
+                    "index": int(output.index),
+                    "finish_reason": output.finish_reason,
+                    "stop_reason": getattr(output, "stop_reason", None),
+                    "completion_tokens": len(token_ids),
+                    "first_token_id": int(token_ids[0]) if token_ids else None,
+                    "last_token_id": int(token_ids[-1]) if token_ids else None,
+                }
+            )
+        return {
+            "version": 1,
+            "finished": bool(request_output.finished),
+            "prompt_tokens": (
+                len(prompt_token_ids) if prompt_token_ids is not None else None
+            ),
+            "outputs": outputs,
+        }
+
     def create_response(
         self,
         request_output: RequestOutput,
@@ -349,6 +409,19 @@ class GenerateRequest(RequestBase):
                 "text_output", np.asarray(text_output, dtype=self.output_dtype)
             )
         )
+
+        # A single envelope keeps multi-choice indices and cumulative counts
+        # together even when the accompanying text delta is empty.
+        if self.additional_outputs.get("return_generation_metadata", False):
+            generation_metadata = json.dumps(
+                self._generation_metadata(request_output), separators=(",", ":")
+            ).encode("utf-8")
+            output_tensors.append(
+                pb_utils.Tensor(
+                    "generation_metadata",
+                    np.asarray([generation_metadata], dtype=np.object_),
+                )
+            )
 
         # finish_reason
         if self.additional_outputs["return_finish_reason"]:

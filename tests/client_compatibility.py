@@ -96,6 +96,7 @@ def serve():
                     stack.enter_context(patch.object(generation.registry, name, replacement))
                 stack.enter_context(patch.object(generation.admission, "acquire", AsyncMock(return_value=AdmissionLease([]))))
                 stack.enter_context(patch.object(tc, "_build_grpc_generate_inputs", inputs))
+                stack.enter_context(patch.object(tc, "get_grpc_client", AsyncMock(return_value=object())))
                 stack.enter_context(patch.object(tc, "_stream_grpc_results", backend))
                 return TestClient(app).post("/v1/chat/completions", json=body)
 

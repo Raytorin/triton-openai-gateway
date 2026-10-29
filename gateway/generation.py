@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from .generation_metadata import GenerationOutput, metadata_of, resolve_finish_reason, log_completion
 from .cpu_work import run_cpu
 from .admission import AdmissionController
 from .context_compression import (
@@ -888,7 +889,9 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         )
     else:
         generated_text = await call_triton(request.model, prompt, sampling_parameters)
-    raw_generated_text = strip_prompt_echo(prompt, generated_text)
+    engine_metadata = metadata_of(generated_text)
+    raw_generated_text = GenerationOutput(strip_prompt_echo(prompt, generated_text), engine_metadata)
+    log_completion(request.model, raw_generated_text, engine_metadata)
     reasoning_result = await run_cpu(split_reasoning_output,
         raw_generated_text,
         reasoning_settings,
@@ -911,13 +914,10 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         reasoning_settings,
         reasoning_result,
     )
-    finish_reason = (
-        "length"
-        if (
-            (reasoning_result.incomplete and not remaining_text)
-            or completion_reached_token_limit(usage, sampling_parameters)
-        )
-        else "tool_calls" if tool_calls else "stop"
+    finish_reason = resolve_finish_reason(
+        engine_metadata,
+        token_limit_reached=completion_reached_token_limit(usage, sampling_parameters),
+        tool_calls=bool(tool_calls),
     )
     log_chat_response_debug(
         request,

@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Raytorin
+# SPDX-License-Identifier: Apache-2.0
+"""Local control of the gateway watchdog; never signal Triton or Uvicorn here."""
+
+import argparse
+import contextlib
+import fcntl
+import math
+import os
+from pathlib import Path
+import secrets
+import stat
+import subprocess
+import sys
+import time
+
+
+class ControlError(Exception):
+    pass
+
+
+def runtime_dir():
+    path = Path(os.environ.get("GATEWAY_RUN_DIR", f"/tmp/triton-gateway-{os.getuid()}"))
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        raise ControlError("gateway supervisor is not running (no runtime directory)") from None
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o700):
+        raise ControlError("unsafe supervisor runtime directory: expected an owned directory with mode 0700")
+    return path
+
+
+def process_matches(pid, started, parent=None):
+    try:
+        if int(pid) <= 1:
+            return False
+        # comm can contain spaces and parentheses. Fields after its final ')' start at state.
+        fields = Path(f"/proc/{int(pid)}/stat").read_text().rsplit(")", 1)[1].split()
+        return (fields[0] not in {"Z", "X"} and fields[19] == started
+                and (parent is None or fields[1] == parent))
+    except (OSError, ValueError, IndexError):
+        return False
+
+
+def read_state(root):
+    try:
+        with (root / "state").open() as stream:
+            raw = stream.read(16385)
+        if len(raw) > 16384:
+            raise ValueError("oversized state")
+        state = dict(line.split("=", 1) for line in raw.splitlines())
+        if (not process_matches(state["supervisor_pid"], state["supervisor_start"])
+                or state["phase"] in {"stopping", "stopped"}):
+            raise ValueError("stale state")
+        if int(state["generation"]) < 1 or not 1 <= int(state["gateway_port"]) <= 65535:
+            raise ValueError("invalid state")
+        # A live PID alone is insufficient: the supervisor must still own its lifetime lock.
+        with (root / "supervisor.lock").open("r+") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                pass
+            else:
+                raise ValueError("supervisor lock is not held")
+        return state
+    except (OSError, ValueError, KeyError):
+        raise ControlError("gateway supervisor is not running (missing or stale state)") from None
+
+
+def gateway_alive(state):
+    return process_matches(state.get("gateway_pid", "0"), state.get("gateway_start", ""),
+                           state["supervisor_pid"])
+
+
+def probe(url, timeout):
+    try:
+        return subprocess.run(
+            ["curl", "-fsS", "--max-time", str(timeout), "--", url],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=timeout + 0.2, check=False,
+        ).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def status(root):
+    state = read_state(root)
+    alive = gateway_alive(state)
+    healthy = alive and probe(f"http://127.0.0.1:{state['gateway_port']}/health", 1)
+    triton = state["triton_url"].rstrip("/")
+    live = probe(f"{triton}/v2/health/live", 1)
+    ready = probe(f"{triton}/v2/health/ready", 1)
+    # Re-read after probes so a concurrent restart cannot leave a misleading healthy result.
+    current = read_state(root)
+    healthy = (healthy and current["generation"] == state["generation"]
+               and gateway_alive(current) and current["phase"] == "running")
+    print(f"supervisor: running (pid={state['supervisor_pid']}, phase={current['phase']})")
+    print(f"gateway process: {'running' if alive else 'stopped'} "
+          f"(pid={state.get('gateway_pid', '0')}, generation={state['generation']})")
+    print(f"gateway health: {'ok' if healthy else 'unavailable'}")
+    print(f"triton live: {'ok' if live else 'unavailable'}")
+    print(f"triton ready: {'ok' if ready else 'unavailable'}")
+    return 0 if healthy else 1
+
+
+@contextlib.contextmanager
+def request_lock(root, deadline):
+    fd = os.open(root / "control.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "r+") as lock:
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise ControlError("timed out waiting for gateway supervisor control lock") from None
+                time.sleep(0.05)
+        yield
+
+
+def restart(root, timeout):
+    deadline = time.monotonic() + timeout
+    initial = read_state(root)
+    if not probe(f"{initial['triton_url'].rstrip('/')}/v2/health/live", min(1, timeout)):
+        raise ControlError("Triton is not live; gateway restart was not requested")
+    with request_lock(root, deadline):
+        state = read_state(root)
+        identity = (state["supervisor_pid"], state["supervisor_start"])
+        base = int(state["generation"])
+        # Join an automatic restart whose replacement has not passed /health yet.
+        if state["phase"] == "starting" and base > 1:
+            base -= 1
+        request = root / "restart-request"
+        try:
+            started, previous, token = request.read_text().split()
+            if started == identity[1] and token.isalnum() and 0 < int(previous) <= int(state["generation"]):
+                base = int(previous)
+            else:
+                raise ValueError("stale request")
+        except (FileNotFoundError, ValueError):
+            token = secrets.token_hex(16)
+            temporary = root / f".request-{token}"
+            try:
+                with temporary.open("x") as stream:
+                    os.chmod(temporary, 0o600)
+                    stream.write(f"{identity[1]} {base} {token}\n")
+                temporary.replace(request)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    while time.monotonic() < deadline:
+        state = read_state(root)
+        if (state["supervisor_pid"], state["supervisor_start"]) != identity:
+            raise ControlError("gateway supervisor changed while waiting for restart")
+        if (int(state["generation"]) > base and state["phase"] == "running"
+                and gateway_alive(state)):
+            remaining = deadline - time.monotonic()
+            if remaining > 0 and probe(f"http://127.0.0.1:{state['gateway_port']}/health", min(1, remaining)):
+                current = read_state(root)
+                if (current["gateway_start"] == state["gateway_start"]
+                        and current["generation"] == state["generation"]
+                        and current["phase"] == "running" and gateway_alive(current)
+                        and time.monotonic() < deadline):
+                    print(f"gateway restarted: pid={state['gateway_pid']}, generation={state['generation']}, health=ok")
+                    return 0
+        time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+    raise ControlError("timed out waiting for a healthy replacement gateway; the supervisor may still complete the restart")
+
+
+def positive_seconds(value):
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError("timeout must be a positive finite number")
+    return number
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("status", help="report supervisor, gateway and Triton health")
+    command = commands.add_parser("restart", help="replace only the supervised gateway process")
+    command.add_argument("--timeout", type=positive_seconds, default=90,
+                         help="maximum wait in seconds (default: 90); does not cancel a submitted restart")
+    args = parser.parse_args()
+    try:
+        root = runtime_dir()
+        return status(root) if args.command == "status" else restart(root, args.timeout)
+    except (ControlError, OSError) as exc:
+        print(f"triton-gateway: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
