@@ -1,4 +1,5 @@
 import contextlib
+import json
 import os
 from pathlib import Path
 import signal
@@ -19,12 +20,15 @@ def supervisor(tmp_path, *, mode="healthy", grace="0", threshold="2"):
     binary.mkdir()
     uvicorn = binary / "uvicorn"
     uvicorn.write_text('''#!/usr/bin/env python3
-import os, pathlib, signal, time
+import json, os, pathlib, signal, time
 root = pathlib.Path(os.environ["TEST_STATE"])
 starts = root / "starts"
 first = not starts.exists()
 with starts.open("a") as stream:
     stream.write(str(os.getpid()) + "\\n")
+with (root / "gateway-launches.jsonl").open("a") as stream:
+    stream.write(json.dumps({"cwd": str(pathlib.Path.cwd()),
+        "registry_exists": pathlib.Path(os.environ.get("MODELS_ACTIVE_DIR", "missing-models-active")).is_dir()}) + "\\n")
 if first and os.environ["TEST_MODE"] == "crash":
     raise SystemExit(1)
 if first and os.environ["TEST_MODE"] in {"hung", "manual-hung"}:
@@ -622,3 +626,22 @@ def test_manual_restart_joins_automatic_replacement_awaiting_health(tmp_path):
             if caller.poll() is None:
                 caller.terminate()
                 caller.communicate(timeout=3)
+
+
+def test_gateway_preserves_startup_cwd_for_relative_registry_on_restart(tmp_path, monkeypatch):
+    launch_dir = tmp_path / "launch"
+    (launch_dir / "models" / "models-active").mkdir(parents=True)
+    monkeypatch.chdir(launch_dir)
+    monkeypatch.setenv("WATCHER_MODEL_DIR", "models")
+    monkeypatch.setenv("MODELS_ACTIVE_DIR", "models/models-active")
+    with supervisor(tmp_path) as process:
+        path = tmp_path / "gateway-launches.jsonl"
+        wait_for(lambda: path.exists() and path.read_text().endswith("\n"), process)
+        first = json.loads(path.read_text().splitlines()[0])
+        assert first == {"cwd": str(launch_dir), "registry_exists": True}
+        result = control(process, "restart", "--timeout", "8")
+        assert result.returncode == 0, output(result)
+        wait_for(lambda: path.read_text().count("\n") == 2, process)
+        launches = [json.loads(line) for line in path.read_text().splitlines()]
+        assert len(launches) == 2
+        assert launches[1] == {"cwd": str(launch_dir), "registry_exists": True}

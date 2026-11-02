@@ -28,6 +28,7 @@ gateway_supervise() (
     gateway_pid=""
     gateway_start=""
     supervisor_pid=${BASHPID}
+    gateway_work_dir=$(pwd -P)
     run_dir="${GATEWAY_RUN_DIR:-/tmp/triton-gateway-${UID}}"
     [[ "${run_dir}" == /* ]] || run_dir="${PWD}/${run_dir}"
     umask 077
@@ -196,7 +197,11 @@ PY
 
     start_gateway() {
         # The child must not retain either supervisor/control lock after our exit.
-        uvicorn "${uvicorn_args[@]}" 8>&- 9>&- &
+        (
+            trap - EXIT TERM INT
+            cd -- "${gateway_work_dir}" || exit 1
+            exec uvicorn "${uvicorn_args[@]}"
+        ) 8>&- 9>&- &
         gateway_pid=$!
         gateway_start=$(process_start "${gateway_pid}" || true)
         generation=$((generation + 1))
