@@ -22,7 +22,14 @@ class GenerationOnlyModel:
     """Narrow facade; legacy Qwen lifecycle and configuration stay independent."""
 
     def _preflight_model(self, args):
-        config = _checkpoint.read_json(Path(pb_utils.get_model_dir())/'model.json')
+        model_dir = Path(pb_utils.get_model_dir())
+        config = _checkpoint.resolve_repository_config(
+            _checkpoint.read_json(model_dir/'model.json'),
+            model_dir=model_dir,
+            model_name=args.get('model_name'),
+            model_version=args.get('model_version', model_dir.name),
+            active_dir=os.environ.get('MODELS_ACTIVE_DIR', '/tmp/models-active'),
+        )
         self.checkpoint_report = _checkpoint.validate_checkpoint(config)
         if config.get('language_model_only') is not True or config.get('enable_mm_embeds',False) is not False:
             raise ValueError('vllm_deepseek requires language_model_only:true and enable_mm_embeds:false')
@@ -30,7 +37,14 @@ class GenerationOnlyModel:
             raise ValueError('vllm_deepseek requires tokenizer_mode:deepseek_v41')
         if config.get('trust_remote_code',False) is not False:
             raise ValueError('vllm_deepseek requires trust_remote_code:false')
-        _checkpoint.check_runtime()
+        self.checkpoint_report['runtime_report'] = _checkpoint.check_runtime(self.checkpoint_report)
+        self.checkpoint_report['runtime_validation'] = 'checked'
+        self._validated_engine_config = config
+
+    def _load_engine_config(self, engine_args_filepath):
+        # The engine must use exactly the configuration admitted above, even if
+        # the watcher replaces model.json between preflight and initialization.
+        return dict(self._validated_engine_config)
 
     def initialize(self, args):
         self.args = args

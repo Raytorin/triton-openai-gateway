@@ -5,13 +5,15 @@ This example selects the isolated vLLM 0.32 CUDA 12.9 environment; Qwen and BGE
 continue to select their existing backend. Text, reasoning and tools are supported
 by the gateway profile. Media and embedding requests are rejected.
 
-1. Mount a complete immutable local snapshot of `deepseek-ai/DeepSeek-V4.1-Flash`,
-   revision `314113f8a7dadb388215396ba5fbee2c610a04d6`, read-only. Include the complete
+1. Provide a complete snapshot of `deepseek-ai/DeepSeek-V4.1-Flash`, revision
+   `314113f8a7dadb388215396ba5fbee2c610a04d6`, through a read-only immutable local
+   mount or a complete Triton S3 model version directory. Include the complete
    safetensors index/shard set, `config.json`, `tokenizer_config.json`,
    `tokenizer.json` and `chat_template.jinja`. HF snapshot links to local cache
    blobs are supported; mount their targets too. A Git LFS pointer is insufficient.
 2. Copy this directory to the Triton model repository. Edit `1/model.json`'s
-   absolute `model` path to match the snapshot mount. A separate absolute local
+   absolute `model` path to match the snapshot mount, or use the same-model
+   repository aliases described below for S3 loading. A separate absolute local
    `tokenizer` directory is allowed. Relative paths and remote Hub/URI loads are
    rejected, so preflight checks the same root the engine opens. `model_weights`
    does not select the engine's primary weight source. `revision` records supplied
@@ -78,6 +80,85 @@ the engine context and retain the first cause; late factories cannot announce
 READY. A stuck native constructor cannot be killed safely from a Python thread:
 the owning stub/process must be stopped by its supervisor. Bounded cleanup does
 not prove that such a constructor left no resources behind.
+
+## S3 repository loading
+
+Triton downloads an S3 model version before backend initialization. For repository
+loading, `model` and/or `tokenizer` may name `/tmp/models-active/<model-name>` or
+`/tmp/models-active/<model-name>/<version>`. The name and version must match the
+current Triton model. `MODELS_ACTIVE_DIR` selects a different active directory
+when configured. Only exact aliases are accepted; other names/versions, extra
+suffixes, traversal and escaping version-directory symlinks are rejected.
+
+Both the watcher and the DeepSeek backend bind these aliases to the actual
+materialized version directory before checkpoint admission. An existing active
+symlink cannot select an older copy. The backend passes the admitted configuration
+to engine arguments in memory; it does not rewrite checkpoint metadata. The watcher
+atomically repairs its temporary JSON and publishes the active link only after
+structural admission succeeds. Incomplete copies retain their original JSON and
+are retried on later scans. Model and tokenizer are resolved independently;
+explicit external snapshots/tokenizers keep their paths and fail if unavailable.
+
+This avoids an additional manually staged checkpoint for normal S3 loading.
+Keep `DEEPSEEK_CACHE_ARCH=sm90` in the h200 container environment before startup;
+this is not a model.json engine key. S3 path repair and CPU admission do not
+qualify GPU startup, inference, or full-context capacity.
+
+## Checkpoint format and prompt token qualification
+
+Structural admission recognizes `F8_E8M0` (UE8M0) scale tensors as one byte per
+element and reports observed dtypes/counts and the declared quantization profile.
+It still reads only headers; this does not prove that the weights match every
+expected model parameter or fit in memory. `--check-runtime` additionally checks
+native registry membership and CPU decoding of a tiny synthetic UE8M0 tensor
+when that format occurs. Missing or incompatible runtime support is an error.
+No checkpoint tensor payload is used by that probe, and it is not GPU qualification.
+For UE8M0, select `safetensors_load_strategy: "lazy"` explicitly as in this example.
+The runtime probe follows the chosen loader API: lazy uses `safe_open`, eager
+uses byte deserialization. One decoder can support a dtype while another rejects
+it; no fallback silently changes the loading strategy. Unqualified or implicit
+strategies are rejected for UE8M0 until checked separately.
+
+The example pins a specific checkpoint revision. Do not assume a newer
+`DeepSeek-V4.1-Flash-1017` snapshot has the same tokenizer, template or weights.
+Qualify each intended snapshot against its own reviewed reference.
+
+For this example's pinned revision, the repository includes independent prompt
+and token-ID goldens generated offline with its reviewed `encoding/encoding.py`
+and raw tokenizer BPE. The reference records the encoder SHA256, four artifact
+hashes, BOS/EOS/PAD IDs and 16 synthetic requests covering Unicode, thinking
+efforts, history, tools and tool results. The `medium` alias uses the pinned
+template's numeric budget of 62. The reference is operator-reviewed provenance,
+not an authenticity signature.
+
+With the tokenizer/config/template files available locally, run from the checkout:
+
+```sh
+python3 scripts/validate_deepseek_tokenizer.py /models/DeepSeek-V4.1-Flash/1/model.json \
+  --reference tests/fixtures/deepseek/v41-flash/token-reference.json --json
+```
+
+The tool uses the gateway's `TokenizersBackend` and prompt renderer with
+`local_files_only=True` and `trust_remote_code=False`. It neither downloads files
+nor executes the checkpoint encoder. It compares literal expected prompts/token
+IDs, verifies artifact hashes before and after, and returns nonzero on mismatch.
+Reports contain counts and mismatch positions, not conversation text. This checks
+prompt encoding only; it does not run context fitting, inference or GPU kernels.
+The installed script is `/opt/tritonserver/tools/deepseek/validate_deepseek_tokenizer.py`;
+provide the reviewed reference separately when running it in an image.
+
+To include the real-tokenizer parity case in local tests, set
+`DEEPSEEK_TOKENIZER_SNAPSHOT` to the absolute directory containing the four pinned
+artifacts. Without it, that optional test is skipped; the ordinary CPU suite uses
+explicitly synthetic token references. No model weight files are needed.
+
+DeepSeek JSON responses use a separate content parser so literal `<think>`, DSML
+and EOS strings remain JSON data. Normally stopped output must be valid finite
+JSON without duplicate keys (`json_object` also requires an object). A genuine
+engine `length` completion may retain partial JSON. For DeepSeek, structured
+JSON with `tool_choice=required` or a named mandatory tool is rejected before
+inference; optional `auto` and `none` remain available. CPU protocol tests verify
+forwarding and parsing, not enforcement of JSON Schema by a real GPU decoder.
 
 For a local no-weight native failure/exit gate, run inside the optional image:
 

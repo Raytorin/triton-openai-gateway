@@ -30,7 +30,7 @@ def snapshot(tmp_path):
     (root/'model.safetensors.index.json').write_text(json.dumps({'metadata':{'total_size':8},'weight_map':{'a':'a.safetensors','empty':'a.safetensors','scalar':'b.safetensors'}}))
     return root
 
-def validate(root):return helper().validate_checkpoint({'model':str(root)})
+def validate(root,**config):return helper().validate_checkpoint({'model':str(root),**config})
 
 def test_valid_scalar_empty_repeated_mapping(snapshot):
     r=validate(snapshot)
@@ -173,3 +173,186 @@ def test_tiny_shards_never_read_across_actual_payload_boundary(snapshot,monkeypa
         return original(fd,count,offset)
     monkeypatch.setattr(m.os,'pread',headers_only)
     assert m.validate_checkpoint({'model':str(snapshot)})['tensor_payload_bytes']==8
+
+
+def ue8m0_snapshot(snapshot):
+    shard(snapshot/'a.safetensors',{'layer.scale':{'dtype':'F8_E8M0','shape':[2,2],'data_offsets':[0,4]}})
+    (snapshot/'model.safetensors.index.json').write_text(json.dumps({
+        'metadata':{'total_size':8},
+        'weight_map':{'layer.scale':'a.safetensors','scalar':'b.safetensors'}}))
+    return snapshot
+
+
+def test_ue8m0_headers_are_supported_without_claiming_runtime_compatibility(snapshot,monkeypatch):
+    root=ue8m0_snapshot(snapshot)
+    cfg=json.loads((root/'config.json').read_text())
+    cfg['quantization_config']={'quant_method':'fp8','scale_fmt':'ue8m0','weight_block_size':[32,32]}
+    (root/'config.json').write_text(json.dumps(cfg))
+    m=helper();original=m.os.pread
+    boundary=8+struct.unpack('<Q',(root/'a.safetensors').read_bytes()[:8])[0]
+    inode=(root/'a.safetensors').stat().st_ino
+    def headers_only(fd,count,offset):
+        if os.fstat(fd).st_ino==inode:
+            assert offset+count<=boundary,'UE8M0 tensor payload was read'
+        return original(fd,count,offset)
+    monkeypatch.setattr(m.os,'pread',headers_only)
+    report=m.validate_checkpoint({'model':str(root)})
+    assert report['serialized_dtypes']==['F32','F8_E8M0']
+    assert report['tensor_dtype_counts']=={'F32':1,'F8_E8M0':1}
+    assert report['quantization_profile']=={'quant_method':'fp8','scale_fmt':'ue8m0','weight_block_size':[32,32]}
+    assert report['runtime_validation']=='not_checked'
+    assert report['validation_level']=='structural_headers_only'
+    assert report['runtime_format_checks_required']==['F8_E8M0']
+
+
+@pytest.mark.parametrize('dtype,shape,offsets,payload,error',[
+    ('F8_E8M0',[2,2],[0,3],4,'size'),
+    ('F8_E8M0',[2,2],[0,4],3,'payload'),
+    ('F8_E8M0',[2,2],[1,5],5,'gap'),
+    ('F8_E8M0_BOGUS',[2,2],[0,4],4,'dtype'),
+])
+def test_ue8m0_keeps_header_bounds_and_dtype_validation(snapshot,dtype,shape,offsets,payload,error):
+    ue8m0_snapshot(snapshot)
+    shard(snapshot/'a.safetensors',{'layer.scale':{'dtype':dtype,'shape':shape,'data_offsets':offsets}},payload)
+    with pytest.raises(ValueError,match=error):validate(snapshot)
+
+
+def runtime_modules(monkeypatch, *, has_dtype=True, broken_load=False, wrong_dtype=False, probe_paths=None, eager_works=False):
+    from contextlib import contextmanager
+    from types import ModuleType,SimpleNamespace
+    vllm=ModuleType('vllm');vllm.__version__='0.32.0'
+    models=ModuleType('vllm.model_executor.models')
+    models.ModelRegistry=SimpleNamespace(get_supported_archs=lambda:['DeepseekV41ForCausalLM'])
+    registry=ModuleType('vllm.tokenizers.registry')
+    registry.TokenizerRegistry=SimpleNamespace(tokenizers={'deepseek_v41':object()})
+    torch=ModuleType('torch');torch.uint8=object()
+    if has_dtype:torch.float8_e8m0fnu=object()
+    safe=ModuleType('safetensors');safe_torch=ModuleType('safetensors.torch');calls=[]
+    def decode(raw):
+        length,=struct.unpack('<Q',raw[:8]);header=json.loads(raw[8:8+length]);payload=raw[8+length:]
+        assert header=={'scale':{'dtype':'F8_E8M0','shape':[4],'data_offsets':[0,4]}}
+        assert payload==bytes([0,126,127,254])
+        calls.append(payload)
+        if broken_load:raise RuntimeError('unsupported safetensors dtype')
+        return SimpleNamespace(dtype='wrong' if wrong_dtype else torch.float8_e8m0fnu,
+            shape=(4,),device=SimpleNamespace(type='cpu'),
+            view=lambda dtype:SimpleNamespace(tolist=lambda:list(payload)))
+    @contextmanager
+    def safe_open(path, *, framework, device):
+        assert framework=='pt' and device=='cpu'
+        path=Path(path)
+        if probe_paths is not None:probe_paths.append(path)
+        raw=path.read_bytes()
+        def get_tensor(name):
+            assert name=='scale'
+            return decode(raw)
+        yield SimpleNamespace(get_tensor=get_tensor)
+    def eager_load(raw):
+        if not eager_works:raise KeyError('F8_E8M0') # eager can fail while safe_open works
+        return {'scale':decode(raw)}
+    safe_torch.load=eager_load;safe_torch.safe_open=safe_open
+    for name,value in [('vllm',vllm),('vllm.model_executor.models',models),
+            ('vllm.tokenizers.registry',registry),('torch',torch),
+            ('safetensors',safe),('safetensors.torch',safe_torch)]:
+        monkeypatch.setitem(sys.modules,name,value)
+    return calls
+
+
+def test_runtime_ue8m0_probe_checks_actual_serialization_and_keeps_qualification_explicit(snapshot,monkeypatch):
+    report=validate(ue8m0_snapshot(snapshot),safetensors_load_strategy='lazy')
+    paths=[];calls=runtime_modules(monkeypatch,probe_paths=paths)
+    runtime=helper().check_runtime(report)
+    assert calls==[bytes([0,126,127,254])]
+    assert len(paths)==1 and not paths[0].exists()
+    assert not paths[0].parent.exists()
+    assert runtime['serialized_formats']=={'F8_E8M0':'cpu_deserialization_verified'}
+    assert runtime['verified_safetensors_load_strategy']=='lazy'
+    assert report['safetensors_load_strategy']=='lazy'
+    assert runtime['gpu_qualified'] is False
+    assert report['runtime_validation']=='not_checked' # structural report not silently promoted
+
+
+@pytest.mark.parametrize('kwargs',[{'has_dtype':False},{'broken_load':True},{'wrong_dtype':True}])
+def test_runtime_ue8m0_probe_fails_closed(snapshot,monkeypatch,kwargs):
+    report=validate(ue8m0_snapshot(snapshot),safetensors_load_strategy='lazy')
+    paths=[];runtime_modules(monkeypatch,probe_paths=paths,**kwargs)
+    with pytest.raises(RuntimeError,match='F8_E8M0'):
+        helper().check_runtime(report)
+    assert all(not path.exists() and not path.parent.exists() for path in paths)
+
+
+def test_runtime_ue8m0_probe_requires_installed_decoder(snapshot,monkeypatch):
+    report=validate(ue8m0_snapshot(snapshot),safetensors_load_strategy='lazy')
+    runtime_modules(monkeypatch)
+    monkeypatch.setitem(sys.modules,'safetensors.torch',None)
+    with pytest.raises(RuntimeError,match='F8_E8M0'):
+        helper().check_runtime(report)
+
+
+@pytest.mark.parametrize('strategy',[None,'auto','unknown','torchao'])
+def test_runtime_ue8m0_rejects_unqualified_strategy(snapshot,monkeypatch,strategy):
+    report=validate(ue8m0_snapshot(snapshot),safetensors_load_strategy=strategy)
+    calls=runtime_modules(monkeypatch)
+    with pytest.raises(RuntimeError,match='safetensors_load_strategy.*lazy'):
+        helper().check_runtime(report)
+    assert calls==[]
+    assert report['safetensors_load_strategy']==strategy
+
+
+@pytest.mark.parametrize('eager_works',[False,True])
+def test_runtime_ue8m0_eager_checks_the_eager_decoder(snapshot,monkeypatch,eager_works):
+    report=validate(ue8m0_snapshot(snapshot),safetensors_load_strategy='eager')
+    paths=[];calls=runtime_modules(monkeypatch,eager_works=eager_works,probe_paths=paths)
+    if eager_works:
+        runtime=helper().check_runtime(report)
+        assert runtime['verified_safetensors_load_strategy']=='eager'
+        assert calls==[bytes([0,126,127,254])]
+    else:
+        with pytest.raises(RuntimeError,match='F8_E8M0'):
+            helper().check_runtime(report)
+    assert paths==[] # an eager failure must not fall back to lazy deserialization
+
+
+def test_legacy_runtime_registry_check_needs_no_format_probe(snapshot,monkeypatch):
+    calls=runtime_modules(monkeypatch,has_dtype=False)
+    runtime=helper().check_runtime(validate(snapshot))
+    assert calls==[]
+    assert runtime['serialized_formats']=={}
+
+
+def test_structural_ue8m0_cli_never_imports_runtime_or_reads_tensor_payload(snapshot,tmp_path):
+    root=ue8m0_snapshot(snapshot)
+    cfg=tmp_path/'model.json';cfg.write_text(json.dumps({'model':str(root)}))
+    # A separate interpreter makes this assertion independent of pytest imports.
+    code='''import builtins,runpy,sys
+original=builtins.__import__
+def guarded(name,*args,**kwargs):
+    assert name.split('.')[0] not in {'torch','vllm','safetensors'}, 'structural preflight imported a runtime'
+    return original(name,*args,**kwargs)
+builtins.__import__=guarded
+sys.argv=[sys.argv[1],sys.argv[2],'--json']
+runpy.run_path(sys.argv[0],run_name='__main__')
+'''
+    result=subprocess.run([sys.executable,'-c',code,str(ROOT/'scripts/validate_deepseek_checkpoint.py'),str(cfg)],
+        capture_output=True,text=True,timeout=5)
+    assert result.returncode==0,result.stderr
+    report=json.loads(result.stdout)
+    assert report['serialized_dtypes']==['F32','F8_E8M0']
+    assert report['runtime_validation']=='not_checked'
+
+
+def test_nested_quantization_profile_is_reported_without_being_promoted_to_validation(snapshot):
+    config=json.loads((snapshot/'config.json').read_text())
+    config['text_config']={'quantization_config':{'quant_method':'fp8','scale_fmt':'ue8m0'}}
+    (snapshot/'config.json').write_text(json.dumps(config))
+    report=validate(snapshot)
+    assert report['quantization_profile']=={'quant_method':'fp8','scale_fmt':'ue8m0'}
+    assert report['serialized_dtypes']==['BF16','F32']
+    assert report['runtime_format_checks_required']==[]
+
+
+def test_real_cpu_ue8m0_serialization_if_runtime_is_installed():
+    pytest.importorskip('torch')
+    pytest.importorskip('safetensors.torch')
+    # Real dependency qualification, with no model weights or GPU initialization.
+    helper()._check_ue8m0_serialization()

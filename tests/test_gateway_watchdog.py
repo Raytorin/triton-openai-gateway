@@ -1,4 +1,5 @@
 import contextlib
+import json
 import os
 from pathlib import Path
 import signal
@@ -19,12 +20,15 @@ def supervisor(tmp_path, *, mode="healthy", grace="0", threshold="2"):
     binary.mkdir()
     uvicorn = binary / "uvicorn"
     uvicorn.write_text('''#!/usr/bin/env python3
-import os, pathlib, signal, time
+import json, os, pathlib, signal, time
 root = pathlib.Path(os.environ["TEST_STATE"])
 starts = root / "starts"
 first = not starts.exists()
 with starts.open("a") as stream:
     stream.write(str(os.getpid()) + "\\n")
+with (root / "gateway-launches.jsonl").open("a") as stream:
+    stream.write(json.dumps({"cwd": str(pathlib.Path.cwd()),
+        "registry_exists": pathlib.Path(os.environ.get("MODELS_ACTIVE_DIR", "missing-models-active")).is_dir()}) + "\\n")
 if first and os.environ["TEST_MODE"] == "crash":
     raise SystemExit(1)
 if first and os.environ["TEST_MODE"] in {"hung", "manual-hung"}:
@@ -167,6 +171,172 @@ def test_gateway_waits_for_initial_triton_startup(tmp_path):
         previous = probes(tmp_path)
         wait_for(lambda: probes(tmp_path) >= previous + 2, process)
         assert len(starts(tmp_path)) == 1
+
+
+@pytest.mark.parametrize("existing_mode", [None, 0o2770], ids=["inherited-sgid", "fsgroup-remount"])
+def test_supervisor_privatizes_owned_fsgroup_runtime_directory(tmp_path, existing_mode):
+    # Kubernetes fsGroup gives the PVC root SGID and broadens existing directories.
+    tmp_path.chmod(0o2775)
+    run_dir = tmp_path / "run"
+    if existing_mode is not None:
+        run_dir.mkdir(mode=0o700)
+        run_dir.chmod(existing_mode)
+    with supervisor(tmp_path) as process:
+        wait_for(lambda: probes(tmp_path) >= 1, process)
+        assert run_dir.stat().st_mode & 0o7777 == 0o700
+        assert tmp_path.stat().st_mode & 0o7777 == 0o2775
+        result = control(process, "status")
+        assert result.returncode == 0, output(result)
+        old_pid = starts(tmp_path)[0]
+        result = control(process, "restart", "--timeout", "10")
+        assert result.returncode == 0, output(result)
+        assert len(starts(tmp_path)) == 2
+        assert starts(tmp_path)[1] != old_pid
+        assert control(process, "status").returncode == 0
+        assert run_dir.stat().st_mode & 0o7777 == 0o700
+
+
+@pytest.mark.parametrize("directory_kind", ["public", "symlink", "foreign-owner"])
+def test_supervisor_rejects_unsafe_runtime_directory(tmp_path, monkeypatch, directory_kind):
+    run_dir = tmp_path / "run"
+    protected = run_dir
+    if directory_kind == "symlink":
+        protected = tmp_path / "target"
+        protected.mkdir(mode=0o700)
+        run_dir.symlink_to(protected, target_is_directory=True)
+    else:
+        run_dir.mkdir(mode=0o700)
+        if directory_kind == "public":
+            run_dir.chmod(0o777)
+        else:
+            # Exercise the ownership boundary without requiring privileged chown.
+            binary = tmp_path / "foreign-user"
+            binary.mkdir()
+            python = binary / "python3"
+            python.write_text(
+                f"#!{sys.executable}\nimport os, sys\n"
+                f"os.getuid = lambda: {os.getuid() + 1}\n"
+                "sys.argv = sys.argv[1:]\n"
+                "exec(compile(sys.stdin.read(), '<supervisor-permissions>', 'exec'))\n"
+            )
+            python.chmod(0o755)
+            monkeypatch.setenv("PATH", f"{binary}:{os.environ['PATH']}")
+    before = protected.stat().st_mode
+    with supervisor(tmp_path) as process:
+        text, _ = process.communicate(timeout=4)
+        assert process.returncode != 0, text
+        assert "unsafe" in text.lower(), text
+        assert starts(tmp_path) == []
+        assert list(protected.iterdir()) == []
+        assert protected.stat().st_mode == before
+
+
+@pytest.mark.parametrize("entry_kind", ["symlink", "hardlink", "foreign-owner"])
+@pytest.mark.parametrize("lock_name", ["supervisor.lock", "control.lock"])
+def test_supervisor_rejects_unsafe_entries_after_fsgroup_remount(tmp_path, monkeypatch, entry_kind, lock_name):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(mode=0o700)
+    run_dir.chmod(0o2770)
+    protected = tmp_path / "protected"
+    protected.write_bytes(b"must remain intact")
+    entry = run_dir / lock_name
+    if entry_kind == "symlink":
+        entry.symlink_to(protected)
+    elif entry_kind == "hardlink":
+        os.link(protected, entry)
+    else:
+        entry.write_bytes(b"foreign-owned lock")
+        # Keep real filesystem operations; simulate only an entry owned by
+        # another UID because the unprivileged test cannot chown files.
+        binary = tmp_path / "foreign-entry"
+        binary.mkdir()
+        python = binary / "python3"
+        python.write_text(
+            f"#!{sys.executable}\nimport os, sys\n"
+            "original = os.stat\n"
+            "def foreign_stat(path, *args, **kwargs):\n"
+            "    info = original(path, *args, **kwargs)\n"
+            "    if kwargs.get('dir_fd') is not None:\n"
+            "        fields = list(info)\n"
+            "        fields[4] = os.getuid() + 1\n"
+            "        return os.stat_result(fields)\n"
+            "    return info\n"
+            "os.stat = foreign_stat\n"
+            "sys.argv = sys.argv[1:]\n"
+            "exec(compile(sys.stdin.read(), '<supervisor-permissions>', 'exec'))\n"
+        )
+        python.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{binary}:{os.environ['PATH']}")
+    before = protected.read_bytes()
+    entry_before = entry.read_bytes()
+    with supervisor(tmp_path) as process:
+        deadline = time.monotonic() + 3
+        while (process.poll() is None and not starts(tmp_path)
+               and protected.read_bytes() == before and time.monotonic() < deadline):
+            time.sleep(0.02)
+        assert protected.read_bytes() == before, "unsafe lock opening changed its target"
+        assert process.poll() is not None, "supervisor accepted an unsafe existing lock"
+        text, _ = process.communicate(timeout=3)
+        assert process.returncode != 0, text
+        assert "unsafe" in text.lower(), text
+        assert entry.read_bytes() == entry_before
+        assert starts(tmp_path) == []
+        assert sorted(p.name for p in run_dir.iterdir()) == [lock_name]
+
+
+def test_supervisor_writes_stay_in_validated_directory_after_parent_rename(tmp_path, monkeypatch):
+    protected = tmp_path / "protected"
+    protected.write_bytes(b"must remain intact")
+    attacker = tmp_path / "replacement"
+    attacker.mkdir(mode=0o700)
+    (attacker / "control.lock").symlink_to(protected)
+    binary = tmp_path / "rename-on-flock"
+    binary.mkdir()
+    real_flock = shutil.which("flock")
+    flock = binary / "flock"
+    flock.write_text(
+        f"#!{sys.executable}\nimport os, pathlib, sys\n"
+        "root = pathlib.Path(os.environ['TEST_STATE'])\n"
+        "if sys.argv[1:] == ['-n', '9'] and not (root / 'saved-run').exists():\n"
+        "    (root / 'run').rename(root / 'saved-run')\n"
+        "    (root / 'run').symlink_to(root / 'replacement', target_is_directory=True)\n"
+        f"os.execv({real_flock!r}, [{real_flock!r}, *sys.argv[1:]])\n"
+    )
+    flock.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{binary}:{os.environ['PATH']}")
+    with supervisor(tmp_path) as process:
+        wait_for(lambda: probes(tmp_path) >= 1, process)
+        assert protected.read_bytes() == b"must remain intact"
+        assert (tmp_path / "saved-run" / "state").is_file()
+        assert sorted(p.name for p in attacker.iterdir()) == ["control.lock"]
+        # The old public path was replaced; the control client must not trust it.
+        result = control(process, "status")
+        assert result.returncode != 0, output(result)
+        assert "unsafe" in output(result), output(result)
+        assert len(starts(tmp_path)) == 1
+
+
+def test_supervisor_rejects_directory_replaced_by_fifo_without_blocking(tmp_path, monkeypatch):
+    # Interpose exactly before Bash pins the directory, after any pathname
+    # prechecks. Opening the public name here would block indefinitely on FIFO.
+    injection = tmp_path / "replace-before-open.sh"
+    injection.write_text("""set -T
+trap 'if [[ "$BASH_COMMAND" == "exec 7<"* && ! -e "$TEST_STATE/saved-run" ]]; then
+    mv -- "$GATEWAY_RUN_DIR" "$TEST_STATE/saved-run"
+    mkfifo -- "$GATEWAY_RUN_DIR"
+fi' DEBUG
+""")
+    monkeypatch.setenv("BASH_ENV", str(injection))
+    with supervisor(tmp_path) as process:
+        try:
+            text, _ = process.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            pytest.fail("supervisor blocked opening a directory replaced by FIFO")
+        assert process.returncode != 0, text
+        assert "unsafe" in text.lower(), text
+        assert (tmp_path / "saved-run").is_dir()
+        assert list((tmp_path / "saved-run").iterdir()) == []
+        assert starts(tmp_path) == []
 
 
 def test_status_reports_healthy_gateway_and_triton(tmp_path):
@@ -456,3 +626,22 @@ def test_manual_restart_joins_automatic_replacement_awaiting_health(tmp_path):
             if caller.poll() is None:
                 caller.terminate()
                 caller.communicate(timeout=3)
+
+
+def test_gateway_preserves_startup_cwd_for_relative_registry_on_restart(tmp_path, monkeypatch):
+    launch_dir = tmp_path / "launch"
+    (launch_dir / "models" / "models-active").mkdir(parents=True)
+    monkeypatch.chdir(launch_dir)
+    monkeypatch.setenv("WATCHER_MODEL_DIR", "models")
+    monkeypatch.setenv("MODELS_ACTIVE_DIR", "models/models-active")
+    with supervisor(tmp_path) as process:
+        path = tmp_path / "gateway-launches.jsonl"
+        wait_for(lambda: path.exists() and path.read_text().endswith("\n"), process)
+        first = json.loads(path.read_text().splitlines()[0])
+        assert first == {"cwd": str(launch_dir), "registry_exists": True}
+        result = control(process, "restart", "--timeout", "8")
+        assert result.returncode == 0, output(result)
+        wait_for(lambda: path.read_text().count("\n") == 2, process)
+        launches = [json.loads(line) for line in path.read_text().splitlines()]
+        assert len(launches) == 2
+        assert launches[1] == {"cwd": str(launch_dir), "registry_exists": True}
