@@ -29,12 +29,62 @@ gateway_supervise() (
     gateway_start=""
     supervisor_pid=${BASHPID}
     run_dir="${GATEWAY_RUN_DIR:-/tmp/triton-gateway-${UID}}"
+    [[ "${run_dir}" == /* ]] || run_dir="${PWD}/${run_dir}"
     umask 077
+    # SGID PVC roots give new directories mode 2700; fsGroup remounts can
+    # broaden an existing private directory to 2770. Keep the opened directory
+    # pinned until all later control-file operations are anchored to its inode.
     mkdir -m 700 -- "${run_dir}" 2>/dev/null || true
-    if [[ ! -d "${run_dir}" || -L "${run_dir}" || ! -O "${run_dir}" ]] || [[ "$(stat -c %a -- "${run_dir}")" != 700 ]]; then
-        echo "unsafe gateway supervisor runtime directory: expected an owned directory with mode 0700" >&2
+    # chdir accepts directories only, so a concurrent replacement with a FIFO
+    # cannot block the subsequent descriptor open. Python verifies the pinned
+    # inode against the original absolute pathname before changing permissions.
+    if [[ ! -d "${run_dir}" || -L "${run_dir}" || ! -O "${run_dir}" ]] \
+            || ! builtin cd -P -- "${run_dir}" || ! exec 7<.; then
+        echo "unsafe gateway supervisor runtime directory: expected an owned directory" >&2
         exit 1
     fi
+    if ! python3 - "${run_dir}" <<'PY'
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+descriptor = 7
+try:
+    before = os.fstat(descriptor)
+    current = os.stat(path, follow_symlinks=False)
+    if (not stat.S_ISDIR(before.st_mode) or not stat.S_ISDIR(current.st_mode)
+            or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)
+            or before.st_uid != os.getuid()
+            or stat.S_IMODE(before.st_mode) not in (0o700, 0o2700, 0o2770)):
+        raise ValueError("unexpected owner, permissions or directory identity")
+    if stat.S_IMODE(before.st_mode) != 0o700:
+        os.fchmod(descriptor, 0o700)
+    # A previous fsGroup remount may have exposed existing files to group writes.
+    # Revoke directory access before inspecting entries, without following links.
+    for name in os.listdir(descriptor):
+        entry = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        if (not stat.S_ISREG(entry.st_mode) or entry.st_uid != os.getuid()
+                or entry.st_nlink != 1):
+            raise ValueError("unsafe existing runtime directory entry")
+    current = os.stat(path, follow_symlinks=False)
+    if (not stat.S_ISDIR(current.st_mode)
+            or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)
+            or current.st_uid != os.getuid()
+            or stat.S_IMODE(current.st_mode) != 0o700):
+        raise ValueError("runtime directory changed during preparation")
+except (OSError, ValueError) as error:
+    print(f"unsafe gateway supervisor runtime directory: {error}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+    then
+        exec 7<&-
+        exit 1
+    fi
+    # /tmp itself may be group-writable without the sticky bit. The working
+    # directory pins the verified inode even if its public name is replaced.
+    run_dir=.
+    exec 7<&-
     # Never unlink the lock file: another hook must lock the same inode.
     if ! command -v flock >/dev/null; then
         echo "gateway supervisor requires flock" >&2
