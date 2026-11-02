@@ -266,6 +266,10 @@ class TritonPythonModel:
             supported_tasks=sorted(str(task) for task in self.supported_tasks),
         )
 
+    def _load_engine_config(self, engine_args_filepath):
+        with open(engine_args_filepath) as file:
+            return json.load(file)
+
     def _init_engine_args(self):
         # Currently, Triton needs to use decoupled policy for asynchronously
         # forwarding requests to vLLM engine, so assert it.
@@ -282,8 +286,7 @@ class TritonPythonModel:
         assert os.path.isfile(
             engine_args_filepath
         ), f"'{_VLLM_ENGINE_ARGS_FILENAME}' containing vllm engine args must be provided in '{pb_utils.get_model_dir()}'"
-        with open(engine_args_filepath) as file:
-            self.vllm_engine_config = json.load(file)
+        self.vllm_engine_config = self._load_engine_config(engine_args_filepath)
         self.pooling_model_metadata = load_pooling_model_metadata(
             self.vllm_engine_config,
             model_dir=pb_utils.get_model_dir(),

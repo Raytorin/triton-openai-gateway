@@ -139,8 +139,12 @@ sync_model_json() {
   local backend
   prepare_model_backend "${target_dir}" || return 1
   backend="${MODEL_BACKEND}"
+  local model_name=""
+  if [[ "${backend}" == "vllm_deepseek" ]]; then
+    model_name="$(resolve_model_name "${target_dir}")" || return 1
+  fi
 
-  if python3 - "${model_file}" "${target_dir}" "${WATCHER_SOURCE_ROOT}" "${backend}" <<'PY'
+  if python3 - "${model_file}" "${target_dir}" "${WATCHER_SOURCE_ROOT}" "${backend}" "${model_name}" "${MODELS_ACTIVE_DIR}" <<'PY'
 import importlib.util
 import json
 import os
@@ -152,6 +156,7 @@ import tempfile
 
 file_path, target_dir, source_root = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
 backend = sys.argv[4]
+model_name, active_dir = sys.argv[5:]
 model_path = str(target_dir)
 changed = False
 
@@ -167,8 +172,14 @@ try:
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         data = module.read_json(file_path)
-        module.validate_checkpoint(data)
-        # Validate exactly the root passed to vLLM. No writes to weight snapshots.
+        resolved = module.resolve_repository_config(
+            data, model_dir=target_dir, model_name=model_name,
+            model_version=target_dir.name, active_dir=active_dir,
+        )
+        module.validate_checkpoint(resolved)
+        # Publish only after the complete downloaded checkpoint passes admission.
+        changed = resolved != data
+        data = resolved
         model_path = data['model']
     else:
         fd = os.open(file_path, os.O_RDONLY | os.O_NOFOLLOW)

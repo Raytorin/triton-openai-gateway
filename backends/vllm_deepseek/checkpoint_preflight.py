@@ -126,6 +126,49 @@ def _local_root(value, name):
         raise ValueError(f'{name}: invalid snapshot directory {value}: {error}') from error
 
 
+
+def resolve_repository_config(engine_config, *, model_dir, model_name, model_version,
+                              active_dir='/tmp/models-active'):
+    """Bind same-model repository aliases before following their mutable links.
+
+    External snapshots remain explicit, including missing ones: strict admission
+    must report their error instead of silently selecting repository weights.
+    Only the downloaded version directory can replace an active-repository alias.
+    """
+    if not isinstance(engine_config, dict):
+        raise ValueError('engine configuration must be an object')
+    result = dict(engine_config)
+    namespace = Path(active_dir)
+    namespace_text = str(namespace)
+    # POSIX normpath retains two leading slashes; namespace membership must
+    # still catch them before the exact original alias is checked below.
+    aliases = [key for key in ('model', 'tokenizer')
+               if isinstance(result.get(key), str)
+               and any(value == namespace_text or value.startswith(namespace_text + '/')
+                       for value in (result[key], os.path.normpath(result[key]).replace('//', '/', 1)))]
+    if not aliases:
+        return result
+    if (not namespace.is_absolute() or '..' in namespace.parts
+            or not isinstance(model_name, str) or model_name in ('', '.', '..')
+            or any(char in model_name for char in ('/', '\\', '\x00'))):
+        raise ValueError('repository alias requires an absolute active directory and a single model name')
+    if (not isinstance(model_version, str) or not model_version.isascii()
+            or not model_version.isdigit()):
+        raise ValueError('repository alias requires a numeric model version')
+    version = Path(model_dir)
+    if (not version.is_absolute() or version.name != model_version
+            or '..' in version.parts):
+        raise ValueError('repository version does not match the materialized model directory')
+    actual = _local_root(str(version), 'model_dir')
+    if actual != version:
+        raise ValueError('materialized model directory must not escape through symlinks')
+    accepted = {str(namespace / model_name), str(namespace / model_name / model_version)}
+    for key in aliases:
+        if result[key] not in accepted:
+            raise ValueError(f'{key}: repository alias does not match this model/version')
+        result[key] = str(actual)
+    return result
+
 def _shard_name(value):
     if (not isinstance(value, str) or not value.endswith('.safetensors')
             or '\\' in value or '\x00' in value or ':' in value

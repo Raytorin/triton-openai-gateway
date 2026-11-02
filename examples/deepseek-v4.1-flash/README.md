@@ -5,13 +5,15 @@ This example selects the isolated vLLM 0.32 CUDA 12.9 environment; Qwen and BGE
 continue to select their existing backend. Text, reasoning and tools are supported
 by the gateway profile. Media and embedding requests are rejected.
 
-1. Mount a complete immutable local snapshot of `deepseek-ai/DeepSeek-V4.1-Flash`,
-   revision `314113f8a7dadb388215396ba5fbee2c610a04d6`, read-only. Include the complete
+1. Provide a complete snapshot of `deepseek-ai/DeepSeek-V4.1-Flash`, revision
+   `314113f8a7dadb388215396ba5fbee2c610a04d6`, through a read-only immutable local
+   mount or a complete Triton S3 model version directory. Include the complete
    safetensors index/shard set, `config.json`, `tokenizer_config.json`,
    `tokenizer.json` and `chat_template.jinja`. HF snapshot links to local cache
    blobs are supported; mount their targets too. A Git LFS pointer is insufficient.
 2. Copy this directory to the Triton model repository. Edit `1/model.json`'s
-   absolute `model` path to match the snapshot mount. A separate absolute local
+   absolute `model` path to match the snapshot mount, or use the same-model
+   repository aliases described below for S3 loading. A separate absolute local
    `tokenizer` directory is allowed. Relative paths and remote Hub/URI loads are
    rejected, so preflight checks the same root the engine opens. `model_weights`
    does not select the engine's primary weight source. `revision` records supplied
@@ -78,6 +80,29 @@ the engine context and retain the first cause; late factories cannot announce
 READY. A stuck native constructor cannot be killed safely from a Python thread:
 the owning stub/process must be stopped by its supervisor. Bounded cleanup does
 not prove that such a constructor left no resources behind.
+
+## S3 repository loading
+
+Triton downloads an S3 model version before backend initialization. For repository
+loading, `model` and/or `tokenizer` may name `/tmp/models-active/<model-name>` or
+`/tmp/models-active/<model-name>/<version>`. The name and version must match the
+current Triton model. `MODELS_ACTIVE_DIR` selects a different active directory
+when configured. Only exact aliases are accepted; other names/versions, extra
+suffixes, traversal and escaping version-directory symlinks are rejected.
+
+Both the watcher and the DeepSeek backend bind these aliases to the actual
+materialized version directory before checkpoint admission. An existing active
+symlink cannot select an older copy. The backend passes the admitted configuration
+to engine arguments in memory; it does not rewrite checkpoint metadata. The watcher
+atomically repairs its temporary JSON and publishes the active link only after
+structural admission succeeds. Incomplete copies retain their original JSON and
+are retried on later scans. Model and tokenizer are resolved independently;
+explicit external snapshots/tokenizers keep their paths and fail if unavailable.
+
+This avoids an additional manually staged checkpoint for normal S3 loading.
+Keep `DEEPSEEK_CACHE_ARCH=sm90` in the h200 container environment before startup;
+this is not a model.json engine key. S3 path repair and CPU admission do not
+qualify GPU startup, inference, or full-context capacity.
 
 ## Checkpoint format and prompt token qualification
 
