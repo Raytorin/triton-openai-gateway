@@ -79,6 +79,62 @@ READY. A stuck native constructor cannot be killed safely from a Python thread:
 the owning stub/process must be stopped by its supervisor. Bounded cleanup does
 not prove that such a constructor left no resources behind.
 
+## Checkpoint format and prompt token qualification
+
+Structural admission recognizes `F8_E8M0` (UE8M0) scale tensors as one byte per
+element and reports observed dtypes/counts and the declared quantization profile.
+It still reads only headers; this does not prove that the weights match every
+expected model parameter or fit in memory. `--check-runtime` additionally checks
+native registry membership and CPU decoding of a tiny synthetic UE8M0 tensor
+when that format occurs. Missing or incompatible runtime support is an error.
+No checkpoint tensor payload is used by that probe, and it is not GPU qualification.
+For UE8M0, select `safetensors_load_strategy: "lazy"` explicitly as in this example.
+The runtime probe follows the chosen loader API: lazy uses `safe_open`, eager
+uses byte deserialization. One decoder can support a dtype while another rejects
+it; no fallback silently changes the loading strategy. Unqualified or implicit
+strategies are rejected for UE8M0 until checked separately.
+
+The example pins a specific checkpoint revision. Do not assume a newer
+`DeepSeek-V4.1-Flash-1017` snapshot has the same tokenizer, template or weights.
+Qualify each intended snapshot against its own reviewed reference.
+
+For this example's pinned revision, the repository includes independent prompt
+and token-ID goldens generated offline with its reviewed `encoding/encoding.py`
+and raw tokenizer BPE. The reference records the encoder SHA256, four artifact
+hashes, BOS/EOS/PAD IDs and 16 synthetic requests covering Unicode, thinking
+efforts, history, tools and tool results. The `medium` alias uses the pinned
+template's numeric budget of 62. The reference is operator-reviewed provenance,
+not an authenticity signature.
+
+With the tokenizer/config/template files available locally, run from the checkout:
+
+```sh
+python3 scripts/validate_deepseek_tokenizer.py /models/DeepSeek-V4.1-Flash/1/model.json \
+  --reference tests/fixtures/deepseek/v41-flash/token-reference.json --json
+```
+
+The tool uses the gateway's `TokenizersBackend` and prompt renderer with
+`local_files_only=True` and `trust_remote_code=False`. It neither downloads files
+nor executes the checkpoint encoder. It compares literal expected prompts/token
+IDs, verifies artifact hashes before and after, and returns nonzero on mismatch.
+Reports contain counts and mismatch positions, not conversation text. This checks
+prompt encoding only; it does not run context fitting, inference or GPU kernels.
+The installed script is `/opt/tritonserver/tools/deepseek/validate_deepseek_tokenizer.py`;
+provide the reviewed reference separately when running it in an image.
+
+To include the real-tokenizer parity case in local tests, set
+`DEEPSEEK_TOKENIZER_SNAPSHOT` to the absolute directory containing the four pinned
+artifacts. Without it, that optional test is skipped; the ordinary CPU suite uses
+explicitly synthetic token references. No model weight files are needed.
+
+DeepSeek JSON responses use a separate content parser so literal `<think>`, DSML
+and EOS strings remain JSON data. Normally stopped output must be valid finite
+JSON without duplicate keys (`json_object` also requires an object). A genuine
+engine `length` completion may retain partial JSON. For DeepSeek, structured
+JSON with `tool_choice=required` or a named mandatory tool is rejected before
+inference; optional `auto` and `none` remain available. CPU protocol tests verify
+forwarding and parsing, not enforcement of JSON Schema by a real GPU decoder.
+
 For a local no-weight native failure/exit gate, run inside the optional image:
 
 ```sh

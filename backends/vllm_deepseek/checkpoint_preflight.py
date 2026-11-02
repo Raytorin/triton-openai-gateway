@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Bounded, stdlib-only local checkpoint admission. Never reads tensor payloads.
+"""Bounded, stdlib-only local admission. Never reads checkpoint tensor payloads.
 
 This checks serialization structure, not hashes, GPU capacity or Triton READY.
 Snapshot paths may be HF cache symlinks; publish immutable snapshots because the
@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import stat
 import struct
+from tempfile import TemporaryDirectory
 
 INDEX_LIMIT = 32 * 1024**2
 CONFIG_LIMIT = 2 * 1024**2
@@ -20,7 +21,7 @@ SHARD_LIMIT = 4096
 TENSOR_LIMIT = 1_000_000
 DEPTH_LIMIT = 64
 LFS = b'version https://git-lfs.github.com/spec/v1'
-DTYPE_BITS = {'BOOL':8, 'U8':8, 'I8':8, 'F8_E4M3':8, 'F8_E5M2':8,
+DTYPE_BITS = {'BOOL':8, 'U8':8, 'I8':8, 'F8_E4M3':8, 'F8_E5M2':8, 'F8_E8M0':8,
               'I16':16, 'U16':16, 'F16':16, 'BF16':16,
               'I32':32, 'U32':32, 'F32':32, 'I64':64, 'U64':64, 'F64':64}
 ARCHITECTURE = 'DeepseekV41ForCausalLM'
@@ -147,7 +148,7 @@ def _validate_header(path, descriptor, info):
         raise ValueError(f'{path}: truncated safetensors header')
     header = _parse(raw, path)
     payload = info.st_size - 8 - length
-    spans, names = [], set()
+    spans, names, dtype_counts = [], set(), {}
     for name, tensor in header.items():
         if name == '__metadata__':
             if not isinstance(tensor, dict) or not all(isinstance(k,str) and isinstance(v,str) for k,v in tensor.items()):
@@ -177,6 +178,7 @@ def _validate_header(path, descriptor, info):
         if bits % 8 or end-start != bits//8:
             raise ValueError(f'{path}: serialized tensor size mismatch for {name}')
         names.add(name); spans.append((start,end))
+        dtype_counts[dtype] = dtype_counts.get(dtype,0)+1
         if len(names)>TENSOR_LIMIT:
             raise ValueError(f'{path}: tensor count exceeds local limit {TENSOR_LIMIT}')
     cursor = 0
@@ -187,7 +189,7 @@ def _validate_header(path, descriptor, info):
         cursor = end
     if cursor != payload:
         raise ValueError(f'{path}: incomplete tensor coverage of payload')
-    return names, payload
+    return names, payload, dtype_counts
 
 
 def validate_runtime_registries(architectures, tokenizers, version):
@@ -198,11 +200,75 @@ def validate_runtime_registries(architectures, tokenizers, version):
         raise ValueError(f'vLLM {version}: missing tokenizer registration deepseek_v41')
 
 
-def check_runtime():
+def _check_ue8m0_serialization(strategy='lazy'):
+    """Read a four-byte synthetic tensor on CPU, never checkpoint payloads.
+
+    The pinned vLLM DeepSeek V4.1 loader handles torch.float8_e8m0fnu scales.
+    Membership in its model registry alone cannot establish that the installed
+    Torch/safetensors pair can deserialize their on-disk representation using
+    the selected vLLM loader path. lazy uses safe_open; eager uses load(bytes).
+    This is a serialization capability check, not model/GPU qualification.
+    """
+    try:
+        if strategy not in ('lazy','eager'):
+            raise ValueError(f'unqualified safetensors_load_strategy {strategy!r}; '
+                "set safetensors_load_strategy='lazy' explicitly for UE8M0")
+        import torch
+        dtype = getattr(torch,'float8_e8m0fnu',None)
+        if dtype is None:
+            raise ValueError('Torch has no float8_e8m0fnu dtype')
+        values = bytes([0,126,127,254])
+        header = json.dumps({'scale':{'dtype':'F8_E8M0','shape':[4],
+            'data_offsets':[0,4]}},separators=(',',':')).encode()
+        header += b' '*((-len(header))%8)
+        raw = struct.pack('<Q',len(header))+header+values
+        def verify(tensor):
+            if (tensor.dtype != dtype or tuple(tensor.shape)!=(4,)
+                    or tensor.device.type!='cpu'
+                    or tensor.view(torch.uint8).tolist()!=list(values)):
+                raise ValueError('deserialization changed UE8M0 dtype, shape, device or bytes')
+        if strategy=='eager':
+            from safetensors.torch import load
+            verify(load(raw)['scale'])
+        else:
+            from safetensors.torch import safe_open
+            with TemporaryDirectory(prefix='deepseek-ue8m0-') as directory:
+                path = Path(directory)/'scale.safetensors'
+                path.write_bytes(raw)
+                with safe_open(str(path),framework='pt',device='cpu') as tensors:
+                    verify(tensors.get_tensor('scale'))
+    except Exception as error:
+        raise RuntimeError(f'runtime cannot deserialize F8_E8M0 (UE8M0) scales: {error}') from error
+
+
+def check_runtime(checkpoint_report=None):
     import vllm
     from vllm.model_executor.models import ModelRegistry
     from vllm.tokenizers.registry import TokenizerRegistry
     validate_runtime_registries(ModelRegistry.get_supported_archs(), TokenizerRegistry.tokenizers, vllm.__version__)
+    formats = {}
+    strategy = None
+    if checkpoint_report is not None and 'F8_E8M0' in checkpoint_report.get('serialized_dtypes',()):
+        strategy = checkpoint_report.get('safetensors_load_strategy')
+        _check_ue8m0_serialization(strategy)
+        formats['F8_E8M0'] = 'cpu_deserialization_verified'
+    return {'vllm_version':vllm.__version__,'registry_membership_verified':True,
+            'serialized_formats':formats,'verified_safetensors_load_strategy':strategy,
+            'semantic_weights_verified':False,'gpu_qualified':False}
+
+
+def _quantization_profile(config):
+    """Describe declared quantization without asserting an engine-specific layout."""
+    text = config.get('text_config')
+    profile = config.get('quantization_config')
+    if profile is None and isinstance(text,dict):
+        profile = text.get('quantization_config')
+    if profile is None:
+        return {}
+    if not isinstance(profile,dict):
+        raise ValueError('quantization_config must be an object')
+    keys = ('quant_method','fmt','scale_fmt','activation_scheme','weight_block_size')
+    return {key:profile[key] for key in keys if key in profile}
 
 
 def validate_checkpoint(engine_config):
@@ -217,6 +283,7 @@ def validate_checkpoint(engine_config):
         raise ValueError(f'{root}/config.json: model_type must be deepseek_v41')
     if config.get('architectures') != [ARCHITECTURE]:
         raise ValueError(f'{root}/config.json: architectures must contain only {ARCHITECTURE}')
+    quantization_profile = _quantization_profile(config)
     tokenizer_root = _local_root(engine_config.get('tokenizer',str(root)), 'tokenizer')
     read_json(tokenizer_root/'tokenizer_config.json')
     for name in ('tokenizer.json','chat_template.jinja'):
@@ -236,7 +303,7 @@ def validate_checkpoint(engine_config):
         expected.setdefault(_shard_name(filename),set()).add(name)
     if len(expected)>SHARD_LIMIT:
         raise ValueError(f'index shard count exceeds local limit {SHARD_LIMIT}')
-    seen, all_names = set(), set()
+    seen, all_names, dtype_counts = set(), set(), {}
     serialized, allocated, payload_bytes, largest = 0, 0, 0, 0
     for filename in sorted(expected):
         path = root/filename
@@ -245,12 +312,14 @@ def validate_checkpoint(engine_config):
             if identity in seen:
                 raise ValueError(f'{path}: duplicate shard alias')
             seen.add(identity)
-            names,payload = _validate_header(path,descriptor,info)
+            names,payload,shard_dtypes = _validate_header(path,descriptor,info)
             if names != expected[filename]:
                 raise ValueError(f'{path}: indexed tensor closure mismatch (missing/extra/misassigned tensor)')
             if all_names.intersection(names):
                 raise ValueError(f'{path}: duplicate tensor across shards')
             all_names.update(names)
+            for dtype,count in shard_dtypes.items():
+                dtype_counts[dtype] = dtype_counts.get(dtype,0)+count
             serialized += info.st_size; allocated += info.st_blocks*512
             payload_bytes += payload; largest = max(largest,info.st_size)
     metadata = index.get('metadata',{})
@@ -264,6 +333,12 @@ def validate_checkpoint(engine_config):
             'tensor_payload_bytes':payload_bytes, 'serialized_bytes':serialized,
             'allocated_bytes':allocated, 'largest_shard_bytes':largest,
             'validation_level':'structural_headers_only',
+            'serialized_dtypes':sorted(dtype_counts),
+            'tensor_dtype_counts':dict(sorted(dtype_counts.items())),
+            'quantization_profile':quantization_profile,
+            'safetensors_load_strategy':engine_config.get('safetensors_load_strategy'),
+            'runtime_validation':'not_checked',
+            'runtime_format_checks_required':['F8_E8M0'] if 'F8_E8M0' in dtype_counts else [],
             'supplied_revision':engine_config.get('revision'),
             'limits':{'index_bytes':INDEX_LIMIT,'header_bytes':HEADER_LIMIT,
                       'shards':SHARD_LIMIT,'tensors':TENSOR_LIMIT}}

@@ -30,7 +30,8 @@ class GenerationOnlyModel:
             raise ValueError('vllm_deepseek requires tokenizer_mode:deepseek_v41')
         if config.get('trust_remote_code',False) is not False:
             raise ValueError('vllm_deepseek requires trust_remote_code:false')
-        _checkpoint.check_runtime()
+        self.checkpoint_report['runtime_report'] = _checkpoint.check_runtime(self.checkpoint_report)
+        self.checkpoint_report['runtime_validation'] = 'checked'
 
     def initialize(self, args):
         self.args = args

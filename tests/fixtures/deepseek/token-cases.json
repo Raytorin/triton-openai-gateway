@@ -1,0 +1,41 @@
+{
+  "description": "Synthetic tokenizer unit cases, not official DeepSeek token IDs or GPU qualification.",
+  "cases": [
+    {
+      "name": "chat-off",
+      "request": {"messages": [{"role": "user", "content": "hello"}], "chat_template_kwargs": {"enable_thinking": false}},
+      "expected_prompt": "<｜begin▁of▁sentence｜><｜User｜>hello<｜Assistant｜></think>",
+      "expected_token_ids": [0, 3, 10, 4, 7]
+    },
+    {
+      "name": "unicode-off",
+      "request": {"messages": [{"role": "user", "content": "Привет 👋"}], "chat_template_kwargs": {"enable_thinking": false}},
+      "expected_prompt": "<｜begin▁of▁sentence｜><｜User｜>Привет 👋<｜Assistant｜></think>",
+      "expected_token_ids": [0, 3, 14, 4, 7]
+    },
+    {
+      "name": "text-block-off",
+      "request": {"messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}], "chat_template_kwargs": {"enable_thinking": false}},
+      "expected_prompt": "<｜begin▁of▁sentence｜><｜User｜>hello<｜Assistant｜></think>",
+      "expected_token_ids": [0, 3, 10, 4, 7]
+    },
+    {
+      "name": "separate-system-and-developer",
+      "request": {"messages": [{"role": "system", "content": "a"}, {"role": "developer", "content": "b"}, {"role": "user", "content": "hello"}], "chat_template_kwargs": {"enable_thinking": false}},
+      "expected_prompt": "<｜begin▁of▁sentence｜><｜System｜>a<｜System｜>b<｜User｜>hello<｜Assistant｜></think>",
+      "expected_token_ids": [0, 5, 19, 5, 20, 3, 10, 4, 7]
+    },
+    {
+      "name": "thinking-low",
+      "request": {"messages": [{"role": "user", "content": "hello"}], "chat_template_kwargs": {"enable_thinking": true}, "reasoning_effort": "low"},
+      "expected_prompt": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 50 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>hello<｜Assistant｜><think>",
+      "expected_token_ids": [0, 5, 11, 12, 13, 3, 10, 4, 6]
+    },
+    {
+      "name": "thinking-max",
+      "request": {"messages": [{"role": "user", "content": "hello"}], "chat_template_kwargs": {"enable_thinking": true}, "reasoning_effort": "max"},
+      "expected_prompt": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 100 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>hello<｜Assistant｜><think>",
+      "expected_token_ids": [0, 5, 11, 18, 13, 3, 10, 4, 6]
+    }
+  ]
+}
