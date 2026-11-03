@@ -143,15 +143,15 @@ class ObservabilityTests(unittest.TestCase):
         )
         record.event = "request.failed"
         record.request_id = "request-1"
-        record.model = "Qwen3-6-35B-A3B-FP8"
+        record.model = "fixture-model"
         record.error = "invalid=value"
 
         rendered = CefFormatter().format(record)
 
-        self.assertTrue(rendered.startswith("CEF:0|ML Platform AI|"))
+        self.assertTrue(rendered.startswith("CEF:0|Triton OpenAI Gateway|"))
         self.assertIn("|request.failed|failed \\| retry|8|", rendered)
         self.assertIn("request_id=request-1", rendered)
-        self.assertIn("model=Qwen3-6-35B-A3B-FP8", rendered)
+        self.assertIn("model=fixture-model", rendered)
         self.assertIn("error=invalid\\=value", rendered)
 
     def test_completed_request_keeps_model_and_uses_warning_for_4xx(self):
