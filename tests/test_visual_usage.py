@@ -216,6 +216,8 @@ def test_auxiliary_visual_summary_preserves_origin_and_scope(monkeypatch):
         finish_visual_call(call, 'success')
         return 'summary'
     monkeypatch.setattr('gateway.triton_client.call_triton_multimodal', generate)
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr('gateway.triton_client._supports_media_parameters', AsyncMock(return_value=True))
     token = start_generation_telemetry('id', '/chat', time.monotonic())
     try:
         result = asyncio.run(vllm_media._generate_visual_summary('m', object(), [

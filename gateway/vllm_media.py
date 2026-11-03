@@ -15,6 +15,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+import anyio
+
 from .media_preprocessing import (
     VisualItem,
     VllmMediaProcessingError,
@@ -399,7 +401,28 @@ async def _summarize_visual_items(
                 settings,
             )
 
-    groups = await asyncio.gather(*(summarize(chunk) for chunk in chunks))
+    tasks = [asyncio.create_task(summarize(chunk)) for chunk in chunks]
+    batch = asyncio.gather(*tasks)
+    try:
+        groups = await asyncio.shield(batch)
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        drained = asyncio.gather(*tasks, return_exceptions=True)
+        interrupted = False
+        # Shield cleanup from both AnyIO cancel scopes and repeated task.cancel().
+        # Request accounting must wait for every locally owned transport to close.
+        with anyio.CancelScope(shield=True):
+            while not drained.done():
+                try:
+                    await asyncio.shield(drained)
+                except asyncio.CancelledError:
+                    interrupted = True
+        if batch.done() and not batch.cancelled():
+            batch.exception()
+        if interrupted:
+            raise asyncio.CancelledError()
     return [summary for group in groups for summary in group]
 
 
@@ -465,7 +488,7 @@ async def _generate_visual_summary(
 ) -> str:
     from .prompt import render_chat_prompt
     from .sanitizer import sanitize_generated_text, strip_prompt_echo
-    from .triton_client import call_triton_multimodal
+    from .triton_client import call_triton_multimodal, _supports_media_parameters
 
     content: list[dict[str, Any]] = [
         {
@@ -494,10 +517,12 @@ async def _generate_visual_summary(
         {"role": "user", "content": content},
     ]
     prompt = render_chat_prompt(tokenizer, chunk_conversation)
-    media = MediaPayloads(
-        images=[MediaPayload(item.data, item.mime_type, source_kind=item.source_kind) for item in items],
-        videos=[], audios=[], pdfs=[], order=["image"] * len(items),
-    )
+    media = None
+    if await _supports_media_parameters(model_name):
+        media = MediaPayloads(
+            images=[MediaPayload(item.data, item.mime_type, source_kind=item.source_kind) for item in items],
+            videos=[], audios=[], pdfs=[], order=["image"] * len(items),
+        )
     with visual_usage_scope("preprocessing"):
         generated = await call_triton_multimodal(
             model_name,

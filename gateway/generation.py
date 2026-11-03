@@ -97,7 +97,14 @@ async def generate(request: ChatCompletionRequest, *, context_mode: str | None =
         from .deepseek import validate_request
         from .deepseek_vision import load_vision_policy, validate_media
         validate_request(request)
-        validate_media(load_vision_policy(model_path), extract_media_payloads(conversation))
+        # Opt-in and modality admission apply to the input as supplied. The
+        # per-prompt image count applies only after history/context selection.
+        vision_policy = load_vision_policy(model_path)
+        validate_media(vision_policy, extract_media_payloads(conversation), check_image_limit=False)
+        # Context fitting cannot discard the active user/tool turn. Reject an
+        # inevitable overflow before any auxiliary summary inference is spent.
+        active_conversation, _ = scope_media_history(conversation, keep_active_tool_media=True)
+        validate_media(vision_policy, extract_media_payloads(active_conversation))
     lease = await admission.acquire(route, request.model, model_path)
     configure_generation_telemetry(
         route=route, model=request.model,
@@ -357,7 +364,10 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         strict=reasoning_settings.requires_template_kwargs,
         chat_template=reasoning_settings.resolved_chat_template, tools=tools)
     if backend == 'vllm_deepseek':
-        from .deepseek_vision import load_vision_policy, canonicalize_conversation, CanonicalVisionTokenizer
+        from .deepseek_vision import (
+            CanonicalVisionTokenizer, canonicalize_conversation,
+            load_vision_policy, validate_media,
+        )
         tokenizer._deepseek_vision_policy = load_vision_policy(model_path)
         tokenizer = CanonicalVisionTokenizer(tokenizer)
     conversation = build_conversation(request.messages, preserve_reasoning=(
@@ -593,6 +603,8 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
     prompt = context_preparation.prompt
     prompt_tokens = context_preparation.prompt_tokens
     media = extract_media_payloads(conversation)
+    if backend == 'vllm_deepseek':
+        validate_media(tokenizer._deepseek_vision_policy, media)
     if backend in {"vllm_multimodal", "vllm_deepseek"} and media.has_any:
         media = await materialize_native_remote_media(model_path, media)
     if backend == "vllm_multimodal" and media.has_any:

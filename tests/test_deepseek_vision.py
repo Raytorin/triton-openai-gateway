@@ -226,9 +226,72 @@ async def test_tool_result_pixels_follow_call_order_in_actual_wire_inputs(endpoi
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize('focus', [False, True])
+@pytest.mark.parametrize('stream', [False, True])
+async def test_image_limit_counts_latest_retained_turn(endpoint, focus, stream):
+    enable(endpoint, limit=1)
+    (endpoint.path / 'gateway.json').write_text(json.dumps({
+        'reasoning': {'mode': 'disabled'}, 'multimodal': {
+            'media_history_mode': 'latest', 'focus_current_media': focus}}))
+    messages = [{'role': 'user', 'content': [image('blue')]},
+        {'role': 'assistant', 'content': 'previous answer'},
+        {'role': 'user', 'content': [image('red')]}]
+    captured = []
+    def inputs(*args, **kwargs):
+        captured.extend(BUILD_INPUTS(*args, **kwargs))
+        return [SimpleNamespace(prompt=args[0], sampling=args[1], stream=kwargs['stream'])]
+    with patch.object(tc, '_build_grpc_generate_inputs', inputs):
+        response = await post(body(messages=messages, stream=stream))
+    assert response.status_code == 200, response.text
+    assert '"error":' not in response.text
+    from tritonclient.utils import deserialize_bytes_tensor
+    tensor = next(item for item in captured if item.name() == 'image')
+    pixels = deserialize_bytes_tensor(tensor._get_content())
+    assert len(pixels) == 1
+    with Image.open(BytesIO(base64.b64decode(json.loads(pixels[0])['data']))) as retained:
+        assert retained.convert('RGB').getpixel((0, 0)) == (255, 0, 0)
+    assert endpoint.records[0][0].count('<｜deepseek_image｜>') == 1
+
+
+@pytest.mark.anyio
+async def test_image_limit_still_rejects_retained_overflow(endpoint):
+    enable(endpoint, limit=1)
+    (endpoint.path / 'gateway.json').write_text(json.dumps({
+        'reasoning': {'mode': 'disabled'}, 'multimodal': {
+            'media_history_mode': 'all', 'focus_current_media': False}}))
+    messages = [{'role': 'user', 'content': [image('blue')]},
+        {'role': 'assistant', 'content': 'previous answer'},
+        {'role': 'user', 'content': [image('red')]}]
+    response = await post(body(messages=messages))
+    assert response.status_code == 400
+    assert 'maximum is 1' in response.json()['detail']
+    assert not endpoint.records
+
+
+@pytest.mark.anyio
+async def test_active_image_overflow_rejected_before_summary_engine(endpoint):
+    enable(endpoint, limit=1)
+    config = json.loads((endpoint.path / 'model.json').read_text())
+    (endpoint.path / 'model.json').write_text(json.dumps({**config, 'max_model_len': 4000}))
+    (endpoint.path / 'gateway.json').write_text(json.dumps({
+        'reasoning': {'mode': 'disabled'},
+        'multimodal': {'media_history_mode': 'latest', 'focus_current_media': False},
+        'context_compression': {'mode': 'summarize', 'preserve_recent_messages': 0,
+            'summary_max_tokens': 32, 'fallback_mode': 'disabled', 'cache_size': 0}}))
+    response = await post(body(messages=[
+        {'role': 'user', 'content': 'previous text ' * 3000},
+        {'role': 'assistant', 'content': 'previous answer'},
+        {'role': 'user', 'content': [image('red'), image('blue')]}], max_tokens=200))
+    assert response.status_code == 400, response.text
+    assert 'maximum is 1' in response.json()['detail']
+    assert not endpoint.records
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize('route', ['/v1/chat/completions', '/v1/responses'])
-async def test_truncation_reserves_only_retained_deepseek_images(endpoint, route):
-    enable(endpoint)
+@pytest.mark.parametrize('image_limit', [1, 2])
+async def test_truncation_reserves_only_retained_deepseek_images(endpoint, route, image_limit):
+    enable(endpoint, limit=image_limit)
     config = json.loads((endpoint.path / 'model.json').read_text())
     config['max_model_len'] = 1600
     (endpoint.path / 'model.json').write_text(json.dumps(config))

@@ -117,14 +117,14 @@ _generation_metadata_capabilities = {}
 _GENERATION_METADATA_TTL = 30.0
 
 
-async def _supports_generation_metadata(model_name: str, transport: str = "grpc") -> bool:
+async def _generation_capabilities(model_name: str, transport: str = "grpc"):
     client = await get_grpc_client() if transport == "grpc" else get_http_client()
     key = (transport, id(client), model_name)
     now = time.monotonic()
     cached = _generation_metadata_capabilities.get(key)
     if cached and cached[0] is client and now - cached[1] < _GENERATION_METADATA_TTL:
         return cached[2]
-    supported = False
+    capabilities = (frozenset(), frozenset())
     try:
         if transport == "grpc":
             data = await client.get_model_metadata(model_name, as_json=True, client_timeout=2.0)
@@ -134,16 +134,26 @@ async def _supports_generation_metadata(model_name: str, transport: str = "grpc"
             response.raise_for_status()
             data = response.json()
         if isinstance(data, dict):
-            inputs = {item.get("name") for item in data.get("inputs", []) if isinstance(item, dict)}
-            outputs = {item.get("name") for item in data.get("outputs", []) if isinstance(item, dict)}
-            supported = "return_generation_metadata" in inputs and "generation_metadata" in outputs
+            inputs = frozenset(item.get("name") for item in data.get("inputs", []) if isinstance(item, dict))
+            outputs = frozenset(item.get("name") for item in data.get("outputs", []) if isinstance(item, dict))
+            capabilities = (inputs, outputs)
     except Exception:
         # Optional capability discovery must not retry or execute generation.
-        supported = False
+        capabilities = (frozenset(), frozenset())
     if len(_generation_metadata_capabilities) >= 256:
         _generation_metadata_capabilities.clear()
-    _generation_metadata_capabilities[key] = (client, now, supported)
-    return supported
+    _generation_metadata_capabilities[key] = (client, now, capabilities)
+    return capabilities
+
+
+async def _supports_generation_metadata(model_name: str, transport: str = "grpc") -> bool:
+    inputs, outputs = await _generation_capabilities(model_name, transport)
+    return "return_generation_metadata" in inputs and "generation_metadata" in outputs
+
+
+async def _supports_media_parameters(model_name: str) -> bool:
+    inputs, _ = await _generation_capabilities(model_name)
+    return "media_parameters" in inputs
 
 
 async def _generation_outputs(model_name, inputs):

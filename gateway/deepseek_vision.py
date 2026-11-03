@@ -50,14 +50,14 @@ def load_vision_policy(model_path):
         raise HTTPException(500, f'Invalid DeepSeek vision policy: {error}') from error
 
 
-def validate_media(policy, media):
+def validate_media(policy, media, *, check_image_limit=True):
     if not media.has_any:
         return
     if not policy.image_limit:
         raise HTTPException(400, 'DeepSeek is configured for text generation only; image input requires explicit opt-in')
     if media.videos or media.audios or media.pdfs:
         raise HTTPException(400, 'DeepSeek supports images only; audio, video and PDF are unsupported')
-    if len(media.images) > policy.image_limit:
+    if check_image_limit and len(media.images) > policy.image_limit:
         raise HTTPException(400, f'DeepSeek received {len(media.images)} images; maximum is {policy.image_limit}')
 
 
