@@ -14,8 +14,38 @@ class GenerationMetadataError(HTTPException):
 
 
 @dataclass(frozen=True)
+class VisionUsage:
+    status: str
+    by_source: tuple[tuple[str, int], ...] = ()
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"status": self.status, "source": "engine", "unit": "embedding_positions",
+                "by_source": dict(self.by_source)}
+
+
+def _vision_usage(value: Any) -> VisionUsage | None:
+    if value is None:
+        return None
+    if (not isinstance(value, dict) or value.get("status") not in ("available", "unavailable")
+            or value.get("source") != "engine" or value.get("unit") != "embedding_positions"):
+        _invalid()
+    counts = value.get("by_source")
+    if not isinstance(counts, dict):
+        _invalid()
+    if value["status"] == "unavailable" and counts:
+        _invalid()
+    if value["status"] == "available" and not counts:
+        _invalid()
+    for kind, count in counts.items():
+        if kind not in {"image", "pdf", "video"} or type(count) is not int or count < 0:
+            _invalid()
+    return VisionUsage(value["status"], tuple(sorted(counts.items())))
+
+
+@dataclass(frozen=True)
 class GenerationMetadata:
     finished: bool = False
+    vision_usage: VisionUsage | None = None
     finish_reason: str | None = None
     stop_reason: int | str | None = None
     prompt_tokens: int | None = None
@@ -71,9 +101,15 @@ def decode_generation_metadata(payload: Any) -> GenerationMetadata:
         _invalid()
     if stop is not None and (type(stop) not in (str, int) or isinstance(stop, int) and stop < 0):
         _invalid()
+    vision_usage = _vision_usage(data.get("vision_usage"))
+    prompt_tokens = _count(data.get("prompt_tokens"))
+    if (vision_usage is not None and prompt_tokens is not None
+            and sum(count for _, count in vision_usage.by_source) > prompt_tokens):
+        _invalid()
     return GenerationMetadata(
         finished=data["finished"], finish_reason=reason, stop_reason=stop,
-        prompt_tokens=_count(data.get("prompt_tokens")),
+        vision_usage=vision_usage,
+        prompt_tokens=prompt_tokens,
         completion_tokens=_count(output.get("completion_tokens")),
         first_token_id=_count(output.get("first_token_id")),
         last_token_id=_count(output.get("last_token_id")),
@@ -96,10 +132,15 @@ class GenerationMetadataState:
             if (previous.completion_tokens is not None and current.completion_tokens is not None
                     and current.completion_tokens < previous.completion_tokens):
                 _invalid()
+            if previous.vision_usage is not None and current.vision_usage != previous.vision_usage:
+                _invalid()
             current = replace(current,
                 prompt_tokens=current.prompt_tokens if current.prompt_tokens is not None else previous.prompt_tokens,
                 first_token_id=current.first_token_id if current.first_token_id is not None else previous.first_token_id,
             )
+        if (current.vision_usage is not None and current.prompt_tokens is not None
+                and sum(count for _, count in current.vision_usage.by_source) > current.prompt_tokens):
+            _invalid()
         self.metadata = current
 
 
@@ -137,6 +178,8 @@ def apply_engine_usage(usage: dict[str, Any], metadata: GenerationMetadata | Non
             if "reasoning_tokens" in details:
                 details["reasoning_tokens"] = min(details["reasoning_tokens"], metadata.completion_tokens)
             result["completion_tokens_details"] = details
+    if metadata.vision_usage is not None:
+        result["vision_usage"] = {"main": metadata.vision_usage.as_dict()}
     result["total_tokens"] = result["prompt_tokens"] + result["completion_tokens"]
     return result
 

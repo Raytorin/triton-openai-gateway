@@ -50,6 +50,7 @@ from utils.metrics import (
 )
 from utils.observability import get_triton_request_id, log_event
 from utils.request import EmbedRequest, GenerateRequest
+from utils.vision_usage import make_prompt_preparer
 from utils.vllm_backend_utils import build_async_engine_client_from_engine_args
 
 _VLLM_ENGINE_ARGS_FILENAME = "model.json"
@@ -646,6 +647,7 @@ class TritonPythonModel:
                         self.lora_repository,
                         self.supported_loras,
                         model_name=self.args.get("model_name", ""),
+                        prompt_preparer=make_prompt_preparer(self._llm_engine),
                     )
                 else:
                     request = GenerateRequest(
@@ -654,6 +656,7 @@ class TritonPythonModel:
                         self.output_dtype,
                         self.logger,
                         model_name=self.args.get("model_name", ""),
+                        prompt_preparer=make_prompt_preparer(self._llm_engine),
                     )
             elif request_task_name == "embed":
                 request = EmbedRequest(

@@ -88,6 +88,10 @@ and the watcher environment variables in the configuration reference.
 
 ## Metrics
 
+Visual input accounting is separate from main token totals and estimated
+context reservation. See [visual usage](visual-usage.md) for API fields,
+Prometheus counters, preprocessing scope and unavailable/partial states.
+
 ### Gateway
 
 `http://HOST:8080/metrics` exposes Prometheus series for:

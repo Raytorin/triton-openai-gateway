@@ -289,6 +289,50 @@ def test_cli_help_does_not_require_transformers():
         text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     assert '--reference' in result.stdout
+    assert '--model-config-dir' in result.stdout
+
+
+def test_qualification_uses_explicit_model_local_mapping(qualification, tmp_path):
+    validate, config, reference, tokenizer = qualification
+    model_config = tmp_path / 'gateway-model'
+    model_config.mkdir()
+    (model_config / 'gateway.json').write_text(json.dumps({
+        'reasoning': {'effort_map': {'xhigh': 'high'}}}))
+    # Independent literal IDs; this tiny lexicon's 17 is native budget 75.
+    reference['cases'] = [{
+        'name': 'mapped-xhigh',
+        'request': {'messages': [{'role': 'user', 'content': 'hello'}],
+                    'chat_template_kwargs': {'enable_thinking': True}, 'reasoning_effort': 'xhigh'},
+        'expected_prompt': '<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n<｜User｜>hello<｜Assistant｜><think>',
+        'expected_token_ids': [0, 5, 11, 17, 13, 3, 10, 4, 6],
+    }]
+    assert validate(config, reference, tokenizer=tokenizer, model_config_dir=model_config)['matched']
+    with pytest.raises(ValueError, match='reasoning_effort'):
+        validate(config, reference, tokenizer=tokenizer)
+
+
+def test_qualification_rejects_bad_mapping_without_echoing_values(qualification, tmp_path):
+    validate, config, reference, tokenizer = qualification
+    (tmp_path / 'gateway.json').write_text(json.dumps({
+        'reasoning': {'effort_map': {'xhigh': 'private-invalid-native'}}}))
+    with pytest.raises(ValueError) as error:
+        validate(config, reference, tokenizer=tokenizer, model_config_dir=tmp_path)
+    assert 'effort_map' in str(error.value)
+    assert 'private-invalid-native' not in str(error.value)
+
+
+def test_cli_explicit_model_config_validates_aliases_before_runtime_loading(qualification, tmp_path):
+    _, config, reference, _ = qualification
+    config_path, reference_path = tmp_path / 'model.json', tmp_path / 'reference.json'
+    config_path.write_text(json.dumps(config))
+    reference_path.write_text(json.dumps(reference))
+    (tmp_path / 'gateway.json').write_text('{"reasoning":{"effort_map":{"xhigh":75}}}')
+    result = subprocess.run([sys.executable, str(ROOT / 'scripts/validate_deepseek_tokenizer.py'),
+        str(config_path), '--reference', str(reference_path), '--model-config-dir', str(tmp_path)],
+        text=True, capture_output=True)
+    assert result.returncode == 1
+    assert 'reasoning.effort_map' in result.stderr
+    assert 'Traceback' not in result.stderr
 
 
 def test_pinned_checkpoint_token_ids_match_independent_reference():

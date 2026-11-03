@@ -51,6 +51,7 @@ from utils.hybrid_embeddings import (
     serialize_pooling_output,
 )
 from utils.media import build_multimodal_prompt, parse_media_parameters
+from utils.vision_usage import BuiltMediaPrompt, unavailable_vision_usage
 from utils.observability import get_triton_request_id, log_event
 
 
@@ -110,8 +111,11 @@ class GenerateRequest(RequestBase):
         lora_repository: Optional[Dict[str, str]] = None,
         supported_loras: Optional[List[str]] = None,
         model_name: str = "",
+        prompt_preparer: Callable | None = None,
     ):
         super().__init__(request, executor_callback, output_dtype, logger, model_name)
+        self.prompt_preparer = prompt_preparer
+        self.vision_usage = None
         # Attributes for generate requests
         if lora_repository is not None:
             self.lora_repository = lora_repository
@@ -243,6 +247,7 @@ class GenerateRequest(RequestBase):
                     build_multimodal_prompt,
                     prompt,
                     parameters=media_parameters,
+                    with_origins=True,
                     **media_values,
                 )
         except Exception as exc:
@@ -268,6 +273,15 @@ class GenerateRequest(RequestBase):
             ),
             **media_counts,
         )
+
+        # Test/legacy builders can return raw prompts; native builder carries origins.
+        built = prompt if isinstance(prompt, BuiltMediaPrompt) else BuiltMediaPrompt(prompt, {})
+        if self.prompt_preparer is not None:
+            prepared = await self.prompt_preparer(built)
+            prompt, self.vision_usage = prepared.prompt, prepared.vision_usage
+        else:
+            prompt = built.prompt
+            self.vision_usage = unavailable_vision_usage() if built.origins else None
 
         sampling_params = TritonSamplingParams.from_dict(parameters, self.logger)
         lora_name = sampling_params.lora_name
@@ -353,8 +367,7 @@ class GenerateRequest(RequestBase):
                 duration_ms=round((time.monotonic() - started_at) * 1000, 3),
             )
 
-    @staticmethod
-    def _generation_metadata(request_output: RequestOutput) -> dict:
+    def _generation_metadata(self, request_output: RequestOutput) -> dict:
         """Describe the cumulative engine snapshot independently of wire deltas."""
         prompt_token_ids = request_output.prompt_token_ids
         outputs = []
@@ -377,6 +390,7 @@ class GenerateRequest(RequestBase):
                 len(prompt_token_ids) if prompt_token_ids is not None else None
             ),
             "outputs": outputs,
+            **({"vision_usage": self.vision_usage} if self.vision_usage is not None else {}),
         }
 
     def create_response(

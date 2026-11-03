@@ -477,9 +477,10 @@ def build_usage(
             ),
         }
     from .generation_metadata import apply_engine_usage, metadata_of
-    from .generation_telemetry import observe_generation_usage
+    from .generation_telemetry import observe_generation_usage, apply_visual_usage
 
     usage = apply_engine_usage(usage, metadata_of(generated_text))
+    usage = apply_visual_usage(usage)
     observe_generation_usage(usage)
     return usage
 

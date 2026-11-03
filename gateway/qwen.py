@@ -30,12 +30,13 @@ class TemplateCapabilities:
     has_think_tags: bool = False
 
 
-_CACHE: OrderedDict[tuple[str, type, bool, str], TemplateCapabilities] = OrderedDict()
+_CACHE: OrderedDict[tuple[str, type, bool, str, tuple[str, ...]], TemplateCapabilities] = OrderedDict()
 _CACHE_LOCK = Lock()
 
 
 def qwen_template_capabilities(
     model_path: Path, tokenizer: Any = None, *, tools: list[dict[str, Any]] | None = None,
+    effort_targets: tuple[str, ...] = (),
 ) -> tuple[bool, TemplateCapabilities]:
     locations = _metadata_locations(model_path, tokenizer)
     qwen_profile = _is_qwen_profile(locations)
@@ -46,13 +47,14 @@ def qwen_template_capabilities(
     renderer_type = type(tokenizer) if callable(getattr(tokenizer, 'apply_chat_template', None)) else type(None)
     tools_key = sha256(json.dumps(tools, sort_keys=True, ensure_ascii=False,
                                  separators=(",", ":")).encode("utf-8")).hexdigest()
-    key = (fingerprint, renderer_type, qwen_profile, tools_key)
+    targets = tuple(sorted(set(effort_targets)))
+    key = (fingerprint, renderer_type, qwen_profile, tools_key, targets)
     with _CACHE_LOCK:
         cached = _CACHE.get(key)
         if cached is not None:
             _CACHE.move_to_end(key)
             return qwen_profile, cached
-    capabilities = _probe_template(source, fingerprint, tokenizer, qwen_profile, tools)
+    capabilities = _probe_template(source, fingerprint, tokenizer, qwen_profile, tools, targets)
     with _CACHE_LOCK:
         _CACHE[key] = capabilities
         _CACHE.move_to_end(key)
@@ -64,6 +66,7 @@ def qwen_template_capabilities(
 def _probe_template(
     source: str, fingerprint: str, tokenizer: Any, qwen_profile: bool,
     tools: list[dict[str, Any]] | None,
+    effort_targets: tuple[str, ...] = (),
 ) -> TemplateCapabilities:
     try:
         from jinja2 import meta, nodes
@@ -138,7 +141,7 @@ def _probe_template(
     efforts: set[str] = set()
     if 'reasoning_effort' in variables:
         values = {value: render(enable_thinking=True, reasoning_effort=value)
-                  for value in ('low', 'medium', 'high', 'xhigh')}
+                  for value in dict.fromkeys(('low', 'medium', 'high', 'xhigh', *effort_targets))}
         # An unused variable or a fallback that silently accepts arbitrary
         # values is not evidence that an effort is implemented.
         invalid = render(enable_thinking=True, reasoning_effort='__gateway_unsupported_effort__')

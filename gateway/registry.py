@@ -127,7 +127,9 @@ class ModelRegistry:
         model_path: Path | None = None,
     ) -> None:
         if route == "media" and self.get_backend(model_name) == "vllm_deepseek":
-            raise HTTPException(400, "DeepSeek V4.1 currently supports text generation only; media is unsupported")
+            from .deepseek_vision import load_vision_policy
+            if not load_vision_policy(model_path or self.resolve(model_name)).image_limit:
+                raise HTTPException(400, "DeepSeek is configured for text generation only; media is unsupported")
         required_capability = "chat" if route in {"chat", "media"} else route
         capabilities = self.get_capabilities(model_name, model_path)
         if capabilities is None or required_capability in capabilities:

@@ -366,3 +366,35 @@ class MultimodalBackendTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_built_prompt_preserves_structural_origins_through_pdf_order():
+    from unittest.mock import patch
+    from utils.media import build_multimodal_prompt
+    image_a, image_b, page_a, page_b = object(), object(), object(), object()
+    with patch('utils.media.decode_image_values', return_value=[image_a, image_b]), \
+         patch('utils.media.decode_video_values', return_value=[]), \
+         patch('utils.media.decode_audio_values', return_value=[]), \
+         patch('utils.media.decode_pdf_values', return_value=([page_a, page_b], [2])), \
+         patch('utils.media._validate_request_limits'):
+        built = build_multimodal_prompt(
+            '<|vision_start|><|image_pad|><|vision_end|>' * 3,
+            image_values=['a', 'b'], pdf_values=['pdf'],
+            parameters={'media_order': ['image', 'pdf', 'image'], 'image_origins': ['video', 'image']},
+            with_origins=True,
+        )
+    assert built.prompt['multi_modal_data']['image'] == [image_a, page_a, page_b, image_b]
+    assert built.origins == {'image': ('video', 'pdf', 'pdf', 'image')}
+
+
+def test_built_prompt_rejects_mismatched_origin_sidecar():
+    from unittest.mock import patch
+    from utils.media import build_multimodal_prompt
+    import pytest
+    with patch('utils.media.decode_image_values', return_value=[object()]), \
+         patch('utils.media.decode_video_values', return_value=[]), \
+         patch('utils.media.decode_audio_values', return_value=[]), \
+         patch('utils.media.decode_pdf_values', return_value=([], [])), \
+         patch('utils.media._validate_request_limits'):
+        with pytest.raises(ValueError, match='image_origins'):
+            build_multimodal_prompt('image', image_values=['a'], parameters={'image_origins': []}, with_origins=True)

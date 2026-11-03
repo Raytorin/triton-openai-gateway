@@ -219,6 +219,18 @@ async def test_effort_reaches_fixed_template_only(endpoint, value, budget):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize('stream', [False, True])
+async def test_model_local_xhigh_reaches_backend_as_native_high_only(endpoint, stream):
+    (endpoint.path / 'gateway.json').write_text(json.dumps({
+        'reasoning': {'mode': 'separate', 'effort_map': {'xhigh': 'high'}}}))
+    for effort, budget in [('xhigh', 75), ('max', 100)]:
+        response = await post(body(reasoning_effort=effort, stream=stream))
+        assert response.status_code == 200, response.text
+        assert f'Reasoning Effort: {budget} ' in endpoint.records[-1][0]
+        assert 'reasoning_effort' not in endpoint.records[-1][1]
+
+
+@pytest.mark.anyio
 async def test_xhigh_and_server_policy_are_rejected_before_engine(endpoint):
     assert (await post(body(reasoning_effort='xhigh'))).status_code == 400
     (endpoint.path / 'gateway.json').write_text('{"reasoning":{"mode":"disabled"}}')

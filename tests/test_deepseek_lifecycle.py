@@ -217,6 +217,7 @@ def test_backend_native_registry_guard_and_text_only_config_forwarding(monkeypat
     policy=load_policy(monkeypatch)
     config=json.loads((Path(__file__).resolve().parents[1]/'examples/deepseek-v4.1-flash/1/model.json').read_text())
     config['model']=str(snapshot)
+    config['tokenizer']=str(snapshot)
     (tmp_path/'model.json').write_text(json.dumps(config))
     monkeypatch.setattr(sys.modules['triton_python_backend_utils'],'get_model_dir',lambda:str(tmp_path),raising=False)
     monkeypatch.setitem(sys.modules,'vllm',SimpleNamespace(__version__='0.32.0+cu129'))

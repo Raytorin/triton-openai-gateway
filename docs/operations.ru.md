@@ -90,6 +90,10 @@ curl -fsS -X POST \
 
 ## Метрики
 
+Учёт визуальных токенов отделён от обычных totals и оценки резерва контекста.
+Поля API, Prometheus-метрики, preprocessing и статусы unavailable/partial описаны
+в [документации visual usage](visual-usage.ru.md).
+
 ### Gateway
 
 `http://HOST:8080/metrics` публикует Prometheus series для:
@@ -192,6 +196,7 @@ python scripts/evaluate-context-memory.py \
 нужно выполнять с той же моделью и `gateway.json`, которые пойдут в deployment.
 
 ## Tracing
+
 
 Helm chart может отправлять сэмплированный span gateway и соответствующую trace
 Triton в один OpenTelemetry collector:

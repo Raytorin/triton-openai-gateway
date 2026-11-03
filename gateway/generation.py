@@ -26,7 +26,9 @@ from .debug import (
     log_chat_request_debug,
     log_chat_response_debug,
 )
-from .generation_telemetry import configure_generation_telemetry, get_generation_telemetry
+from .generation_telemetry import (
+    configure_generation_telemetry, get_generation_telemetry, reserve_visual_context,
+)
 from .metrics import CONTEXT_COMPRESSION_DURATION, CONTEXT_COMPRESSION_MESSAGES, CONTEXT_COMPRESSION_REQUESTS, CONTEXT_SUMMARY_CACHE, CONTEXT_SUMMARY_CALLS, CONTEXT_SUMMARY_TOKENS, MEDIA_PROCESSING
 from .multimodal import (
     extract_media_payloads,
@@ -93,7 +95,9 @@ async def generate(request: ChatCompletionRequest, *, context_mode: str | None =
     registry.validate_route(request.model, route, model_path)
     if registry.get_backend(request.model) == "vllm_deepseek":
         from .deepseek import validate_request
+        from .deepseek_vision import load_vision_policy, validate_media
         validate_request(request)
+        validate_media(load_vision_policy(model_path), extract_media_payloads(conversation))
     lease = await admission.acquire(route, request.model, model_path)
     configure_generation_telemetry(
         route=route, model=request.model,
@@ -128,12 +132,18 @@ def _estimate_media_context_tokens(media, media_settings) -> int:
     return image_tokens + video_tokens + audio_tokens
 
 
-def _additional_media_tokens(tokenizer, conversation, tools, settings, thinking, prompt_tokens=None):
+def _additional_media_tokens(tokenizer, conversation, tools, settings, thinking, prompt_tokens=None, prompt=None):
     """Reserve only media tokens not already represented in the rendered prompt.
 
     Image/video/audio expansion is a conservative estimate, not backend usage.
     """
     media = extract_media_payloads(conversation)
+    vision_policy = getattr(tokenizer, '_deepseek_vision_policy', None)
+    if vision_policy is not None:
+        from .deepseek_vision import additional_image_tokens
+        if prompt is None:
+            prompt = render_chat_prompt(tokenizer, conversation, tools, enable_thinking=thinking)
+        return additional_image_tokens(vision_policy, tokenizer, prompt, media)
     estimate = _estimate_media_context_tokens(media, settings)
     if not estimate:
         return 0
@@ -153,7 +163,7 @@ def _additional_media_tokens(tokenizer, conversation, tools, settings, thinking,
 
 def _measure_prompt(tokenizer, conversation, tools, media_settings, thinking):
     prompt, tokens = render_and_count_prompt(tokenizer, conversation, tools, enable_thinking=thinking)
-    media_tokens = _additional_media_tokens(tokenizer, conversation, tools, media_settings, thinking, tokens)
+    media_tokens = _additional_media_tokens(tokenizer, conversation, tools, media_settings, thinking, tokens, prompt)
     return prompt, tokens, media_tokens
 
 
@@ -346,6 +356,10 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
     tokenizer = RequestTokenizer(tokenizer, reasoning_settings.template_kwargs,
         strict=reasoning_settings.requires_template_kwargs,
         chat_template=reasoning_settings.resolved_chat_template, tools=tools)
+    if backend == 'vllm_deepseek':
+        from .deepseek_vision import load_vision_policy, canonicalize_conversation, CanonicalVisionTokenizer
+        tokenizer._deepseek_vision_policy = load_vision_policy(model_path)
+        tokenizer = CanonicalVisionTokenizer(tokenizer)
     conversation = build_conversation(request.messages, preserve_reasoning=(
         reasoning_settings.qwen_profile or reasoning_settings.deepseek_profile))
     if reasoning_settings.deepseek_profile:
@@ -386,7 +400,8 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         )
     conversation, removed_historical_media = (
         (conversation, 0) if context_mode is not None else
-        scope_media_history(conversation, media_settings.media_history_mode)
+        scope_media_history(conversation, media_settings.media_history_mode,
+                            keep_active_tool_media=backend == 'vllm_deepseek')
     )
     if removed_historical_media:
         log_event(
@@ -401,7 +416,7 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
     request_media = extract_media_payloads(conversation)
     if context_mode is not None and (request_media.audios or request_media.videos or request_media.pdfs):
         raise HTTPException(400, "Responses supports text and images only; use Chat for audio, video and PDF")
-    if context_mode is not None and request_media.images:
+    if context_mode is not None and request_media.images and backend != 'vllm_deepseek':
         from .responses_media import prepare_images, validate_vision
         validate_vision(model_path, registry.resolve_tokenizer_path(model_path))
         conversation = await prepare_images(conversation, media_settings)
@@ -515,10 +530,12 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         effective_context_settings = replace(context_settings, mode="disabled")
     context_started_at = time.monotonic()
     try:
-        if context_mode is not None:
+        if context_mode is not None or (backend == 'vllm_deepseek'
+                and request_media.images and effective_context_settings.mode == 'truncate'):
             context_preparation = await run_cpu(_prepare_responses_context,
                 tokenizer, conversation, tools, limits.context_window,
-                requested or 1, context_settings, media_settings,
+                (requested or 1) if context_mode is not None else reserve,
+                context_settings, media_settings,
                 reasoning_settings.enable_thinking,
                 initial=(initial_prompt, initial_tokens, reserved_media_tokens))
         else:
@@ -569,11 +586,16 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         raise
 
     conversation = context_preparation.conversation
+    if backend == 'vllm_deepseek':
+        # Selection used original user turns. Match only the retained pixels
+        # to the exact canonical candidate rendered by the tokenizer adapter.
+        conversation = canonicalize_conversation(conversation)
     prompt = context_preparation.prompt
     prompt_tokens = context_preparation.prompt_tokens
     media = extract_media_payloads(conversation)
-    if backend == "vllm_multimodal" and media.has_any:
+    if backend in {"vllm_multimodal", "vllm_deepseek"} and media.has_any:
         media = await materialize_native_remote_media(model_path, media)
+    if backend == "vllm_multimodal" and media.has_any:
         native_settings = load_vllm_media_settings(model_path)
         media = replace(
             media,
@@ -592,6 +614,10 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
     budget = choose_budget(limits, requested, prompt_tokens=prompt_tokens,
                            media_tokens=reserved_media_tokens,
                            safety_margin=context_settings.safety_margin_tokens)
+    if (media.images or media.videos or media.pdfs) and not media.audios:
+        # This is a context upper bound, including delimiters, not engine usage.
+        # Mixed audio/vision reservation cannot be split reliably here.
+        reserve_visual_context(reserved_media_tokens)
     sampling_parameters["max_tokens"] = budget.effective
     log_event(logger, "generation.token_budget", "Output token budget selected",
               model=request.model, **budget.__dict__, usage_source="estimated")
@@ -730,6 +756,7 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         from .deepseek import generate as generate_deepseek
         return await generate_deepseek(request, tokenizer, prompt, sampling_parameters,
             reasoning_settings, tools,
+            media=media if media.has_any else None,
             headers=_chat_stream_headers(reasoning_settings, context_preparation, budget),
             extensions={"reasoning_status": reasoning_settings.response_status(),
                         "context_status": context_preparation.response_status()})

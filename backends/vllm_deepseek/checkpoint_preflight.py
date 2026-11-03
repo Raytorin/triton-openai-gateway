@@ -27,6 +27,36 @@ DTYPE_BITS = {'BOOL':8, 'U8':8, 'I8':8, 'F8_E4M3':8, 'F8_E5M2':8, 'F8_E8M0':8,
 ARCHITECTURE = 'DeepseekV41ForCausalLM'
 
 
+def validate_vision_policy(engine_config, config):
+    """Ordinary pixel inputs need explicit opt-in; embeddings stay disabled."""
+    if engine_config.get('enable_mm_embeds', False) is not False:
+        raise ValueError('vllm_deepseek requires enable_mm_embeds:false')
+    language_model_only = engine_config.get('language_model_only')
+    if type(language_model_only) is not bool:
+        raise ValueError('vllm_deepseek requires explicit language_model_only:true or false')
+    if language_model_only:
+        return 0
+    limits = engine_config.get('limit_mm_per_prompt')
+    limit = limits.get('image') if isinstance(limits, dict) else None
+    if type(limit) is not int or limit <= 0:
+        raise ValueError('DeepSeek images require positive limit_mm_per_prompt.image')
+    if any(value not in (0, None) for key, value in limits.items() if key != 'image'):
+        raise ValueError('DeepSeek supports image modality only')
+    if engine_config.get('mm_processor_kwargs'):
+        raise ValueError('DeepSeek processor overrides are unsupported')
+    vision = config.get('vision_config')
+    if (config.get('model_type') != 'deepseek_v41'
+            or config.get('architectures') != [ARCHITECTURE]
+            or config.get('image_token_id') != 129264
+            or not isinstance(vision, dict)
+            or vision.get('model_type') != 'deepseek_v41_vision'):
+        raise ValueError('DeepSeek images require a verified V4.1 vision architecture')
+    maximum = vision.get('max_image_tokens')
+    if type(maximum) is not int or maximum <= 0:
+        raise ValueError('vision_config.max_image_tokens must be positive')
+    return limit
+
+
 def _identity(info):
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 

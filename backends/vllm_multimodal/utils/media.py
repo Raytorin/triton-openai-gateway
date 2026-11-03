@@ -23,6 +23,8 @@ import numpy as np
 from PIL import Image
 import pymupdf
 
+from utils.vision_usage import BuiltMediaPrompt
+
 
 DATA_URL_RE = re.compile(
     r"^data:(?P<mime>[^;,]+);base64,(?P<payload>.*)$",
@@ -185,7 +187,8 @@ def build_multimodal_prompt(
     audio_values: Iterable[Any] = (),
     pdf_values: Iterable[Any] = (),
     parameters: dict[str, Any] | None = None,
-) -> str | dict[str, Any]:
+    with_origins: bool = False,
+) -> str | dict[str, Any] | BuiltMediaPrompt:
     parameters = parameters or {}
     image_values = list(image_values)
     video_values = list(video_values)
@@ -201,7 +204,15 @@ def build_multimodal_prompt(
     audios = decode_audio_values(audio_values, parameters)
     pdf_pages, pdf_page_counts = decode_pdf_values(pdf_values, parameters)
 
+    image_origins = parameters.get("image_origins", ["image"] * len(images))
+    if (not isinstance(image_origins, list) or len(image_origins) != len(images)
+            or any(kind not in {"image", "pdf", "video"} for kind in image_origins)):
+        raise ValueError("image_origins must match image inputs with image/pdf/video origins")
     if pdf_page_counts:
+        image_origins = _merge_image_modalities(
+            image_origins, ["pdf"] * len(pdf_pages), pdf_page_counts,
+            parameters.get("media_order"),
+        )
         prompt = expand_pdf_placeholders(
             prompt,
             pdf_page_counts,
@@ -224,7 +235,7 @@ def build_multimodal_prompt(
         multi_modal_data["audio"] = audios
 
     if not multi_modal_data:
-        return prompt
+        return BuiltMediaPrompt(prompt, {}) if with_origins else prompt
 
     prompt_payload: dict[str, Any] = {
         "prompt": prompt,
@@ -233,6 +244,13 @@ def build_multimodal_prompt(
     mm_processor_kwargs = parameters.get("mm_processor_kwargs")
     if isinstance(mm_processor_kwargs, dict) and mm_processor_kwargs:
         prompt_payload["mm_processor_kwargs"] = mm_processor_kwargs
+    if with_origins:
+        origins = {}
+        if images:
+            origins["image"] = tuple(image_origins)
+        if videos:
+            origins["video"] = ("video",) * len(videos)
+        return BuiltMediaPrompt(prompt_payload, origins)
     return prompt_payload
 
 

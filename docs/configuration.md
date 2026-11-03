@@ -449,6 +449,23 @@ never globally aliased. For example, the supported Qwen3.8 template accepts
 templates may not consume effort at all. The Qwen3.6 examples intentionally
 omit effort. `preserve_thinking` likewise requires template support.
 
+Use a model's `gateway.json` to add model-local aliases when client vocabulary
+differs from its native template:
+
+```json
+{"reasoning":{"effort_map":{"xhigh":"high"}}}
+```
+
+The map is a strict string-to-string object and performs one lookup. For the
+DeepSeek V4.1 profile this example sends native `high` (75) in the backend
+prompt; its `max` remains 100. Without this map, a Qwen model keeps its native
+`xhigh`. There is no environment-wide alias or shared tokenizer mutation.
+Targets must be supported by the actually selected default/tool template.
+Malformed configuration or an unsupported configured target is a server
+configuration error (500); an unsupported unmapped client value remains 400.
+Omitting effort keeps the template default. Mapped effort still requires
+thinking and cannot be combined with constrained JSON output.
+
 The Responses API contract is unchanged and does not accept these reasoning
 controls. Chat sampling also accepts `top_k` (`-1` or a positive integer) and
 `presence_penalty` (from `-2` to `2`); these are passed to generation.

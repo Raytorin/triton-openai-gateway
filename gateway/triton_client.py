@@ -10,7 +10,7 @@ import math
 import time
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
 from typing import Any
 from urllib.parse import quote
 
@@ -35,7 +35,10 @@ from .metrics import (
     triton_call,
 )
 from .observability import get_request_id, get_traceparent, log_event
-from .generation_telemetry import mark_first_generation_output
+from .generation_telemetry import (
+    mark_first_generation_output, begin_visual_call, observe_visual_metadata,
+    finish_visual_call,
+)
 from .prompt import build_usage, completion_reached_token_limit
 from .reasoning import (
     DISABLED_REASONING_SETTINGS,
@@ -61,6 +64,52 @@ _grpc_client: grpc_aio.InferenceServerClient | None = None
 _grpc_client_lock = asyncio.Lock()
 logger = logging.getLogger("triton-chat-gateway")
 REASONING_STREAM_HOLDBACK_CHARS = 12
+
+
+class _GenerationCallMetadata(GenerationMetadataState):
+    """Observe one actual call before text processing, including empty packets."""
+    def __init__(self, visual=False):
+        super().__init__()
+        self.visual = visual
+        self.call_id = None
+        self.closed = False
+
+    def __enter__(self):
+        if self.visual and self.call_id is None:
+            self.call_id = begin_visual_call()
+        return self
+
+    def update_json(self, payload):
+        super().update_json(payload)
+        if self.call_id is None and self.metadata.vision_usage is not None:
+            self.call_id = begin_visual_call()
+        observe_visual_metadata(self.call_id, self.metadata)
+        if self.metadata.finished:
+            self.close("success" if self.metadata.finish_reason in {"stop", "length"} else "error")
+
+    def close(self, status="success"):
+        if not self.closed or status in {"error", "cancelled"}:
+            finish_visual_call(self.call_id, status)
+            self.closed = True
+
+    def __exit__(self, kind, error, traceback):
+        terminal_close = (isinstance(error, GeneratorExit) and self.metadata is not None
+                          and self.metadata.finished and self.metadata.finish_reason in {"stop", "length"})
+        status = ("success" if terminal_close
+                  else "cancelled" if isinstance(error, (asyncio.CancelledError, GeneratorExit))
+                  else "error" if error is not None else "success")
+        self.close(status)
+
+
+@asynccontextmanager
+async def _generation_results(state, source):
+    with state:
+        async with aclosing(source) as results:
+            yield results
+
+
+def _has_visual_input(images=(), media=None):
+    return bool(images or media and (media.images or media.videos or media.pdfs))
 
 
 # Client identity plus bounded lifetime avoids stale capabilities after model reload.
@@ -577,7 +626,8 @@ def _build_grpc_generate_inputs(
     _append_media_input(inputs, "pdf", media.pdfs)
 
     media_parameters = grpcclient.InferInput("media_parameters", [1], "BYTES")
-    parameters = {**media.parameters, "media_order": media.order}
+    parameters = {**media.parameters, "media_order": media.order,
+                  "image_origins": [payload.source_kind or "image" for payload in media.images]}
     media_parameters.set_data_from_numpy(
         np.asarray(
             [json.dumps(parameters).encode("utf-8")],
@@ -856,18 +906,19 @@ def _validate_hybrid_embedding_payload(
     return result
 
 
-async def stream_triton_text_deltas(model_name, prompt, sampling_parameters):
+async def stream_triton_text_deltas(model_name, prompt, sampling_parameters, *, media=None):
     """Consume Triton wire deltas after GenerateRequest.create_response slicing.
 
     The engine's cumulative RequestOutput.text is a different boundary. Input
     echo is already disabled by _build_grpc_generate_inputs, so each tensor is
     forwarded exactly once, including identical or shared-prefix deltas.
     """
-    inputs = _build_grpc_generate_inputs(prompt, sampling_parameters, [], stream=True)
+    inputs = _build_grpc_generate_inputs(prompt, sampling_parameters, [], stream=True,
+                                         **({"media": media} if media is not None else {}))
     outputs, metadata_expected = await _generation_outputs(model_name, inputs)
-    metadata_state = GenerationMetadataState()
+    metadata_state = _GenerationCallMetadata(visual=_has_visual_input(media=media))
     try:
-        async with aclosing(_stream_grpc_results(
+        async with _generation_results(metadata_state, _stream_grpc_results(
             "generate-stream", model_name, inputs, outputs, streaming=True)) as results:
             async for item in results:
                 _read_grpc_generation_metadata(item, metadata_state, metadata_expected)
@@ -899,20 +950,21 @@ async def call_triton_multimodal(
         media=media,
     )
     outputs, metadata_expected = await _generation_outputs(model_name, inputs)
-    metadata_state = GenerationMetadataState()
+    metadata_state = _GenerationCallMetadata(visual=_has_visual_input(images, media))
     last_text = ""
 
     try:
-        async for item in _stream_grpc_results(
+        async with _generation_results(metadata_state, _stream_grpc_results(
             "generate",
             model_name,
             inputs,
             outputs,
-        ):
-            _read_grpc_generation_metadata(item, metadata_state, metadata_expected)
-            text_chunks = _decode_numpy_strings(item.as_numpy("text_output"))
-            if text_chunks:
-                last_text = "".join(text_chunks)
+        )) as results:
+            async for item in results:
+                _read_grpc_generation_metadata(item, metadata_state, metadata_expected)
+                text_chunks = _decode_numpy_strings(item.as_numpy("text_output"))
+                if text_chunks:
+                    last_text = "".join(text_chunks)
         _check_generation_metadata(metadata_state, metadata_expected)
         return GenerationOutput(last_text, metadata_state.metadata)
     except HTTPException:
@@ -966,7 +1018,7 @@ async def stream_triton_multimodal_to_openai(
         media=media,
     )
     outputs, metadata_expected = await _generation_outputs(request.model, inputs)
-    metadata_state = GenerationMetadataState()
+    metadata_state = _GenerationCallMetadata(visual=_has_visual_input(images, media))
     settings = reasoning_settings or DISABLED_REASONING_SETTINGS
 
     yield sse_event(
@@ -980,7 +1032,7 @@ async def stream_triton_multimodal_to_openai(
     role_sent = True
 
     try:
-        async with aclosing(
+        async with _generation_results(metadata_state,
             _stream_grpc_results(
                 "generate-stream",
                 request.model,
@@ -1329,11 +1381,11 @@ async def stream_triton_to_openai(
     settings = reasoning_settings or DISABLED_REASONING_SETTINGS
 
     metadata_expected = await _supports_generation_metadata(request.model, "http")
-    metadata_state = GenerationMetadataState()
+    metadata_state = _GenerationCallMetadata()
     if metadata_expected:
         payload["return_generation_metadata"] = True
 
-    with triton_call("generate-stream", request.model, "http"):
+    with metadata_state, triton_call("generate-stream", request.model, "http"):
         async with get_http_client().stream(
             "POST",
             generate_stream_url,
@@ -1526,11 +1578,11 @@ async def call_triton(model_name: str, prompt: str, sampling_parameters: dict[st
     }
 
     metadata_expected = await _supports_generation_metadata(model_name, "http")
-    metadata_state = GenerationMetadataState()
+    metadata_state = _GenerationCallMetadata()
     if metadata_expected:
         payload["return_generation_metadata"] = True
 
-    with triton_call("generate", model_name, "http"):
+    with metadata_state, triton_call("generate", model_name, "http"):
         response = await get_http_client().post(
             generate_url,
             json=payload,
@@ -1545,10 +1597,10 @@ async def call_triton(model_name: str, prompt: str, sampling_parameters: dict[st
                 ),
             )
 
-    data = _http_generation_payload(response)
-    if metadata_expected:
-        _read_http_generation_metadata(data, metadata_state)
-    _check_generation_metadata(metadata_state, metadata_expected)
+        data = _http_generation_payload(response)
+        if metadata_expected:
+            _read_http_generation_metadata(data, metadata_state)
+        _check_generation_metadata(metadata_state, metadata_expected)
     return GenerationOutput(extract_text_output(data), metadata_state.metadata)
 
 
@@ -1579,12 +1631,12 @@ async def call_triton_python_chat(
     })
 
     metadata_expected = await _supports_generation_metadata(model_name, "http")
-    metadata_state = GenerationMetadataState()
+    metadata_state = _GenerationCallMetadata()
     if metadata_expected:
         payload["inputs"].append({"name": "return_generation_metadata", "shape": [1], "datatype": "BOOL", "data": [True]})
         payload["outputs"].append({"name": "generation_metadata"})
 
-    with triton_call("python-chat", model_name, "http"):
+    with metadata_state, triton_call("python-chat", model_name, "http"):
         response = await get_http_client().post(
             infer_url,
             json=payload,
@@ -1600,10 +1652,10 @@ async def call_triton_python_chat(
                 detail=detail,
             )
 
-    data = _http_generation_payload(response)
-    if metadata_expected:
-        _read_http_generation_metadata(data, metadata_state)
-    _check_generation_metadata(metadata_state, metadata_expected)
+        data = _http_generation_payload(response)
+        if metadata_expected:
+            _read_http_generation_metadata(data, metadata_state)
+        _check_generation_metadata(metadata_state, metadata_expected)
     return GenerationOutput(extract_text_output(data), metadata_state.metadata)
 
 

@@ -203,7 +203,8 @@ def new_id(prefix: str) -> str:
 
 
 def usage_object(usage: dict[str, Any]) -> dict[str, Any]:
-    return {"input_tokens": usage.get("prompt_tokens", 0),
+    return {**{key: usage[key] for key in ("vision_usage", "vision_context_reservation") if key in usage},
+        "input_tokens": usage.get("prompt_tokens", 0),
         "output_tokens": usage.get("completion_tokens", 0),
         "total_tokens": usage.get("total_tokens", 0),
         "input_tokens_details": {"cached_tokens": usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)},

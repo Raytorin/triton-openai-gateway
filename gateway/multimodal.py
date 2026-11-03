@@ -20,6 +20,7 @@ class MediaPayload:
     data: str
     mime_type: str | None = None
     format: str | None = None
+    source_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -206,6 +207,8 @@ def reclassify_media_content(
 def scope_media_history(
     conversation: list[dict[str, Any]],
     mode: str = "latest",
+    *,
+    keep_active_tool_media: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
     if mode == "all":
         return conversation, 0
@@ -225,7 +228,9 @@ def scope_media_history(
     removed = 0
     for index, message in enumerate(conversation):
         content = message.get("content")
-        if index == latest_user_index or not isinstance(content, list):
+        if (index == latest_user_index
+                or (keep_active_tool_media and index > latest_user_index)
+                or not isinstance(content, list)):
             scoped.append(message)
             continue
 
@@ -655,6 +660,7 @@ def _payload_with_detected_metadata(payload: MediaPayload, kind: str) -> MediaPa
         data=payload.data,
         mime_type=mime_type,
         format=media_format,
+        source_kind=payload.source_kind or kind,
     )
 
 

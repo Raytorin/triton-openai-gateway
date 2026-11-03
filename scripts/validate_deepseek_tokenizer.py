@@ -19,12 +19,14 @@ def main():
     parser.add_argument('--reference', type=Path, required=True,
                         help='reviewed JSON reference with artifact hashes, independent prompts and literal token IDs')
     parser.add_argument('--json', action='store_true', help='print mismatch locations/counts without conversation text')
+    parser.add_argument('--model-config-dir', type=Path,
+                        help='explicit absolute local directory containing gateway.json model-local reasoning controls')
     args = parser.parse_args()
     try:
         from gateway.deepseek_tokenizer_validation import read_reference, validate_tokenizer
         config = read_reference(args.model_config)
         reference = read_reference(args.reference)
-        report = validate_tokenizer(config, reference)
+        report = validate_tokenizer(config, reference, model_config_dir=args.model_config_dir)
     except (ValueError, OSError, ImportError, RuntimeError) as error:
         print(f'token qualification failed: {error}', file=sys.stderr)
         return 1

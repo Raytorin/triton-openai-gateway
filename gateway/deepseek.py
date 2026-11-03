@@ -366,7 +366,7 @@ class DeepSeekJsonOutput:
         pass
 
 
-async def generate(request, tokenizer, prompt, sampling, settings, tools, *, headers, extensions):
+async def generate(request, tokenizer, prompt, sampling, settings, tools, *, headers, extensions, media=None):
     from . import triton_client as tc
     response_id = f'chatcmpl-{uuid.uuid4().hex}'; created = int(time.time())
 
@@ -380,7 +380,8 @@ async def generate(request, tokenizer, prompt, sampling, settings, tools, *, hea
             for delta in parser.start():
                 yield event(delta)
             metadata = None
-            async with aclosing(tc.stream_triton_text_deltas(request.model, prompt, sampling)) as source:
+            async with aclosing(tc.stream_triton_text_deltas(request.model, prompt, sampling,
+                    **({'media': media} if media is not None else {}))) as source:
                 async for text in source:
                     metadata = metadata_of(text) or metadata
                     # EOS may finish the recipe before the engine sends its

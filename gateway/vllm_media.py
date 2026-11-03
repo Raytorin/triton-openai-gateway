@@ -28,6 +28,8 @@ from .media_preprocessing import (
     load_vllm_media_settings,
     select_video_frame_indices,
 )
+from .generation_telemetry import visual_usage_scope
+from .multimodal import MediaPayload, MediaPayloads
 from .observability import log_event
 from .metrics import PDF_EMBEDDING_CACHE
 from .settings import logger
@@ -492,12 +494,18 @@ async def _generate_visual_summary(
         {"role": "user", "content": content},
     ]
     prompt = render_chat_prompt(tokenizer, chunk_conversation)
-    generated = await call_triton_multimodal(
-        model_name,
-        prompt,
-        _summary_sampling(sampling_parameters, settings),
-        [item.data for item in items],
+    media = MediaPayloads(
+        images=[MediaPayload(item.data, item.mime_type, source_kind=item.source_kind) for item in items],
+        videos=[], audios=[], pdfs=[], order=["image"] * len(items),
     )
+    with visual_usage_scope("preprocessing"):
+        generated = await call_triton_multimodal(
+            model_name,
+            prompt,
+            _summary_sampling(sampling_parameters, settings),
+            [item.data for item in items],
+            media=media,
+        )
     generated = strip_prompt_echo(prompt, generated)
     generated, _ = sanitize_generated_text(generated)
     if not generated.strip():
