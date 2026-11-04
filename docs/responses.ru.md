@@ -69,6 +69,17 @@ vision задайте generation.supports_vision=true в gateway.json.
 incomplete_details.reason=max_output_tokens, в том числе до первого видимого
 текста. Автоматического повтора генерации нет.
 
+Отказы gateway по контексту и распознанные ошибки лимита токенов vLLM возвращают
+HTTP 400 в Chat и Responses: `error.type=invalid_request_error`,
+`error.code=context_length_exceeded`. Сообщение содержит лимит контекста и
+известное количество токенов; LiteLLM распознаёт `ContextWindowExceededError`.
+В `error.details` отдельно указаны входные токены, бюджет ответа, оценочный
+резерв медиа и служебный запас. Их сумма `budget_tokens` — резерв контекста,
+а не фактический расход токенов. Неизвестные backend-счётчики не подставляются.
+После начала SSE Chat передаёт кадр ошибки, а Responses — события `error` и
+`response.failed` с тем же кодом и сообщением. Внутренняя диагностика backend
+в эти ошибки не включается.
+
 Текущие текстовые транспорты Triton не предоставляют достоверных usage и finish
 metadata; usage и исчерпание лимита оцениваются повторной токенизацией.
 Это обозначено `X-Token-Usage-Source: estimated`. Заголовки X-Output-Token-Limit
@@ -81,9 +92,10 @@ runtime context описаны в [конфигурации](configuration.ru.md
 ## Пример Python
 
 ```python
+import os
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="configured-by-proxy")
+client = OpenAI(base_url="http://localhost:8080/v1", api_key=os.environ["OPENAI_API_KEY"])
 response = client.responses.create(
     model="your-model", input="Привет", store=False, max_output_tokens=128,
 )

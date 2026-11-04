@@ -21,6 +21,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from .cpu_work import run_cpu
+from .context_errors import ContextLengthExceeded
 from .prompt import (
     context_prompt_limit,
     fit_conversation_to_context,
@@ -34,6 +35,10 @@ from .prompt import (
 SUMMARY_MARKER = "[[gateway_context_summary"
 SUMMARY_FORMAT_VERSION = "2"
 DEFAULT_SUMMARY_MAX_CONCURRENCY = 4
+
+
+class _ContextFittingError(HTTPException):
+    """A fitting target could not be reached; may still allow a fallback."""
 
 
 @dataclass(frozen=True)
@@ -314,12 +319,6 @@ async def prepare_conversation_context(
     initial_prompt: tuple[str, int] | None = None,
 ) -> ContextPreparation:
     started_at = time.monotonic()
-    prompt_limit = context_prompt_limit(
-        max_model_len,
-        max_completion_tokens,
-        reserved_media_tokens,
-        settings.safety_margin_tokens,
-    )
     if initial_prompt is None:
         prompt, tokens = await run_cpu(
             render_and_count_prompt, tokenizer, conversation, tools,
@@ -327,6 +326,16 @@ async def prepare_conversation_context(
         )
     else:
         prompt, tokens = initial_prompt
+    prompt_limit = context_prompt_limit(
+        max_model_len, max_completion_tokens, reserved_media_tokens,
+        settings.safety_margin_tokens, prompt_tokens=tokens,
+    )
+
+    def overflow():
+        return ContextLengthExceeded(max_model_len, tokens, max_completion_tokens,
+            reserved_media_tokens=reserved_media_tokens,
+            safety_margin_tokens=settings.safety_margin_tokens)
+
     summary_model = settings.summary_model or model_name
     trigger_limit = prompt_limit
     target_limit = prompt_limit
@@ -346,7 +355,7 @@ async def prepare_conversation_context(
         )
 
     if settings.mode == "disabled":
-        _raise_context_overflow(tokens, prompt_limit, max_model_len)
+        raise overflow()
 
     if settings.mode == "truncate":
         result = await run_cpu(_truncate_context,
@@ -389,6 +398,12 @@ async def prepare_conversation_context(
         raise
     except Exception as exc:
         if settings.fallback_mode != "truncate":
+            if isinstance(exc, ContextLengthExceeded):
+                raise HTTPException(502, "Context summarization failed: the summary model context limit was exceeded") from exc
+            # These are fitting failures, not failures of the auxiliary model
+            # or limits on summary work. Normalize only an actual input overflow.
+            if isinstance(exc, _ContextFittingError) and tokens > prompt_limit:
+                raise overflow() from exc
             if isinstance(exc, HTTPException):
                 raise
             raise HTTPException(
@@ -511,7 +526,7 @@ async def _summarize_context(
         enable_thinking,
     )
     if not removed:
-        raise HTTPException(
+        raise _ContextFittingError(
             status_code=400,
             detail=(
                 "Conversation does not fit the model context and no historical "
@@ -724,7 +739,7 @@ def _select_summary_source(
             settings.preserve_recent_messages,
         )
         if not removable or any(index in protected for index in removable):
-            raise HTTPException(
+            raise _ContextFittingError(
                 status_code=400,
                 detail=(
                     "Conversation does not fit while preserving the latest user "
@@ -797,7 +812,7 @@ def _render_with_summary(
     )
     tokens = prompt_token_count(tokenizer, prompt)
     if tokens > prompt_limit:
-        raise HTTPException(
+        raise _ContextFittingError(
             status_code=413,
             detail=(
                 "Generated conversation summary does not fit the target context: "
@@ -1221,19 +1236,3 @@ def _configured_float(
             ),
         )
     return value
-
-
-def _raise_context_overflow(
-    prompt_tokens: int,
-    prompt_limit: int,
-    max_model_len: int,
-) -> None:
-    raise HTTPException(
-        status_code=400,
-        detail=(
-            "Conversation exceeds the model context and context compression is "
-            "disabled: "
-            f"prompt_tokens={prompt_tokens}, allowed_prompt_tokens={prompt_limit}, "
-            f"max_model_len={max_model_len}."
-        ),
-    )

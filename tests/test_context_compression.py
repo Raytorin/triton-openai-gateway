@@ -168,7 +168,7 @@ class ContextCompressionTests(unittest.IsolatedAsyncioTestCase):
             {"role": "user", "content": "latest"},
         ]
 
-        with self.assertRaisesRegex(HTTPException, "compression is disabled"):
+        with self.assertRaises(HTTPException) as caught:
             await prepare_conversation_context(
                 model_name="chat",
                 tokenizer=self.tokenizer,
@@ -179,6 +179,8 @@ class ContextCompressionTests(unittest.IsolatedAsyncioTestCase):
                 reserved_media_tokens=0,
                 settings=settings(mode="disabled"),
             )
+        self.assertEqual(caught.exception.error["code"], "context_length_exceeded")
+        self.assertEqual(caught.exception.error["details"]["context_limit"], 24)
 
     async def test_truncate_mode_preserves_legacy_behavior(self):
         conversation = [
@@ -320,7 +322,7 @@ class ContextCompressionTests(unittest.IsolatedAsyncioTestCase):
                 "role": "user",
                 "content": (
                     "Use exact path /srv/models/qwen/model.json and port 8080. "
-                    "api_key=TEST_SECRET_VALUE_12345 must never be copied. "
+                    "api_key=sample must never be copied. "
                 ),
             },
             {"role": "assistant", "content": "Exact values recorded."},
@@ -352,7 +354,7 @@ class ContextCompressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/srv/models/qwen/model.json", result.prompt)
         self.assertIn("8080", result.prompt)
         self.assertIn("[REDACTED]", result.prompt)
-        self.assertNotIn("TEST_SECRET_VALUE_12345", result.prompt)
+        self.assertNotIn("sample", result.prompt)
 
     async def test_tool_turn_is_summarized_as_one_unit(self):
         conversation = [

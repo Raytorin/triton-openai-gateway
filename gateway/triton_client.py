@@ -20,6 +20,7 @@ import tritonclient.grpc as grpcclient
 import tritonclient.grpc.aio as grpc_aio
 from tritonclient.utils import InferenceServerException
 from fastapi import HTTPException
+from .context_errors import ContextLengthExceeded, backend_context_length_error
 from grpc.aio import AioRpcError
 
 from .cpu_work import run_cpu
@@ -374,6 +375,8 @@ def _friendly_error_message(detail: Any) -> str:
 
 def _triton_grpc_error(operation: str, exc: Exception) -> HTTPException:
     detail = str(exc)
+    if context_error := backend_context_length_error(detail):
+        return context_error
     lowered = detail.lower()
     limit_markers = (
         "maximum model length",
@@ -1124,7 +1127,7 @@ async def stream_triton_multimodal_to_openai(
                     break
     except HTTPException:
         raise
-    except InferenceServerException as exc:
+    except (InferenceServerException, AioRpcError) as exc:
         raise _triton_grpc_error("generation gRPC stream", exc) from exc
     except asyncio.CancelledError:
         raise
@@ -1404,6 +1407,8 @@ async def stream_triton_to_openai(
         ) as response:
             if response.status_code != 200:
                 error_text = await response.aread()
+                if context_error := backend_context_length_error(error_text.decode("utf-8", errors="replace")):
+                    raise context_error
                 raise HTTPException(
                     status_code=502,
                     detail=(
@@ -1426,6 +1431,8 @@ async def stream_triton_to_openai(
                 if not isinstance(event, dict):
                     raise GenerationMetadataError("Invalid generation stream event from Triton")
                 if "error" in event:
+                    if context_error := backend_context_length_error(str(event["error"])):
+                        raise context_error
                     raise HTTPException(
                         status_code=502,
                         detail=f"Triton generate_stream returned error: {event['error']}",
@@ -1599,6 +1606,8 @@ async def call_triton(model_name: str, prompt: str, sampling_parameters: dict[st
             headers=_request_headers(),
         )
         if response.status_code != 200:
+            if context_error := backend_context_length_error(response.text):
+                raise context_error
             raise HTTPException(
                 status_code=502,
                 detail=(
@@ -1657,6 +1666,8 @@ async def call_triton_python_chat(
                 "Triton python chat infer failed with status "
                 f"{response.status_code}: {response.text}"
             )
+            if context_error := backend_context_length_error(detail):
+                raise context_error
             raise HTTPException(
                 status_code=413 if _is_context_length_error(detail) else 502,
                 detail=detail,
@@ -1692,6 +1703,8 @@ async def stream_python_chat_to_openai(
     except GenerationMetadataError:
         raise
     except HTTPException as exc:
+        if isinstance(exc, ContextLengthExceeded):
+            raise
         error_text = _friendly_error_message(exc.detail)
         usage = await run_cpu(build_usage, tokenizer, prompt, "")
 

@@ -980,6 +980,9 @@ def _chunk_label(items: list[VisualItem]) -> str:
 
 
 def _is_context_length_error(exc: Exception) -> bool:
+    from .context_errors import ContextLengthExceeded
+    if isinstance(exc, ContextLengthExceeded):
+        return True
     text = str(getattr(exc, "detail", exc)).lower()
     return "maximum model length" in text or (
         "longer than" in text and "model length" in text

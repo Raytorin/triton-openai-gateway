@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from .generation_metadata import GenerationOutput, metadata_of, resolve_finish_reason, log_completion
 from .cpu_work import run_cpu
+from .context_errors import ContextLengthExceeded
 from .admission import AdmissionController
 from .context_compression import (
     ContextCompressionSettings,
@@ -190,8 +191,8 @@ def _prepare_responses_context(tokenizer, conversation, tools, window, reserve,
                                       "truncate" if dropped else "none", dropped_messages=dropped)
         removable = oldest_removable_turn(fitted) if settings.mode == "truncate" else []
         if not removable:
-            raise HTTPException(400, "Input and output budget exceed the model context window; "
-                                "reduce input/max_output_tokens or allow truncation=auto")
+            raise ContextLengthExceeded(window, tokens, reserve,
+                reserved_media_tokens=media_tokens, safety_margin_tokens=settings.safety_margin_tokens)
         fitted = [message for i, message in enumerate(fitted) if i not in removable]
         dropped += len(removable)
 

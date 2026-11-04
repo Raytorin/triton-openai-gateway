@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import __author__, __repository__, __version__
 from .admission import AdmissionLease
+from .context_errors import ContextLengthExceeded
 from .cpu_work import run_cpu
 from .embeddings import (
     build_embedding_inputs,
@@ -106,12 +107,15 @@ async def log_http_exception(_request, exc: HTTPException):
         status_code=exc.status_code,
         detail=str(exc.detail),
     )
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=({"error": {"message": str(exc.detail), "type": "invalid_request_error" if exc.status_code < 500 else "server_error", "param": None, "code": None}}
-                 if _request.url.path in {"/responses", "/v1/responses"} else {"detail": exc.detail}),
-        headers=exc.headers,
-    )
+    if isinstance(exc, ContextLengthExceeded):
+        content = {"error": exc.error}
+    elif _request.url.path in {"/responses", "/v1/responses"}:
+        content = {"error": {"message": str(exc.detail),
+                            "type": "invalid_request_error" if exc.status_code < 500 else "server_error",
+                            "param": None, "code": None}}
+    else:
+        content = {"detail": exc.detail}
+    return JSONResponse(status_code=exc.status_code, content=content, headers=exc.headers)
 
 
 @app.exception_handler(RequestValidationError)
@@ -222,6 +226,8 @@ async def _guard_openai_stream(source: AsyncIterator[str]) -> AsyncIterator[str]
                 "code": exc.status_code,
             }
         }
+        if isinstance(exc, ContextLengthExceeded):
+            payload = {"error": exc.error}
         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
     except Exception as exc:

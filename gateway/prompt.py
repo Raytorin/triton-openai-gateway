@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from .cpu_work import checkpoint
+from .context_errors import ContextLengthExceeded
 from .multimodal import normalize_message_content
 from .openai_contract import structured_outputs_parameter
 from .qwen import chat_template_accepts_keyword
@@ -286,14 +287,17 @@ def fit_conversation_to_context(
     enable_thinking: bool = False,
     initial_prompt: tuple[str, int] | None = None,
 ) -> tuple[list[dict[str, Any]], str, int, int]:
+    fitted = [dict(message) for message in conversation]
+    if initial_prompt is None:
+        initial_prompt = render_and_count_prompt(tokenizer, fitted, tools, enable_thinking=enable_thinking)
     prompt_limit = context_prompt_limit(
         max_model_len,
         max_completion_tokens,
         reserved_media_tokens,
         safety_margin_tokens,
+        prompt_tokens=initial_prompt[1],
     )
 
-    fitted = [dict(message) for message in conversation]
     dropped_messages = 0
     while True:
         checkpoint()
@@ -309,14 +313,8 @@ def fit_conversation_to_context(
 
         removable = oldest_removable_turn(fitted)
         if not removable:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "The system prompt and latest user message do not fit the model "
-                    f"context: prompt_tokens={prompt_tokens}, allowed_prompt_tokens="
-                    f"{prompt_limit}, max_model_len={max_model_len}."
-                ),
-            )
+            raise ContextLengthExceeded(max_model_len, prompt_tokens, max_completion_tokens,
+                reserved_media_tokens=reserved_media_tokens, safety_margin_tokens=safety_margin_tokens)
         removable_set = set(removable)
         fitted = [
             message for index, message in enumerate(fitted) if index not in removable_set
@@ -334,6 +332,8 @@ def context_prompt_limit(
     max_completion_tokens: int,
     reserved_media_tokens: int = 0,
     safety_margin_tokens: int = 64,
+    *,
+    prompt_tokens: int | None = None,
 ) -> int:
     prompt_limit = (
         int(max_model_len)
@@ -342,14 +342,9 @@ def context_prompt_limit(
         - max(int(safety_margin_tokens), 0)
     )
     if prompt_limit <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Requested output and media reserve leave no room for the input prompt: "
-                f"max_model_len={max_model_len}, max_tokens={max_completion_tokens}, "
-                f"media_reserve={reserved_media_tokens}."
-            ),
-        )
+        raise ContextLengthExceeded(max_model_len, prompt_tokens, max(max_completion_tokens, 1),
+            reserved_media_tokens=max(reserved_media_tokens, 0),
+            safety_margin_tokens=max(safety_margin_tokens, 0))
     return prompt_limit
 
 
