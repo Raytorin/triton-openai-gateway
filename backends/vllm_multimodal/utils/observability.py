@@ -12,7 +12,7 @@ from typing import Any
 
 CEF_VENDOR = "Triton OpenAI Gateway"
 CEF_PRODUCT = "Triton vLLM Multimodal Backend"
-BACKEND_VERSION = "0.5.0"
+BACKEND_VERSION = "0.6.0"
 CEF_VERSION = BACKEND_VERSION
 
 
