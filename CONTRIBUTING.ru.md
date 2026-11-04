@@ -42,29 +42,31 @@ python3.12 -m venv .venv
 .venv/bin/python -m pytest -q \
   --cov=gateway \
   --cov=backends/vllm_multimodal \
-  --cov-fail-under=50
+  --cov=backends/vllm_deepseek \
+  --cov-fail-under=75
 .venv/bin/python tests/runtime_media_smoke.py
 .venv/bin/cffconvert --validate
-.venv/bin/pip-audit --requirement requirements-test.txt --progress-spinner off
-.venv/bin/pip-audit \
-  --requirement docker/triton-chat-gateway-requirements.txt \
-  --progress-spinner off
+.venv/bin/python scripts/audit_dependencies.py
 ```
 
-GitHub Actions выполняет те же тесты и аудит зависимостей для каждого pull request. Набор
-test-зависимостей намеренно меньше GPU runtime и не должен использоваться для
-сборки production-образа.
+GitHub Actions выполняет два Linux job для pull request, push в `dev`/`main`
+и ручного запуска. В начале проверяется синтаксис tracked Python, JSON и Bash;
+actionlint и ShellCheck проверяют workflow и shell-скрипты. Зависимости тестов,
+runtime и SDK проходят аудит отдельно. Прежнее узкое исключение аудита runtime
+описано в [SECURITY.ru.md](SECURITY.ru.md).
 
-Для проверки на точном закреплённом runtime Triton запустите unit tests внутри
-собранного образа:
+JUnit и coverage сохраняются на семь дней. Загружаются только эти два XML-файла;
+локальные заметки, виртуальные окружения, пользовательские данные и runtime
+dumps не включаются. Набор test-зависимостей намеренно меньше GPU runtime и не
+должен использоваться для сборки production-образа.
+
+Проверка совместимости SDK в отдельном клиентском окружении:
 
 ```bash
-docker run --rm \
-  --entrypoint python3 \
-  -v "$PWD:/workspace" \
-  -w /workspace \
-  triton-openai-gateway:dev \
-  -m unittest discover -s tests -v
+python3.12 -m venv .local/client-venv
+.local/client-venv/bin/python -m pip install --requirement requirements-client.txt
+.local/client-venv/bin/python tests/client_compatibility.py \
+  --server-python "$PWD/.venv/bin/python"
 ```
 
 Отдельный PDF/video preprocessing smoke test:
@@ -87,6 +89,12 @@ docker run --rm --network none \
   -w /workspace \
   triton-openai-gateway:dev \
   tests/runtime_vllm_smoke.py
+docker run --rm --network none \
+  --entrypoint python3 \
+  -v "$PWD:/workspace:ro" \
+  -w /workspace \
+  triton-openai-gateway:dev \
+  tests/runtime_stock_vllm_smoke.py
 ```
 
 Проверка охватывает контракты sampling, structured output, LoRA, pooling,
@@ -96,11 +104,17 @@ docker run --rm --network none \
 Проверка shell и Helm:
 
 ```bash
-bash -n watch_triton.sh docker/80-watch-triton.sh docker/90-triton-chat-gateway.sh
+python3.12 scripts/check_repository.py
 helm lint ./helm/triton-gateway
 helm template test ./helm/triton-gateway >/dev/null
+helm template test ./helm/triton-gateway \
+  --values helm/triton-gateway/values.production.example.yaml >/dev/null
 helm lint ./helm/dcgm-exporter
 ```
+
+Обычный CI не скачивает веса моделей и не собирает большие образы Triton.
+Проверки реального API vLLM выше требуют готового образа; native DeepSeek и
+GPU inference проверяются отдельно от CPU suite на GitHub-hosted runner.
 
 Изменения GPU и end-to-end media также требуют проверки на живом Triton с
 моделью, поддерживающей нужную модальность. Укажите в pull request архитектуру

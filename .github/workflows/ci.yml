@@ -36,7 +36,39 @@ jobs:
           cache: pip
           cache-dependency-path: |
             requirements-test.txt
+            requirements-client.txt
             docker/triton-chat-gateway-requirements.txt
+
+      - name: Check tracked source syntax
+        run: python scripts/check_repository.py
+
+      - name: Lint workflows and shell scripts
+        timeout-minutes: 3
+        run: |
+          ci_tools="$RUNNER_TEMP/ci-tools"
+          mkdir -p "$ci_tools"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            --connect-timeout 10 --max-time 60 --retry 2 \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$ci_tools/actionlint.tar.gz"
+          printf '%s  %s\n' \
+            '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' \
+            "$ci_tools/actionlint.tar.gz" | sha256sum --check --strict
+          tar -xzf "$ci_tools/actionlint.tar.gz" -C "$ci_tools" actionlint
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            --connect-timeout 10 --max-time 60 --retry 2 \
+            https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.gz \
+            --output "$ci_tools/shellcheck.tar.gz"
+          printf '%s  %s\n' \
+            'b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6' \
+            "$ci_tools/shellcheck.tar.gz" | sha256sum --check --strict
+          tar -xzf "$ci_tools/shellcheck.tar.gz" -C "$ci_tools" \
+            --strip-components=1 shellcheck-v0.11.0/shellcheck
+          "$ci_tools/actionlint" -shellcheck "$ci_tools/shellcheck"
+          mapfile -d '' shell_scripts < <(git ls-files -z -- '*.sh')
+          if ((${#shell_scripts[@]})); then
+            "$ci_tools/shellcheck" --severity=warning -- "${shell_scripts[@]}"
+          fi
 
       - name: Install test dependencies
         run: |
@@ -51,28 +83,65 @@ jobs:
           python -m pytest -q
           --cov=gateway
           --cov=backends/vllm_multimodal
+          --cov=backends/vllm_deepseek
           --cov-report=term-missing
-          --cov-report=xml
-          --cov-fail-under=50
+          --cov-report=xml:test-results/coverage.xml
+          --cov-fail-under=75
+          --junitxml=test-results/junit.xml
+          --durations=20
 
       - name: Verify OpenAI SDK and LiteLLM Responses compatibility
+        timeout-minutes: 5
         run: |
           python -m venv .local/client-venv
           .local/client-venv/bin/python -m pip install --requirement requirements-client.txt
+          .local/client-venv/bin/python -m pip check
           .local/client-venv/bin/python tests/client_compatibility.py --server-python "$(command -v python)"
 
       - name: Run media preprocessing smoke test
+        timeout-minutes: 3
         run: python tests/runtime_media_smoke.py
 
       - name: Validate citation metadata
         run: cffconvert --validate
 
-      - name: Validate shell syntax
-        run: >-
-          bash -n
-          watch_triton.sh
-          docker/80-watch-triton.sh
-          docker/90-triton-chat-gateway.sh
+      - name: Summarize tests and coverage
+        if: ${{ !cancelled() }}
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          lines = ["## CPU checks"]
+          junit = Path("test-results/junit.xml")
+          if junit.is_file():
+              report = ElementTree.parse(junit).getroot()
+              suites = [report] if report.tag == "testsuite" else report.findall("testsuite")
+              totals = {key: sum(int(suite.get(key, 0)) for suite in suites)
+                        for key in ("tests", "failures", "errors", "skipped")}
+              lines.append("Tests: {tests}; failures: {failures}; errors: {errors}; skipped: {skipped}.".format(**totals))
+          else:
+              lines.append("JUnit report was not produced; see the preceding step results.")
+          coverage = Path("test-results/coverage.xml")
+          if coverage.is_file():
+              rate = float(ElementTree.parse(coverage).getroot().get("line-rate", "0"))
+              lines.append(f"Line coverage: {rate:.2%} (minimum 75%).")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("\n\n".join(lines) + "\n")
+
+      - name: Upload test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cpu-test-reports
+          path: |
+            test-results/junit.xml
+            test-results/coverage.xml
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
 
   helm:
     name: Helm
