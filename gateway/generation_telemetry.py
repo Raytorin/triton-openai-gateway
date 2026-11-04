@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from contextvars import ContextVar, Token
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 import os
 import time
@@ -15,6 +16,7 @@ from .metrics import (
     GENERATION_STAGE_DURATION,
     GENERATION_TOKENS,
     GENERATION_TTFT,
+    VISUAL_EMBEDDING_POSITIONS, VISUAL_USAGE_STATUS, VISUAL_CONTEXT_RESERVED,
 )
 
 
@@ -23,6 +25,65 @@ TELEMETRY_ENABLED = os.environ.get("GATEWAY_GENERATION_TELEMETRY", "true").lower
     "true",
     "yes",
 }
+
+
+class VisualUsageAccumulator:
+    """Request-local cumulative facts, one slot for each actual engine invocation."""
+    def __init__(self):
+        self.calls: dict[int, dict[str, Any]] = {}
+        self.reservations: dict[str, int] = {}
+
+    def begin(self, scope: str) -> int:
+        if scope not in {"main", "preprocessing"}:
+            raise ValueError("Invalid visual usage scope")
+        call_id = len(self.calls)
+        self.calls[call_id] = {"scope": scope, "facts": None, "finished": False, "status": None}
+        return call_id
+
+    def observe(self, call_id: int, metadata) -> None:
+        from .generation_metadata import GenerationMetadataError
+        call = self.calls[call_id]
+        facts = metadata.vision_usage if metadata else None
+        if call["facts"] is not None and facts != call["facts"]:
+            raise GenerationMetadataError("Visual usage changed during a generation call")
+        if facts is not None:
+            call["facts"] = facts
+        call["finished"] = call["finished"] or bool(
+            metadata and metadata.finished and metadata.finish_reason in {"stop", "length"}
+        )
+
+    def end(self, call_id: int, status: str) -> None:
+        call = self.calls[call_id]
+        # A later transport failure can downgrade a terminal engine success.
+        # Repeated closes never upgrade failed/partial accounting to success.
+        if call["status"] is None or call["status"] == "success" and status != "success":
+            call["status"] = status
+
+    def reserve(self, scope: str, positions: int) -> None:
+        if scope not in {"main", "preprocessing"} or type(positions) is not int or positions < 0:
+            raise ValueError("Invalid visual context reservation")
+        self.reservations[scope] = self.reservations.get(scope, 0) + positions
+
+    def snapshot(self) -> dict[str, Any]:
+        result = {}
+        for scope in ("main", "preprocessing"):
+            calls = [call for call in self.calls.values() if call["scope"] == scope]
+            if not calls:
+                continue
+            counts = {}
+            available = 0
+            complete = True
+            for call in calls:
+                facts = call["facts"]
+                if facts is not None and facts.status == "available":
+                    available += 1
+                    for kind, count in facts.by_source:
+                        counts[kind] = counts.get(kind, 0) + count
+                complete = complete and call["finished"] and call["status"] == "success"
+            status = "available" if available == len(calls) and complete else "partial" if available else "unavailable"
+            result[scope] = {"status": status, "source": "engine", "unit": "embedding_positions",
+                             "by_source": counts, "calls": len(calls)}
+        return result
 
 
 @dataclass
@@ -53,6 +114,7 @@ class GenerationTelemetry:
     reasoning_tokens: int = 0
     error_type: str = ""
     triton_calls: dict[str, dict[str, Any]] = field(default_factory=dict)
+    visual_usage: VisualUsageAccumulator = field(default_factory=VisualUsageAccumulator)
     _finished: bool = False
 
     def configure(
@@ -210,7 +272,16 @@ class GenerationTelemetry:
         if output_throughput is not None:
             GENERATION_OUTPUT_THROUGHPUT.labels(*labels).observe(output_throughput)
 
+        visual_usage = self.visual_usage.snapshot()
+        for scope, detail in visual_usage.items():
+            VISUAL_USAGE_STATUS.labels(self.model, self.route, scope, detail["status"]).inc()
+            for kind, count in detail["by_source"].items():
+                VISUAL_EMBEDDING_POSITIONS.labels(self.model, self.route, kind, scope, "engine").inc(count)
+        for scope, count in self.visual_usage.reservations.items():
+            VISUAL_CONTEXT_RESERVED.labels(self.model, self.route, scope, "estimated").inc(count)
+
         return {
+            "vision_usage": visual_usage,
             "route": self.route,
             "backend": self.backend,
             "transport": self.transport,
@@ -282,3 +353,53 @@ def _safe_int(value: Any) -> int:
 
 def _milliseconds(value: float | None) -> float | None:
     return round(value * 1000, 3) if value is not None else None
+
+
+_visual_scope: ContextVar[str] = ContextVar("visual_usage_scope", default="main")
+
+
+@contextmanager
+def visual_usage_scope(scope: str):
+    if scope not in {"main", "preprocessing"}:
+        raise ValueError("Invalid visual usage scope")
+    token = _visual_scope.set(scope)
+    try:
+        yield
+    finally:
+        _visual_scope.reset(token)
+
+
+def begin_visual_call() -> int | None:
+    telemetry = get_generation_telemetry()
+    return telemetry.visual_usage.begin(_visual_scope.get()) if telemetry else None
+
+
+def observe_visual_metadata(call_id: int | None, metadata) -> None:
+    if call_id is not None and (telemetry := get_generation_telemetry()):
+        telemetry.visual_usage.observe(call_id, metadata)
+
+
+def finish_visual_call(call_id: int | None, status: str) -> None:
+    if call_id is not None and (telemetry := get_generation_telemetry()):
+        telemetry.visual_usage.end(call_id, status)
+
+
+def reserve_visual_context(positions: int) -> None:
+    if telemetry := get_generation_telemetry():
+        telemetry.visual_usage.reserve(_visual_scope.get(), positions)
+
+
+def apply_visual_usage(usage: dict[str, Any]) -> dict[str, Any]:
+    telemetry = get_generation_telemetry()
+    if telemetry is None:
+        return usage
+    detail = telemetry.visual_usage.snapshot()
+    result = dict(usage)
+    if detail:
+        result["vision_usage"] = detail
+    if telemetry.visual_usage.reservations:
+        result["vision_context_reservation"] = {
+            "source": "estimated", "unit": "context_positions",
+            "by_scope": dict(telemetry.visual_usage.reservations),
+        }
+    return result

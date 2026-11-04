@@ -148,10 +148,13 @@ def _validate_reference(reference: dict[str, Any]) -> None:
             raise ValueError(f'{case["name"]}: reference token IDs must be nonnegative integers')
 
 
-def _render_case(tokenizer: Any, case: dict[str, Any], model_root: Path) -> str:
+def _render_case(tokenizer: Any, case: dict[str, Any], model_root: Path,
+                 effort_map: dict[str, str] | None = None) -> str:
+    from fastapi import HTTPException
     from .deepseek import template_capabilities, validate_request
     from .prompt import RequestTokenizer, build_conversation, render_chat_prompt, selected_tools
     from .schemas import ChatCompletionRequest
+    from .reasoning import resolve_reasoning_effort
 
     # Exercise the same schema, role/tool translation and request-local template
     # binding as the serving path. Context truncation is deliberately not applied.
@@ -167,9 +170,10 @@ def _render_case(tokenizer: Any, case: dict[str, Any], model_root: Path) -> str:
         thinking = controls.enable_thinking
         tools = selected_tools(request.tools, request.tool_choice)
         capabilities = template_capabilities(model_root, tokenizer, tools=tools)
+        native_effort = resolve_reasoning_effort(request.reasoning_effort, capabilities.efforts, effort_map)
         if controls.preserve_thinking is not None and not capabilities.preserves_thinking:
             raise ValueError('DeepSeek template does not support preserve_thinking')
-        if request.reasoning_effort is not None and (not thinking or request.reasoning_effort not in capabilities.efforts):
+        if request.reasoning_effort is not None and not thinking:
             raise ValueError('invalid DeepSeek reasoning_effort in token reference')
         if request.response_format is not None and request.response_format.type != 'text' and thinking:
             raise ValueError('structured output cannot enable thinking')
@@ -179,13 +183,15 @@ def _render_case(tokenizer: Any, case: dict[str, Any], model_root: Path) -> str:
         conversation = [{**message, 'role': 'system' if message['role'] == 'developer' else message['role']}
                         for message in conversation]
         kwargs = {'enable_thinking': thinking}
-        if request.reasoning_effort is not None:
-            kwargs['reasoning_effort'] = request.reasoning_effort
+        if native_effort is not None:
+            kwargs['reasoning_effort'] = native_effort
         wrapped = RequestTokenizer(tokenizer, kwargs, strict=True,
             chat_template=capabilities.template, tools=tools)
         return render_chat_prompt(wrapped, conversation, tools, enable_thinking=thinking)
     except ValueError:
         raise
+    except HTTPException as error:
+        raise ValueError(f'{case["name"]}: {error.detail}') from None
     except Exception as error:
         # Do not echo a potentially private reference conversation in CLI errors.
         raise ValueError(f'{case["name"]}: request/template qualification failed ({type(error).__name__})') from None
@@ -200,14 +206,25 @@ def _first_difference(expected: list[int], actual: list[int]) -> dict[str, int |
     return None
 
 
-def validate_tokenizer(engine_config: dict[str, Any], reference: dict[str, Any], *, tokenizer: Any = None) -> dict[str, Any]:
+def validate_tokenizer(engine_config: dict[str, Any], reference: dict[str, Any], *, tokenizer: Any = None,
+                       model_config_dir: Path | None = None) -> dict[str, Any]:
     """Compare local gateway rendering/encoding with literal reference outputs.
 
     ``source`` records the operator's reviewed encoder provenance; it is not an
     authenticity signature. The caller must trust the chosen reference file.
     ``tokenizer`` permits a controlled in-process runtime qualification/test.
+    ``model_config_dir`` explicitly selects gateway.json model-local controls;
+    the checkpoint/tokenizer directories never implicitly supply these aliases.
     """
     _validate_reference(reference)
+    effort_map = {}
+    if model_config_dir is not None:
+        from fastapi import HTTPException
+        from .reasoning import read_reasoning_effort_map
+        try:
+            effort_map = read_reasoning_effort_map(_directory(str(model_config_dir), 'model_config_dir'))
+        except HTTPException as error:
+            raise ValueError(str(error.detail)) from None
     if engine_config.get('revision') != reference['checkpoint']['revision']:
         raise ValueError('checkpoint revision differs from the token reference')
     model_root = _directory(engine_config.get('model'), 'model')
@@ -227,7 +244,7 @@ def validate_tokenizer(engine_config: dict[str, Any], reference: dict[str, Any],
                   for field in SPECIAL_IDS if getattr(tokenizer, field, None) != reference['special_token_ids'][field]}
     cases = []
     for case in reference['cases']:
-        prompt = _render_case(tokenizer, case, model_root)
+        prompt = _render_case(tokenizer, case, model_root, effort_map)
         actual = list(tokenizer.encode(prompt, add_special_tokens=False))
         if any(type(value) is not int or value < 0 for value in actual):
             raise ValueError(f'{case["name"]}: runtime tokenizer returned invalid token IDs')

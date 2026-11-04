@@ -1,9 +1,10 @@
-# DeepSeek V4.1 Flash: opt-in text generation
+# DeepSeek V4.1 Flash: text and opt-in images
 
 Use the optional image described in [the build guide](../../docker/README.deepseek.md).
 This example selects the isolated vLLM 0.32 CUDA 12.9 environment; Qwen and BGE
 continue to select their existing backend. Text, reasoning and tools are supported
-by the gateway profile. Media and embedding requests are rejected.
+by the gateway profile. This example defaults to text-only; images require the
+explicit configuration below. Audio, video, PDF and embedding requests are rejected.
 
 1. Provide a complete snapshot of `deepseek-ai/DeepSeek-V4.1-Flash`, revision
    `314113f8a7dadb388215396ba5fbee2c610a04d6`, through a read-only immutable local
@@ -74,6 +75,54 @@ after verifying the prior instance has unloaded. This is not an automatic READY
 handoff. Direct Triton local/S3 repository loads still need a complete immutable
 upload handoff; the watcher does not control them all.
 
+## Enable images
+
+For a checkpoint with the supported DeepSeek vision encoder/projector and
+`vision_config`, opt in through `1/model.json`:
+
+```json
+{
+  "language_model_only": false,
+  "enable_mm_embeds": false,
+  "limit_mm_per_prompt": {"image": 4}
+}
+```
+
+These are changes to the corresponding keys in the full engine configuration,
+not a replacement for the file. Set both `model` and `tokenizer` to the intended
+local snapshot. A positive integer image limit is required. `enable_mm_embeds`
+stays false: ordinary image pixels do not require accepting client-supplied
+embedding tensors. Loading the vision tower needs a model reload and a separate
+GPU capacity check; the text-only context/sequence configuration is not a fit
+claim for vision.
+
+Chat `image_url` and Responses `input_image` use the existing image transport
+and the native vLLM DeepSeek processor. Prompt placeholders and pixels preserve
+the same order, including reordered function results. The processor owns image
+resizing, patch grids and placeholder expansion. Gateway context reservation
+uses the checkpoint's validated image-token bound; this reservation is not
+reported as consumed visual tokens. See the [visual usage documentation](../../docs/visual-usage.md) for the
+distinction between processor facts and unavailable accounting.
+
+## Model-local reasoning effort
+
+The included `1/gateway.json` enables separate reasoning and maps the request
+alias `xhigh` to this model's native `high` (75). `max` remains 100. The mapping
+is local to the model: Qwen's native `xhigh` is not changed by this setting.
+
+```json
+{
+  "reasoning_effort": "xhigh",
+  "chat_template_kwargs": {"enable_thinking": true}
+}
+```
+
+The selected native effort is rendered into the prompt sent to the backend.
+It is not an extra vLLM sampling parameter. `reasoning.effort_map` performs one
+lookup, validates the target against the selected template, and does not alter
+template defaults when the request omits effort. Thinking must be enabled;
+constrained JSON output continues to disable thinking.
+
 Startup/shutdown deadlines are Triton parameters, not engine keys. The startup
 deadline includes the supported-task query. Cooperative startup failures close
 the engine context and retain the first cause; late factories cannot announce
@@ -135,6 +184,7 @@ With the tokenizer/config/template files available locally, run from the checkou
 
 ```sh
 python3 scripts/validate_deepseek_tokenizer.py /models/DeepSeek-V4.1-Flash/1/model.json \
+  --model-config-dir /models/DeepSeek-V4.1-Flash/1 \
   --reference tests/fixtures/deepseek/v41-flash/token-reference.json --json
 ```
 
@@ -142,6 +192,9 @@ The tool uses the gateway's `TokenizersBackend` and prompt renderer with
 `local_files_only=True` and `trust_remote_code=False`. It neither downloads files
 nor executes the checkpoint encoder. It compares literal expected prompts/token
 IDs, verifies artifact hashes before and after, and returns nonzero on mismatch.
+`--model-config-dir` selects the serving directory's `gateway.json` for effort
+aliases. Without it, qualification does not infer a mapping from checkpoint or
+tokenizer directories; native template values remain available.
 Reports contain counts and mismatch positions, not conversation text. This checks
 prompt encoding only; it does not run context fitting, inference or GPU kernels.
 The installed script is `/opt/tritonserver/tools/deepseek/validate_deepseek_tokenizer.py`;

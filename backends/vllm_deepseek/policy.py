@@ -31,8 +31,8 @@ class GenerationOnlyModel:
             active_dir=os.environ.get('MODELS_ACTIVE_DIR', '/tmp/models-active'),
         )
         self.checkpoint_report = _checkpoint.validate_checkpoint(config)
-        if config.get('language_model_only') is not True or config.get('enable_mm_embeds',False) is not False:
-            raise ValueError('vllm_deepseek requires language_model_only:true and enable_mm_embeds:false')
+        self._vision_image_limit = _checkpoint.validate_vision_policy(
+            config, _checkpoint.read_json(Path(config['model']) / 'config.json'))
         if config.get('tokenizer_mode','deepseek_v41') != 'deepseek_v41':
             raise ValueError('vllm_deepseek requires tokenizer_mode:deepseek_v41')
         if config.get('trust_remote_code',False) is not False:
@@ -209,9 +209,28 @@ class GenerationOnlyModel:
         self._deepseek_finalized = True
 
     def _validate_request_task_name(self, request):
-        for name in ('embedding_request','image','video','audio','pdf','media_parameters'):
+        for name in ('embedding_request','video','audio','pdf'):
             if pb_utils.get_input_tensor_by_name(request,name) is not None:
                 raise ValueError(f'vllm_deepseek is generation-only; {name} is unsupported')
+        image = pb_utils.get_input_tensor_by_name(request, 'image')
+        parameters = pb_utils.get_input_tensor_by_name(request, 'media_parameters')
+        limit = getattr(self, '_vision_image_limit', 0)
+        if not limit and (image is not None or parameters is not None):
+            raise ValueError('vllm_deepseek is generation-only; media requires explicit image opt-in')
+        count = image.as_numpy().size if image is not None else 0
+        if count > limit:
+            raise ValueError(f'DeepSeek received {count} image items; maximum is {limit}')
+        if parameters is not None:
+            values = parameters.as_numpy().reshape(-1)
+            if len(values) != 1:
+                raise ValueError('media_parameters must contain one JSON object')
+            params = json.loads(values[0])
+            if not isinstance(params, dict) or set(params) - {'media_order', 'image_origins'}:
+                raise ValueError('Unsupported DeepSeek media_parameters; processor overrides are forbidden')
+            if 'media_order' in params and params['media_order'] != ['image'] * count:
+                raise ValueError('media_parameters.media_order must match image inputs')
+            if 'image_origins' in params and params['image_origins'] != ['image'] * count:
+                raise ValueError('media_parameters.image_origins must match ordinary image inputs')
         return 'generate'
 
     def finalize(self):

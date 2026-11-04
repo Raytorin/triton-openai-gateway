@@ -9,7 +9,7 @@ from gateway.model_config import read_model_config
 @pytest.mark.parametrize("brackets", [("{", "}"), ("<", ">")])
 def test_message_lists_match_triton(tmp_path, colon, brackets):
     start, end = brackets
-    text = f'''name: "Qwen3.8-27B-FP8"
+    text = f'''name: "fixture-model"
 backend: "vllm_multimodal"
 model_transaction_policy {{ decoupled: true }}
 instance_group{colon} [ {start} kind: KIND_MODEL count: 1 {end} ]
@@ -19,9 +19,9 @@ input{colon} [ {start} name: "text_input" data_type: TYPE_STRING dims: [1] {end}
     parsed = text_format.Parse(text, model_config_pb2.ModelConfig())
     config = tmp_path / "config.pbtxt"
     config.write_text(text)
-    assert parsed.name == "Qwen3.8-27B-FP8"
+    assert parsed.name == "fixture-model"
     assert parsed.parameters["GPU_DEVICE_IDS"].string_value == "0"
-    assert read_model_config(config) == {"name": "Qwen3.8-27B-FP8", "backend": "vllm_multimodal"}
+    assert read_model_config(config) == {"name": "fixture-model", "backend": "vllm_multimodal"}
 
 
 @pytest.mark.parametrize("field", ["instance_group", "parameters", "input"])

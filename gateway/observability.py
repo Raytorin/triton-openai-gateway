@@ -33,7 +33,7 @@ from .tracing import start_request_trace
 
 REQUEST_ID_HEADER = b"x-request-id"
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:/-]{1,160}$")
-CEF_VENDOR = "ML Platform AI"
+CEF_VENDOR = "Triton OpenAI Gateway"
 CEF_PRODUCT = "Triton OpenAI Gateway"
 CEF_VERSION = __version__
 MAX_REQUEST_BODY_BYTES = int(

@@ -291,3 +291,39 @@ def test_eos_completion_diagnostic_keeps_numeric_stop_id(backend):
     assert len(completed) == 1
     assert completed[0]["level"] == "WARNING"
     assert completed[0]["outputs"][0]["stop_reason"] == 2
+
+
+def test_native_preparer_input_identity_and_usage_are_used_by_generate(backend):
+    from utils.vision_usage import PreparedEnginePrompt
+    request = generation_request(backend)
+    engine_input = {'type': 'multimodal', 'prompt_token_ids': [1, 2, 3]}
+    facts = {'status': 'available', 'source': 'engine', 'unit': 'embedding_positions',
+             'by_source': {'image': 2}}
+    calls = []
+    async def prepare(built):
+        calls.append(built)
+        return PreparedEnginePrompt(engine_input, facts)
+    async def generate(prompt, *args, **kwargs):
+        assert prompt is engine_input
+        yield engine_output(completion('answer', [1], finish_reason='stop'), finished=True)
+    request.prompt_preparer = prepare
+    request.executor_callback = generate
+    async def collect():
+        return [snapshot async for snapshot in request.execute()]
+    snapshots = asyncio.run(collect())
+    assert len(calls) == 1
+    assert metadata(request.create_response(snapshots[0], {}, False))['vision_usage'] == facts
+
+
+def test_native_preparation_failure_never_calls_generate(backend):
+    request = generation_request(backend)
+    async def prepare(built):
+        raise RuntimeError('native processor failed')
+    def generate(*args, **kwargs):
+        pytest.fail('must not retry raw after native processor failure')
+    request.prompt_preparer = prepare
+    request.executor_callback = generate
+    async def collect():
+        return [snapshot async for snapshot in request.execute()]
+    with pytest.raises(RuntimeError, match='native processor failed'):
+        asyncio.run(collect())
