@@ -40,11 +40,13 @@ parameters {
 }
 ```
 
-The backend accepts text generation, including gateway-rendered thinking/tool
-prompts. It rejects embedding, image, audio, video, PDF and media-parameter
-inputs. Keep model-specific checkpoint validation and engine settings in the
-model configuration. Existing Qwen/BGE models keep their original backend and
-execution environment.
+The backend accepts generation, including gateway-rendered thinking/tool
+prompts and explicitly configured checkpoint-native images. Text-only operation
+remains the default; image input requires a matching checkpoint/tokenizer and
+an explicit vision policy. Embedding, native audio, video and PDF inputs are
+rejected. Keep checkpoint validation and engine settings in the model
+configuration. Existing Qwen/BGE models keep their original backend and runtime
+unless the separate [unified image](README.unified.md) is selected.
 
 `docker/runtime-locks/vllm032-cu129.requirements.txt` is a pre-materialization lock: its 204 core packages were resolved from actual
 wheel metadata. The large FlashInfer data-wheel closure comes from the inspected

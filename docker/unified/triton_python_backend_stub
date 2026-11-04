@@ -1,0 +1,11 @@
+#!/opt/envs/vllm032-cu129/bin/python3.12 -I
+# SPDX-License-Identifier: Apache-2.0
+"""Keep Triton's stock argv/IPC ABI while selecting the common runtime first."""
+import importlib.util
+from pathlib import Path
+
+path = Path(__file__).resolve().parent / 'launch.py'
+spec = importlib.util.spec_from_file_location('unified_stub_launcher', path)
+launcher = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(launcher)
+launcher.stock_stub()

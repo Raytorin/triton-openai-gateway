@@ -154,6 +154,11 @@ docker build \
 
 All added Python dependencies are version-pinned and verified during the build.
 
+This is the maintained official/legacy runtime track. For the separate, opt-in
+vLLM `0.32` image, its build steps, and qualification limits, see
+[Runtime tracks and unified builds](docker/README.unified.md). Both tracks
+include the current gateway code; official NVIDIA image updates remain supported.
+
 ### 2. Prepare A Model
 
 The S3/remote repository flow expects the standard Triton layout:
@@ -253,6 +258,7 @@ and `8002`.
 | [Configuration](docs/configuration.md) | Model files, `gateway.json`, environment, and Helm |
 | [Operations](docs/operations.md) | Health, metrics, logging, tracing, and troubleshooting |
 | [Triton 26.09 migration](docs/migration-26.09.md) | Runtime pins and compatibility constraints |
+| [Runtime tracks and unified builds](docker/README.unified.md) | Official runtime maintenance, optional vLLM 0.32 build, qualification, and rollback |
 | [Sparse and hybrid embeddings](docs/sparse-embeddings.md) | BGE-M3 requests, parameters, and sparse vector format |
 | [API examples](examples/REQUEST_EXAMPLES.en.md) | Chat, media, tools, embeddings, and rerank requests |
 | [Custom backend](backends/vllm_multimodal/README.md) | Native multimodal Triton input contract |
