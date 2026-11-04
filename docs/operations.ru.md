@@ -244,7 +244,7 @@ OpenTelemetry показывает маршрут и задержки отдел
 | Prompt превышает context | Text, media tokens и output reserve больше `max_model_len` | Уменьшите resolution, chunk, history или output; увеличивайте context только при наличии памяти |
 | VL-модель отклоняет аудио | Архитектура не поддерживает аудио и ASR не настроен | Настройте локальную ASR-модель или используйте audio-capable модель |
 | На `:8002` нет GPU series | Не инициализировался встроенный DCGM | Используйте root builtin mode или внешний DCGM Exporter |
-| `pip` сообщает о конфликтах с Pydantic, OpenAI, NumPy или CUTLASS при сборке образа | Закреплённый базовый образ NVIDIA `26.09` содержит расхождения dependency metadata; проверка версий runtime не означает чистый `pip check` | Сохраняйте digest и версии из [руководства миграции](migration-26.09.ru.md); не обновляйте ключевые пакеты runtime независимо |
+| `pip` сообщает о конфликтах NumPy или CUTLASS при сборке образа | В закреплённом образе NVIDIA `26.10` сохраняются расхождения metadata для NumPy в librosa/OpenCV и CUTLASS в vLLM; проверка версий runtime не означает чистый `pip check` | См. [миграцию](migration-26.10.ru.md); сохраняйте согласованный vendor runtime вместо независимой замены его ключевых пакетов |
 | Gateway возвращает `429` | Заполнены inflight и queue | Повторите с backoff или настройте проверенные admission limits |
 | Gateway возвращает `413` | Превышен лимит body, media, страниц, pixels, кадров или длительности | Уменьшите input либо поднимите конкретный лимит после нагрузочного теста |
 

@@ -668,6 +668,7 @@ class TritonPythonModel:
                     pooling_model_metadata=self.pooling_model_metadata,
                     lora_repository=getattr(self, "lora_repository", None),
                     supported_loras=getattr(self, "supported_loras", None),
+                    prompt_preparer=make_prompt_preparer(self._llm_engine),
                 )
             else:
                 raise ValueError(
