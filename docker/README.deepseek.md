@@ -1,6 +1,6 @@
 # Optional DeepSeek execution environment
 
-The default `Dockerfile.triton-gateway` retains its NVIDIA vLLM 0.29 environment.
+The default `Dockerfile.triton-gateway` uses NVIDIA Triton 26.10 / vLLM 0.31.
 Build it first, then opt into the separate Python 3.12 / vLLM 0.32 CUDA 12.9
 execution environment:
 
@@ -40,11 +40,19 @@ parameters {
 }
 ```
 
-The backend accepts text generation, including gateway-rendered thinking/tool
-prompts. It rejects embedding, image, audio, video, PDF and media-parameter
-inputs. Keep model-specific checkpoint validation and engine settings in the
-model configuration. Existing Qwen/BGE models keep their original backend and
-execution environment.
+The backend accepts generation, including gateway-rendered thinking/tool
+prompts and explicitly configured checkpoint-native images. Vision requires a
+matching checkpoint/tokenizer and explicit model policy; text-only remains the
+default. Embedding, native audio, video and PDF inputs are rejected. Keep
+checkpoint validation and engine settings in the model configuration. Existing
+Qwen/BGE models keep their original backend and execution environment.
+
+The independent engine remains pinned to vLLM 0.32 / CUDA 12.9. Updating the
+classic base does not upgrade or remove it. Its native ABI policy is bound to
+the 26.10 stock stub and exact `libcudart.so.13.4.92` artifact. See the
+[26.10 migration guide](../docs/migration-26.10.md) for the classic runtime
+matrix and remaining vendor metadata conflicts. Validate the composed image's
+real stub and target GPU before using it for inference.
 
 `docker/runtime-locks/vllm032-cu129.requirements.txt` is a pre-materialization lock: its 204 core packages were resolved from actual
 wheel metadata. The large FlashInfer data-wheel closure comes from the inspected

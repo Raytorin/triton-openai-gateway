@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -49,6 +50,7 @@ from utils.vllm_backend_utils import (  # noqa: E402
     TritonSamplingParams,
     build_async_engine_client_from_engine_args,
 )
+from utils.vision_usage import make_prompt_preparer  # noqa: E402
 
 
 class Logger:
@@ -154,6 +156,38 @@ class RuntimeVllmContracts(unittest.TestCase):
             device_config=DeviceConfig(device="cpu"),
         )
 
+    def native_prompt_preparer(self, *, text=False):
+        # Real CPU renderer, not a signature-only double. Older pinned engines
+        # accept raw prompts and have no corresponding renderer boundary.
+        if tuple(map(int, vllm.__version__.split("+")[0].split(".")[:2])) < (0, 30):
+            return None
+        from vllm.renderers.hf import HfRenderer
+
+        tokenizer = None
+        if text:
+            from tokenizers import Tokenizer
+            from tokenizers.models import WordLevel
+            from tokenizers.pre_tokenizers import Whitespace
+            from transformers import PreTrainedTokenizerFast
+            from vllm.tokenizers.hf import get_cached_tokenizer
+
+            vocab = {f"token{i}": i for i in range(128)}
+            vocab.pop("token0")
+            vocab.pop("token10")
+            vocab.update({"<unk>": 0, "Hello": 10})
+            native = Tokenizer(WordLevel(vocab, unk_token="<unk>"))
+            native.pre_tokenizer = Whitespace()
+            tokenizer = get_cached_tokenizer(PreTrainedTokenizerFast(
+                tokenizer_object=native, unk_token="<unk>",
+            ))
+        renderer = HfRenderer(self.config, tokenizer)
+        self.addCleanup(renderer.shutdown)
+        preparer = make_prompt_preparer(SimpleNamespace(
+            model_config=self.config.model_config, renderer=renderer,
+        ))
+        self.assertIsNotNone(preparer, "New vLLM must expose a native EngineInput renderer")
+        return preparer
+
     def test_sampling_numeric_strings_preserve_lora_selection(self):
         # Catches annotation/type changes that break Triton's string parameters.
         logger = Logger()
@@ -189,6 +223,7 @@ class RuntimeVllmContracts(unittest.TestCase):
         from utils.request import GenerateRequest
 
         dispatched = []
+        native_preparer = self.native_prompt_preparer(text=True)
 
         async def generate(prompt, sampling_params, request_id, **kwargs):
             inspect.signature(AsyncLLM.generate).bind(
@@ -214,6 +249,7 @@ class RuntimeVllmContracts(unittest.TestCase):
             }), generate, np.object_, Logger(),
             lora_repository={"adapter": "/models/adapter"},
             supported_loras=["adapter"],
+            prompt_preparer=native_preparer,
         )
 
         async def collect():
@@ -222,7 +258,11 @@ class RuntimeVllmContracts(unittest.TestCase):
         responses = asyncio.run(collect())
         self.assertEqual(1, len(responses))
         prompt, params, lora = dispatched[0]
-        self.assertEqual("Hello", prompt)
+        if native_preparer is None:
+            self.assertEqual("Hello", prompt)
+        else:
+            self.assertEqual("token", prompt["type"])
+            self.assertEqual([10], prompt["prompt_token_ids"])
         self.assertEqual(1, params.max_tokens)
         self.assertIsInstance(params, TritonSamplingParams)
         self.assertIsInstance(lora, LoRARequest)
@@ -258,6 +298,7 @@ class RuntimeVllmContracts(unittest.TestCase):
                 if output_types is not None:
                     payload["output_types"] = output_types
                 dispatched = []
+                native_preparer = self.native_prompt_preparer()
 
                 async def encode(prompt, pooling_params, request_id, **kwargs):
                     inspect.signature(AsyncLLM.encode).bind(
@@ -279,6 +320,7 @@ class RuntimeVllmContracts(unittest.TestCase):
                     pooling_model_metadata=metadata,
                     lora_repository={"adapter": "/models/adapter"},
                     supported_loras=["adapter"],
+                    prompt_preparer=native_preparer,
                 )
 
                 async def collect():
@@ -288,6 +330,8 @@ class RuntimeVllmContracts(unittest.TestCase):
                 self.assertEqual(1, len(responses))
                 prompt, pooling_params, lora = dispatched[0]
                 self.assertEqual([0, 10, 20, 2], prompt["prompt_token_ids"])
+                if native_preparer is not None:
+                    self.assertEqual("token", prompt["type"])
                 self.assertIsInstance(pooling_params, PoolingParams)
                 self.assertEqual(task, pooling_params.task)
                 self.assertTrue(pooling_params.use_activation)

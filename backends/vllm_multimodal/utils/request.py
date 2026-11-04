@@ -533,8 +533,10 @@ class EmbedRequest(RequestBase):
         pooling_model_metadata: PoolingModelMetadata | None = None,
         lora_repository: Optional[Dict[str, str]] = None,
         supported_loras: Optional[List[str]] = None,
+        prompt_preparer: Callable | None = None,
     ):
         super().__init__(request, executor_callback, output_dtype, logger, model_name)
+        self.prompt_preparer = prompt_preparer
         self.lora_repository = lora_repository or {}
         self.supported_loras = supported_loras or []
         self.pooling_model_metadata = pooling_model_metadata or PoolingModelMetadata()
@@ -602,7 +604,11 @@ class EmbedRequest(RequestBase):
             engine_request_id=self.id,
             task=self.output_spec.task,
         )
-        # Create PoolingParams for embeddings
+        # vLLM >= 0.30 expects rendered EngineInput for pooling as for generation.
+        # Older engines have no native preparer and keep their original prompt.
+        if self.prompt_preparer is not None:
+            prepared = await self.prompt_preparer(BuiltMediaPrompt(prompt, {}))
+            prompt = prepared.prompt
         response_iterator = self.executor_callback(
             prompt, pooling_params, self.id, lora_request=self.lora_request
         )
