@@ -39,6 +39,17 @@ def serve():
             message = {"content": '{"answer":"sunny"}' if request.response_format else "It is sunny"}
             finish = "stop"
         usage = {"prompt_tokens": 5, "completion_tokens": 4, "total_tokens": 9}
+        if any(m.content == "visual-usage" for m in request.messages):
+            usage.update({
+                "vision_usage": {
+                    "main": {"status": "available", "source": "engine", "unit": "embedding_positions",
+                             "by_source": {"image": 3}, "calls": 1},
+                    "preprocessing": {"status": "available", "source": "engine", "unit": "embedding_positions",
+                                      "by_source": {"pdf": 7}, "calls": 2},
+                },
+                "vision_context_reservation": {"source": "estimated", "unit": "context_positions",
+                                               "by_scope": {"main": 1024}},
+            })
         if any(m.content == "exhaust-output" for m in request.messages):
             # Model a backend that exhausts its budget before visible output.
             message, finish = {"content": ""}, "length"
@@ -96,6 +107,7 @@ def serve():
                     stack.enter_context(patch.object(generation.registry, name, replacement))
                 stack.enter_context(patch.object(generation.admission, "acquire", AsyncMock(return_value=AdmissionLease([]))))
                 stack.enter_context(patch.object(tc, "_build_grpc_generate_inputs", inputs))
+                stack.enter_context(patch.object(tc, "get_grpc_client", AsyncMock(return_value=object())))
                 stack.enter_context(patch.object(tc, "_stream_grpc_results", backend))
                 return TestClient(app).post("/v1/chat/completions", json=body)
 
@@ -169,6 +181,15 @@ def check_clients(url):
             *(item.model_dump(exclude_none=True) for item in mixed.output),
             {"type": "function_call_output", "call_id": mixed.output[1].call_id, "output": "sunny"}]
         assert create(input=mixed_history, tools=[tool], store=False).output_text == "It is sunny"
+        for streaming in (False, True):
+            visual = create(input="visual-usage", stream=streaming, store=False)
+            if streaming:
+                visual = list(visual)[-1].response
+            visual_usage = visual.usage.model_dump(exclude_none=True)
+            assert visual_usage["input_tokens"] == 5 and visual_usage["total_tokens"] == 9
+            assert visual_usage["vision_usage"]["main"]["by_source"] == {"image": 3}, (name, visual_usage)
+            assert visual_usage["vision_usage"]["preprocessing"]["by_source"] == {"pdf": 7}, (name, visual_usage)
+            assert visual_usage["vision_context_reservation"]["unit"] == "context_positions"
         print(f"{name}: text, streaming, function roundtrip, mixed text/tool stream roundtrip, JSON Schema and schema stream passed")
     # Exercise the SDK event accumulator, not just event iteration.
     with client.responses.stream(model="test", input="Hello", store=False) as stream:

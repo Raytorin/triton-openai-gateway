@@ -147,7 +147,7 @@ or `/tmp`. The watcher:
 3. points GGUF models to the actual `.gguf` file;
 4. removes engine arguments known to be incompatible with the pinned vLLM;
 5. creates `<watcher-root>/models-active/<model>` for tokenizer and gateway config access;
-6. removes stale links after unload.
+6. removes stale links and retires obsolete copies, collecting them after a stable-file grace period and process-reference checks.
 
 The source model repository is never modified. Only Triton's temporary checkout
 is changed.

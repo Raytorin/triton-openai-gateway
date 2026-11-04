@@ -18,6 +18,7 @@ LANGUAGE_PAIRS = (
     ("docs/architecture.md", "docs/architecture.ru.md"),
     ("docs/configuration.md", "docs/configuration.ru.md"),
     ("docs/migration-26.09.md", "docs/migration-26.09.ru.md"),
+    ("docs/migration-26.10.md", "docs/migration-26.10.ru.md"),
     ("docs/operations.md", "docs/operations.ru.md"),
     ("backends/vllm_multimodal/README.md", "backends/vllm_multimodal/README.ru.md"),
     ("helm/triton-gateway/README.md", "helm/triton-gateway/README.ru.md"),
@@ -111,6 +112,23 @@ def test_optional_deepseek_parser_is_pinned_for_tests():
         if test_requirements.get(package) != pin.split()[0]
     }
     assert not mismatches, f"Optional parser and test pins differ: {mismatches}"
+
+
+def test_helm_production_override_uses_the_default_runtime_release():
+    chart = ROOT / "helm/triton-gateway"
+    # These scalar fields deliberately have no YAML indirection. Check the
+    # production override too: it wins over the otherwise updated default.
+    def scalar(path, name):
+        content = path.read_text(encoding="utf-8")
+        match = re.search(rf'^\s*{name}:\s*["\']?([^\s"\']+)', content, re.MULTILINE)
+        assert match, (path, name)
+        return match[1]
+
+    default_tag = scalar(chart / "values.yaml", "tag")
+    production_tag = scalar(chart / "values.production.example.yaml", "tag")
+    release = scalar(chart / "Chart.yaml", "appVersion")
+    assert production_tag == default_tag
+    assert default_tag.startswith(release + "-")
 
 
 def test_external_github_actions_are_pinned_to_commit_shas():

@@ -19,6 +19,7 @@ from fastapi import HTTPException
 
 from .cpu_work import run_cpu
 from .generation_types import GenerationEvent, GenerationStream
+from .generation_metadata import GenerationOutput, log_completion, metadata_of, resolve_finish_reason
 from .prompt import build_usage, completion_reached_token_limit
 from .qwen import TemplateCapabilities, _metadata_locations, _read_json, _resolved_template
 
@@ -81,6 +82,9 @@ def validate_request(request):
         raise HTTPException(400, "tool_choice=required requires tools")
     if isinstance(choice, dict) and choice["function"]["name"] not in names:
         raise HTTPException(400, "tool_choice function must be present in tools")
+    structured = request.response_format is not None and request.response_format.type in {"json_object", "json_schema"}
+    if structured and (choice == "required" or isinstance(choice, dict)):
+        raise HTTPException(400, "DeepSeek structured output cannot require a tool call")
 
 
 def _invalid(message):
@@ -257,8 +261,8 @@ class DeepSeekOutput:
                     self.stopped = True
         return events
 
-    def finish(self, *, length=False):
-        length = length and not self.stopped
+    def finish(self, *, length=False, authoritative=False):
+        length = length and (authoritative or not self.stopped)
         if self.pending and not self.finished:
             if not length:
                 _invalid('incomplete service marker or DSML block')
@@ -277,35 +281,128 @@ class DeepSeekOutput:
                 _invalid('parser changed tool name or typed arguments')
         if self.required and not calls and not length:
             _invalid('required tool call is missing')
-        reason = 'length' if length or self.in_reasoning else 'tool_calls' if calls else 'stop'
+        reason = 'length' if length else 'tool_calls' if calls else 'stop'
         return events, reason
 
     def close(self):
         self.processor.close()
 
 
-async def generate(request, tokenizer, prompt, sampling, settings, tools, *, headers, extensions):
+class DeepSeekJsonOutput:
+    """JSON content is data, including literal reasoning/tool markers in strings.
+
+    Grammar enforcement belongs to the engine. This adapter preserves JSON wire
+    deltas and validates a normally completed JSON document; an engine length
+    completion may contain a truncated document. Only EOS outside strings is a
+    service marker. In particular, no JSON text is sent through the DSML parser.
+    """
+    def __init__(self, *, require_object=False):
+        self.require_object = require_object
+        self.raw = self.content = self.reasoning = self.pending = ""
+        self.stopped = self.finished = self.in_string = self.escaped = False
+
+    def start(self):
+        return [{"role": "assistant"}]
+
+    def feed(self, text):
+        if self.finished:
+            return []
+        self.raw += text
+        data = self.pending + text
+        self.pending = ""
+        visible = []
+        index = 0
+        while index < len(data):
+            char = data[index]
+            if not self.in_string and char == "<":
+                suffix = data[index:]
+                if EOS.startswith(suffix) and suffix != EOS:
+                    self.pending = suffix
+                    break
+                if suffix.startswith(EOS):
+                    self.stopped = self.finished = True
+                    break
+                _invalid("unexpected service marker outside structured JSON")
+            visible.append(char)
+            if self.in_string:
+                if self.escaped:
+                    self.escaped = False
+                elif char == "\\":
+                    self.escaped = True
+                elif char == '"':
+                    self.in_string = False
+            elif char == '"':
+                self.in_string = True
+            index += 1
+        delta = "".join(visible)
+        self.content += delta
+        return [{"content": delta}] if delta else []
+
+    def finish(self, *, length=False, authoritative=False):
+        length = length and (authoritative or not self.stopped)
+        if not length:
+            def reject_constant(_value):
+                raise ValueError("non-finite JSON")
+            def unique(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError("duplicate JSON key")
+                    result[key] = value
+                return result
+            try:
+                if self.pending:
+                    raise ValueError("incomplete EOS marker")
+                value = json.loads(self.content, parse_constant=reject_constant,
+                                   object_pairs_hook=unique)
+                json.dumps(value, allow_nan=False)
+            except (ValueError, TypeError, RecursionError):
+                _invalid("invalid or incomplete structured JSON")
+            if self.require_object and not isinstance(value, dict):
+                _invalid("json_object output must be an object")
+        return [], "length" if length else "stop"
+
+    def close(self):
+        pass
+
+
+async def generate(request, tokenizer, prompt, sampling, settings, tools, *, headers, extensions, media=None):
     from . import triton_client as tc
     response_id = f'chatcmpl-{uuid.uuid4().hex}'; created = int(time.time())
 
     async def events():
-        parser = DeepSeekOutput(response_id, request.model, settings, tools, request.tool_choice)
+        structured = request.response_format is not None and request.response_format.type in {"json_object", "json_schema"}
+        parser = (DeepSeekJsonOutput(require_object=request.response_format.type == "json_object")
+                  if structured else DeepSeekOutput(response_id, request.model, settings, tools, request.tool_choice))
         def event(delta, **kwargs):
             return GenerationEvent(response_id, created, request.model, delta, **kwargs)
         try:
             for delta in parser.start():
                 yield event(delta)
-            async with aclosing(tc.stream_triton_text_deltas(request.model, prompt, sampling)) as source:
+            metadata = None
+            async with aclosing(tc.stream_triton_text_deltas(request.model, prompt, sampling,
+                    **({'media': media} if media is not None else {}))) as source:
                 async for text in source:
-                    for delta in parser.feed(text):
-                        yield event(delta)
-                    if parser.finished:
+                    metadata = metadata_of(text) or metadata
+                    # EOS may finish the recipe before the engine sends its
+                    # final token counts. Drain metadata without parsing tails.
+                    if not parser.finished:
+                        for delta in parser.feed(text):
+                            yield event(delta)
+                    if metadata is not None and metadata.finished:
                         break
-            usage = await run_cpu(build_usage, tokenizer, prompt, parser.raw, reasoning_text=parser.reasoning)
+                    if parser.finished and metadata is None:
+                        break
+            raw = GenerationOutput(parser.raw, metadata)
+            usage = await run_cpu(build_usage, tokenizer, prompt, raw, reasoning_text=parser.reasoning)
+            log_completion(request.model, raw, metadata)
+            finish_reason = resolve_finish_reason(metadata,
+                token_limit_reached=completion_reached_token_limit(usage, sampling) and not parser.stopped,
+                stopped_locally=parser.stopped and metadata is None)
             counted_reasoning = parser.reasoning
-            deltas, reason = parser.finish(length=completion_reached_token_limit(usage, sampling))
+            deltas, reason = parser.finish(length=finish_reason == 'length', authoritative=metadata is not None)
             if parser.reasoning != counted_reasoning:
-                usage = await run_cpu(build_usage, tokenizer, prompt, parser.raw, reasoning_text=parser.reasoning)
+                usage = await run_cpu(build_usage, tokenizer, prompt, raw, reasoning_text=parser.reasoning)
             for delta in deltas:
                 yield event(delta)
             yield event({}, finish_reason=reason, usage=usage)

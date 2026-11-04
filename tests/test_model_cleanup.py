@@ -20,9 +20,11 @@ def model(root, folder, version="1", name="model"):
 def run(root, script):
     active = root / "models-active"
     active.mkdir(exist_ok=True)
+    proc = root / "proc"
+    proc.mkdir(exist_ok=True)
     result = subprocess.run(
         ["bash", "-c", 'source "$1"; ' + script, "bash", str(ROOT / "watch_triton.sh")],
-        env={**os.environ, "WATCHER_MODEL_DIR": str(root), "MODELS_ACTIVE_DIR": str(active)},
+        env={**os.environ, "WATCHER_MODEL_DIR": str(root), "MODELS_ACTIVE_DIR": str(active), "WATCHER_CLEANUP_GRACE_SECONDS": "0", "WATCHER_CLEANUP_INTERVAL_SECONDS": "0", "WATCHER_PROC_ROOT": str(proc)},
         text=True, capture_output=True, timeout=10,
     )
     assert result.returncode == 0, result.stdout + result.stderr

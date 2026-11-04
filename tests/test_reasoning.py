@@ -341,10 +341,8 @@ class ReasoningStreamingTests(unittest.IsolatedAsyncioTestCase):
                 "This is the final answer."
             )
 
-        with patch(
-            "gateway.triton_client._stream_grpc_results",
-            new=results,
-        ):
+        with (patch("gateway.triton_client.get_grpc_client", AsyncMock(return_value=object())),
+              patch("gateway.triton_client._stream_grpc_results", new=results)):
             events = [
                 event
                 async for event in stream_triton_multimodal_to_openai(

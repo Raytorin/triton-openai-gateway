@@ -50,6 +50,7 @@ from utils.metrics import (
 )
 from utils.observability import get_triton_request_id, log_event
 from utils.request import EmbedRequest, GenerateRequest
+from utils.vision_usage import make_prompt_preparer
 from utils.vllm_backend_utils import build_async_engine_client_from_engine_args
 
 _VLLM_ENGINE_ARGS_FILENAME = "model.json"
@@ -135,6 +136,12 @@ class TritonPythonModel:
                 "optional": True,
             },
             {
+                "name": "return_generation_metadata",
+                "data_type": "TYPE_BOOL",
+                "dims": [1],
+                "optional": True,
+            },
+            {
                 "name": "return_cumulative_logprob",
                 "data_type": "TYPE_BOOL",
                 "dims": [1],
@@ -171,6 +178,7 @@ class TritonPythonModel:
         outputs = [
             {"name": "text_output", "data_type": "TYPE_STRING", "dims": [-1]},
             {"name": "finish_reason", "data_type": "TYPE_STRING", "dims": [-1]},
+            {"name": "generation_metadata", "data_type": "TYPE_STRING", "dims": [1]},
             {"name": "cumulative_logprob", "data_type": "TYPE_FP32", "dims": [-1]},
             {"name": "logprobs", "data_type": "TYPE_STRING", "dims": [-1]},
             {"name": "num_input_tokens", "data_type": "TYPE_UINT32", "dims": [1]},
@@ -259,6 +267,10 @@ class TritonPythonModel:
             supported_tasks=sorted(str(task) for task in self.supported_tasks),
         )
 
+    def _load_engine_config(self, engine_args_filepath):
+        with open(engine_args_filepath) as file:
+            return json.load(file)
+
     def _init_engine_args(self):
         # Currently, Triton needs to use decoupled policy for asynchronously
         # forwarding requests to vLLM engine, so assert it.
@@ -275,8 +287,7 @@ class TritonPythonModel:
         assert os.path.isfile(
             engine_args_filepath
         ), f"'{_VLLM_ENGINE_ARGS_FILENAME}' containing vllm engine args must be provided in '{pb_utils.get_model_dir()}'"
-        with open(engine_args_filepath) as file:
-            self.vllm_engine_config = json.load(file)
+        self.vllm_engine_config = self._load_engine_config(engine_args_filepath)
         self.pooling_model_metadata = load_pooling_model_metadata(
             self.vllm_engine_config,
             model_dir=pb_utils.get_model_dir(),
@@ -636,6 +647,7 @@ class TritonPythonModel:
                         self.lora_repository,
                         self.supported_loras,
                         model_name=self.args.get("model_name", ""),
+                        prompt_preparer=make_prompt_preparer(self._llm_engine),
                     )
                 else:
                     request = GenerateRequest(
@@ -644,6 +656,7 @@ class TritonPythonModel:
                         self.output_dtype,
                         self.logger,
                         model_name=self.args.get("model_name", ""),
+                        prompt_preparer=make_prompt_preparer(self._llm_engine),
                     )
             elif request_task_name == "embed":
                 request = EmbedRequest(
@@ -655,6 +668,7 @@ class TritonPythonModel:
                     pooling_model_metadata=self.pooling_model_metadata,
                     lora_repository=getattr(self, "lora_repository", None),
                     supported_loras=getattr(self, "supported_loras", None),
+                    prompt_preparer=make_prompt_preparer(self._llm_engine),
                 )
             else:
                 raise ValueError(

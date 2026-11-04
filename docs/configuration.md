@@ -10,15 +10,15 @@ separate prevents gateway-only keys from being passed to vLLM engine arguments.
 
 ## Runtime Compatibility
 
-The Dockerfile pins the NVIDIA Triton `26.09-vllm-python-py3` base image by
-digest. The build verifies Triton client `2.73.0`, vLLM `0.29.0`, Transformers
-`5.16.1`, Torch, FlashInfer, and all added media/runtime dependencies. Changing the base
+The Dockerfile pins the NVIDIA Triton `26.10-vllm-python-py3` base image by
+digest. The build verifies Triton client `2.74.0`, vLLM `0.31.0`, Transformers
+`5.17.0`, Torch, FlashInfer, and all added media/runtime dependencies. Changing the base
 image is an explicit compatibility migration, not a routine package upgrade.
 
 Build with the pinned default:
 
 ```bash
-docker build -f Dockerfile.triton-gateway -t triton-openai-gateway:26.09 .
+docker build -f Dockerfile.triton-gateway -t triton-openai-gateway:26.10 .
 ```
 
 Override the base only when you have validated the complete runtime matrix:
@@ -53,13 +53,30 @@ For the S3 repository flow, the watcher creates a stable link under
 version. The root follows `WATCHER_MODEL_DIR`, `TMP_ROOT`, Triton's
 `TMPDIR`, then `/tmp`, in that order.
 
-The watcher tracks published links. After a link is removed, it deletes the
-corresponding temporary version on the next scan (normally within one second).
-When replacing a link, cleanup follows the switch immediately. The enclosing
-`folder*` checkout and metadata are removed once no numeric versions or active
-references remain. Other versions, shared active references, and paths outside
-the watcher root are preserved; the source S3 repository is untouched. Never
-published directories are not treated as garbage: Triton may still be loading them.
+The watcher retires replaced/unlinked versions and older, unpublished duplicates
+of the same model, backend, and numeric version. Selection happens before path
+repair and preserves the original `model.json` timestamp during repair, so a
+rewritten copy cannot look newer, including after a watcher restart.
+Retirement is recorded in `.watcher-retired.json`; these copies are not published
+again after a watcher restart. Removal requires 300 seconds of unchanged file
+metadata by default and is retried at most every 30 seconds. A resumed download
+restarts the grace period. Active symlinks and process references through open
+files, memory maps, or working directories defer removal; an unavailable process
+inventory also defers it. Empty checkout metadata is collected after the same
+grace period, without recursively deleting newly appeared versions.
+Shared metadata is staged with a persistent journal before an empty checkout is
+removed. If a download appears or cleanup is interrupted, the watcher restores
+the metadata before model discovery, preserving any newer files written by the
+downloader. If recovery must be deferred, cleanup pauses and copies without a
+config are not published; unrelated models with valid configs remain available.
+
+Other numeric versions, external checkpoints and symlink targets are preserved.
+The existing conservative DeepSeek retirement policy is unchanged: shared
+DeepSeek checkpoints require an operator-confirmed unload. Unidentifiable or
+malformed configurations are retained; a repeated config failure is logged once
+per file identity and retried when that file changes. The source S3 repository
+is never modified. Retirement markers belong to local `folder*` checkouts and
+must not be copied into a source model repository.
 
 ## `config.pbtxt`
 
@@ -123,7 +140,7 @@ copying the example unchanged.
 ### Structured Output
 
 Clients request constrained JSON through the OpenAI `response_format` field.
-The gateway translates `json_object` and `json_schema` into Triton 26.09's
+The gateway translates `json_object` and `json_schema` into Triton 26.10's
 serialized vLLM `structured_outputs` parameter for both `vllm` and
 `vllm_multimodal` backends.
 
@@ -134,7 +151,7 @@ ordinary chat requests. An explicit `chat_template_kwargs.enable_thinking: true`
 with `json_object` or `json_schema` is rejected with HTTP 400; omitting it or
 setting it to `false` retains the non-thinking structured-output path.
 
-No extra engine setting is required in the stock image. vLLM `0.29.0` uses the
+No extra engine setting is required in the stock image. vLLM `0.31.0` uses the
 `auto` backend by default and the pinned Triton image includes `xgrammar`. To
 make the selection explicit, add one of these blocks to `model.json`:
 
@@ -380,7 +397,9 @@ elevate a stricter server policy.
 Hiding reasoning does not stop the model from generating it. Reasoning and the
 final answer share `max_tokens`; if the model consumes the complete budget
 before producing final content, the gateway returns empty `content` with
-`finish_reason: "length"`.
+`finish_reason: "length"`. An incomplete reasoning block or empty text alone
+does not establish that the output budget was exhausted. When available, the
+engine finish reason takes precedence over text-based heuristics.
 
 `parser: "auto"` detects supported Qwen chat templates. Explicit
 `qwen3` and `think_tags` parsers are also available. Use
@@ -430,6 +449,23 @@ never globally aliased. For example, the supported Qwen3.8 template accepts
 templates may not consume effort at all. The Qwen3.6 examples intentionally
 omit effort. `preserve_thinking` likewise requires template support.
 
+Use a model's `gateway.json` to add model-local aliases when client vocabulary
+differs from its native template:
+
+```json
+{"reasoning":{"effort_map":{"xhigh":"high"}}}
+```
+
+The map is a strict string-to-string object and performs one lookup. For the
+DeepSeek V4.1 profile this example sends native `high` (75) in the backend
+prompt; its `max` remains 100. Without this map, a Qwen model keeps its native
+`xhigh`. There is no environment-wide alias or shared tokenizer mutation.
+Targets must be supported by the actually selected default/tool template.
+Malformed configuration or an unsupported configured target is a server
+configuration error (500); an unsupported unmapped client value remains 400.
+Omitting effort keeps the template default. Mapped effort still requires
+thinking and cannot be combined with constrained JSON output.
+
 The Responses API contract is unchanged and does not accept these reasoning
 controls. Chat sampling also accepts `top_k` (`-1` or a positive integer) and
 `presence_penalty` (from `-2` to `2`); these are passed to generation.
@@ -453,6 +489,9 @@ set the corresponding environment variables.
 | `TMP_ROOT` | unset | Backward-compatible watcher root alias |
 | `TMPDIR` | system value | Triton temporary directory and automatic watcher fallback |
 | `MODELS_ACTIVE_DIR` | `<watcher-root>/models-active` | Stable active-model links |
+| `WATCHER_CLEANUP_GRACE_SECONDS` | `300` | Unchanged-file grace period before collecting retired local copies |
+| `WATCHER_CLEANUP_INTERVAL_SECONDS` | `30` | Minimum interval between cleanup attempts for one copy |
+| `WATCHER_PROC_ROOT` | `/proc` | Process inventory mount used to protect in-use copies; use a complete container inventory |
 | `GATEWAY_PORT` | `8080` | FastAPI listen port |
 | `REQUEST_TIMEOUT_SECONDS` | `600` | Upstream request timeout |
 | `GATEWAY_MAX_REQUEST_BODY_BYTES` | `268435456` | Maximum HTTP request body |
@@ -477,6 +516,11 @@ and exits so container shutdown can finish. Restarting interrupts in-flight gate
 | `GATEWAY_STARTUP_GRACE_SECONDS` | `60` | Startup grace until first successful response |
 | `GATEWAY_STOP_GRACE_SECONDS` | `10` | Shutdown grace after SIGTERM |
 | `GATEWAY_RESTART_DELAY_SECONDS` | `2` | Delay before restarting |
+| `GATEWAY_RUN_DIR` | `/tmp/triton-gateway-<uid>` | Private supervisor/CLI state directory; same OS user, owner-only mode `0700` |
+
+Use `triton-gateway status` and `triton-gateway restart` inside the container to
+inspect or restart only the gateway. See [gateway process control](operations.md#gateway-status-and-restart)
+for deadlines and exit codes.
 
 ### CPU Preparation
 
@@ -580,7 +624,9 @@ accepted; conflicting values return 400. Limits must be positive integers.
 Omitted/null limits select 4096 tokens normally or 8192 with thinking enabled,
 reduced to the available context without discarding an already fitting history.
 Explicit limits are never silently clamped. Thinking and function arguments
-count toward the same output budget. Usage is currently estimated by tokenization.
+count toward the same output budget. Prompt and completion totals use cumulative
+engine counts when the backend supports generation metadata; otherwise the
+gateway estimates them by tokenization. Reasoning segmentation remains estimated.
 
 Global environment defaults: `GATEWAY_DEFAULT_OUTPUT_TOKENS=4096`,
 `GATEWAY_REASONING_DEFAULT_OUTPUT_TOKENS=8192`, `GATEWAY_MAX_OUTPUT_TOKENS=32768`.
@@ -598,3 +644,16 @@ Do not use tokenizer sentinel values as runtime context limits. The existing
 context safety margin applies. Internal summary calls retain their own budgets.
 `X-Output-Token-Limit`, `X-Output-Token-Limit-Source` and `X-Token-Usage-Source`
 report the decision; structured logs include the input/media/context reserves.
+`X-Token-Usage-Source: backend-preferred` describes this preference/fallback policy,
+not a guarantee that every backend supplies every counter. The pre-inference
+budget log still describes an estimate of the input size.
+
+The shared vLLM backend advertises optional `return_generation_metadata` (BOOL)
+and `generation_metadata` (BYTES) tensors. The version-1 JSON envelope carries
+`finished`, `prompt_tokens` and per-choice engine finish/stop reasons, cumulative
+completion counts and first/last token IDs. Existing `num_output_tokens` remains
+a delta counter. Support is discovered before inference and cached for at most
+30 seconds; generation is never retried to negotiate the extension. Legacy
+backends receive the original request shape. Abort/error, malformed metadata or
+a missing advertised terminal result become upstream errors, not successful
+`length` completions.

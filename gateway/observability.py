@@ -33,7 +33,7 @@ from .tracing import start_request_trace
 
 REQUEST_ID_HEADER = b"x-request-id"
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:/-]{1,160}$")
-CEF_VENDOR = "ML Platform AI"
+CEF_VENDOR = "Triton OpenAI Gateway"
 CEF_PRODUCT = "Triton OpenAI Gateway"
 CEF_VERSION = __version__
 MAX_REQUEST_BODY_BYTES = int(
@@ -409,6 +409,10 @@ class RequestContextMiddleware:
         level = logging.ERROR if status_code >= 500 else (
             logging.WARNING if status_code >= 400 else logging.INFO
         )
+        if (scope.get("method") in {"GET", "HEAD"}
+                and scope.get("path") in {"/health", "/ready"}
+                and 200 <= status_code < 300):
+            level = logging.DEBUG
         log_event(
             self.logger,
             "http.request.completed",

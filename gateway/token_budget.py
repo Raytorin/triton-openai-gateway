@@ -35,7 +35,7 @@ class TokenBudget:
     def headers(self) -> dict[str, str]:
         return {"X-Output-Token-Limit": str(self.effective),
                 "X-Output-Token-Limit-Source": self.source,
-                "X-Token-Usage-Source": "estimated"}
+                "X-Token-Usage-Source": "backend-preferred"}
 
 
 def requested_output_limit(request: Any) -> int | None:

@@ -84,6 +84,44 @@ DISABLED_REASONING_SETTINGS = ReasoningSettings(
 )
 
 
+def validate_effort_map(value: Any) -> dict[str, str]:
+    """Validate exact names without normalizing or modifying caller state."""
+    if (not isinstance(value, dict)
+            or any(not isinstance(key, str) or not key
+                   or not isinstance(target, str) or not target
+                   for key, target in value.items())):
+        raise HTTPException(500, "reasoning.effort_map must be an object of nonempty string names and targets")
+    return dict(value)
+
+
+def read_reasoning_effort_map(model_path: Path) -> dict[str, str]:
+    configured = _read_gateway_json(model_path / "gateway.json").get("reasoning", {})
+    if not isinstance(configured, dict):
+        raise HTTPException(500, "gateway.json reasoning must be an object")
+    return validate_effort_map(configured.get("effort_map", {}))
+
+
+def resolve_reasoning_effort(
+    requested: str | None, supported: frozenset[str], effort_map: Any = None,
+) -> str | None:
+    """Resolve one model-local alias, checked against the selected template.
+
+    This pure resolver is shared with offline token qualification. Every
+    configured target is checked, including when the request has no effort.
+    """
+    mapping = validate_effort_map({} if effort_map is None else effort_map)
+    if any(target not in supported for target in mapping.values()):
+        raise HTTPException(500, "reasoning.effort_map target is not supported by the resolved chat template")
+    if requested is None:
+        return None
+    if not isinstance(requested, str):
+        raise HTTPException(400, "reasoning_effort must be a string")
+    native = mapping.get(requested, requested)
+    if native not in supported:
+        raise HTTPException(400, "reasoning_effort is not supported by the resolved chat template")
+    return native
+
+
 def load_reasoning_settings(
     model_path: Path,
     *,
@@ -100,13 +138,16 @@ def load_reasoning_settings(
             raise HTTPException(status_code=400, detail=f"{name} must be a boolean")
     if reasoning_effort is not None and not isinstance(reasoning_effort, str):
         raise HTTPException(status_code=400, detail="reasoning_effort must be a string")
+    effort_map = read_reasoning_effort_map(model_path)
     from .deepseek import is_deepseek_profile, template_capabilities
     deepseek_profile = is_deepseek_profile(model_path, tokenizer)
     if deepseek_profile:
         qwen_profile = False
         capabilities = template_capabilities(model_path, tokenizer, tools=tools)
     else:
-        qwen_profile, capabilities = qwen_template_capabilities(model_path, tokenizer, tools=tools)
+        qwen_profile, capabilities = qwen_template_capabilities(
+            model_path, tokenizer, tools=tools, effort_targets=tuple(effort_map.values()))
+    native_effort = resolve_reasoning_effort(reasoning_effort, capabilities.efforts, effort_map)
     config_path = model_path / "gateway.json"
     configured = _read_reasoning_settings(
         str(config_path),
@@ -134,8 +175,6 @@ def load_reasoning_settings(
     if reasoning_effort is not None:
         if mode == "disabled":
             raise HTTPException(status_code=400, detail="reasoning_effort requires thinking to be enabled")
-        if reasoning_effort not in capabilities.efforts:
-            raise HTTPException(status_code=400, detail="reasoning_effort is not supported by the resolved chat template")
 
     if mode != "disabled" and not configured.supported:
         raise HTTPException(
@@ -162,7 +201,7 @@ def load_reasoning_settings(
             or capabilities.thinking == "switch"
         ),
         _template_options=tuple((name, value) for name, value in (
-            ("preserve_thinking", preserve_thinking), ("reasoning_effort", reasoning_effort)
+            ("preserve_thinking", preserve_thinking), ("reasoning_effort", native_effort)
         ) if value is not None),
     )
 

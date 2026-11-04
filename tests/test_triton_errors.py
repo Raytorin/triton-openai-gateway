@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 from grpc import StatusCode
@@ -58,7 +58,8 @@ class TritonGrpcGenerationErrorTests(unittest.IsolatedAsyncioTestCase):
                     raise rpc_error
                     yield  # Make this an async iterator like _stream_grpc_results.
 
-                with patch("gateway.triton_client._stream_grpc_results", failing_results):
+                with (patch("gateway.triton_client.get_grpc_client", AsyncMock(return_value=object())),
+                      patch("gateway.triton_client._stream_grpc_results", failing_results)):
                     with self.assertRaises(HTTPException) as caught:
                         await call_triton_multimodal("chat-model", "hello", {}, [])
 

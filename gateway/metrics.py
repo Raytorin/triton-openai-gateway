@@ -270,3 +270,20 @@ def triton_call(operation: str, model: str, transport: str) -> Iterator[None]:
         TRITON_REQUESTS_INFLIGHT.labels(*labels).dec()
         TRITON_REQUEST_DURATION.labels(*labels).observe(time.monotonic() - started_at)
         TRITON_REQUESTS.labels(operation, model, transport, status).inc()
+
+
+VISUAL_EMBEDDING_POSITIONS = Counter(
+    "gateway_visual_embedding_positions_total",
+    "Actual processor visual embedding positions consumed by generation calls",
+    ["model", "route", "source_kind", "scope", "source"],
+)
+VISUAL_USAGE_STATUS = Counter(
+    "gateway_visual_usage_requests_total",
+    "Visual usage availability at request completion",
+    ["model", "route", "scope", "status"],
+)
+VISUAL_CONTEXT_RESERVED = Counter(
+    "gateway_visual_context_positions_reserved_total",
+    "Estimated context positions reserved for visual input including delimiters",
+    ["model", "route", "scope", "source"],
+)

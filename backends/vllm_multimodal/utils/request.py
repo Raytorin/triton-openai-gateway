@@ -51,6 +51,7 @@ from utils.hybrid_embeddings import (
     serialize_pooling_output,
 )
 from utils.media import build_multimodal_prompt, parse_media_parameters
+from utils.vision_usage import BuiltMediaPrompt, unavailable_vision_usage
 from utils.observability import get_triton_request_id, log_event
 
 
@@ -110,8 +111,11 @@ class GenerateRequest(RequestBase):
         lora_repository: Optional[Dict[str, str]] = None,
         supported_loras: Optional[List[str]] = None,
         model_name: str = "",
+        prompt_preparer: Callable | None = None,
     ):
         super().__init__(request, executor_callback, output_dtype, logger, model_name)
+        self.prompt_preparer = prompt_preparer
+        self.vision_usage = None
         # Attributes for generate requests
         if lora_repository is not None:
             self.lora_repository = lora_repository
@@ -179,6 +183,7 @@ class GenerateRequest(RequestBase):
         # additional outputs
         additional_outputs = {
             "return_finish_reason": None,
+            "return_generation_metadata": None,
             "return_cumulative_logprob": None,
             "return_logprobs": None,
             "return_num_input_tokens": None,
@@ -242,6 +247,7 @@ class GenerateRequest(RequestBase):
                     build_multimodal_prompt,
                     prompt,
                     parameters=media_parameters,
+                    with_origins=True,
                     **media_values,
                 )
         except Exception as exc:
@@ -268,6 +274,15 @@ class GenerateRequest(RequestBase):
             **media_counts,
         )
 
+        # Test/legacy builders can return raw prompts; native builder carries origins.
+        built = prompt if isinstance(prompt, BuiltMediaPrompt) else BuiltMediaPrompt(prompt, {})
+        if self.prompt_preparer is not None:
+            prepared = await self.prompt_preparer(built)
+            prompt, self.vision_usage = prepared.prompt, prepared.vision_usage
+        else:
+            prompt = built.prompt
+            self.vision_usage = unavailable_vision_usage() if built.origins else None
+
         sampling_params = TritonSamplingParams.from_dict(parameters, self.logger)
         lora_name = sampling_params.lora_name
         lora_request = None
@@ -282,8 +297,41 @@ class GenerateRequest(RequestBase):
         )
 
         status = "completed"
+        choices_with_text = set()
+        completion_logged = False
         try:
             async for response in response_iterator:
+                choices_with_text.update(
+                    output.index for output in response.outputs if output.text
+                )
+                if response.finished and not completion_logged:
+                    metadata = self._generation_metadata(response)
+                    diagnostic_outputs = []
+                    for output in metadata["outputs"]:
+                        diagnostic = dict(output)
+                        stop_reason = diagnostic.pop("stop_reason")
+                        diagnostic["empty_text"] = output["index"] not in choices_with_text
+                        if isinstance(stop_reason, str):
+                            diagnostic["stop_reason_type"] = "str"
+                            diagnostic["stop_reason_length"] = len(stop_reason)
+                        elif stop_reason is not None:
+                            diagnostic["stop_reason"] = stop_reason
+                        diagnostic_outputs.append(diagnostic)
+                    log_event(
+                        self.logger,
+                        "generation.completed",
+                        level=(
+                            "warning"
+                            if any(output["empty_text"] for output in diagnostic_outputs)
+                            else "info"
+                        ),
+                        model=self.model_name,
+                        request_id=self.request_id,
+                        engine_request_id=self.id,
+                        prompt_tokens=metadata["prompt_tokens"],
+                        outputs=diagnostic_outputs,
+                    )
+                    completion_logged = True
                 yield response
         except asyncio.CancelledError:
             status = "cancelled"
@@ -319,6 +367,32 @@ class GenerateRequest(RequestBase):
                 duration_ms=round((time.monotonic() - started_at) * 1000, 3),
             )
 
+    def _generation_metadata(self, request_output: RequestOutput) -> dict:
+        """Describe the cumulative engine snapshot independently of wire deltas."""
+        prompt_token_ids = request_output.prompt_token_ids
+        outputs = []
+        for output in request_output.outputs:
+            token_ids = output.token_ids
+            outputs.append(
+                {
+                    "index": int(output.index),
+                    "finish_reason": output.finish_reason,
+                    "stop_reason": getattr(output, "stop_reason", None),
+                    "completion_tokens": len(token_ids),
+                    "first_token_id": int(token_ids[0]) if token_ids else None,
+                    "last_token_id": int(token_ids[-1]) if token_ids else None,
+                }
+            )
+        return {
+            "version": 1,
+            "finished": bool(request_output.finished),
+            "prompt_tokens": (
+                len(prompt_token_ids) if prompt_token_ids is not None else None
+            ),
+            "outputs": outputs,
+            **({"vision_usage": self.vision_usage} if self.vision_usage is not None else {}),
+        }
+
     def create_response(
         self,
         request_output: RequestOutput,
@@ -349,6 +423,19 @@ class GenerateRequest(RequestBase):
                 "text_output", np.asarray(text_output, dtype=self.output_dtype)
             )
         )
+
+        # A single envelope keeps multi-choice indices and cumulative counts
+        # together even when the accompanying text delta is empty.
+        if self.additional_outputs.get("return_generation_metadata", False):
+            generation_metadata = json.dumps(
+                self._generation_metadata(request_output), separators=(",", ":")
+            ).encode("utf-8")
+            output_tensors.append(
+                pb_utils.Tensor(
+                    "generation_metadata",
+                    np.asarray([generation_metadata], dtype=np.object_),
+                )
+            )
 
         # finish_reason
         if self.additional_outputs["return_finish_reason"]:
@@ -446,8 +533,10 @@ class EmbedRequest(RequestBase):
         pooling_model_metadata: PoolingModelMetadata | None = None,
         lora_repository: Optional[Dict[str, str]] = None,
         supported_loras: Optional[List[str]] = None,
+        prompt_preparer: Callable | None = None,
     ):
         super().__init__(request, executor_callback, output_dtype, logger, model_name)
+        self.prompt_preparer = prompt_preparer
         self.lora_repository = lora_repository or {}
         self.supported_loras = supported_loras or []
         self.pooling_model_metadata = pooling_model_metadata or PoolingModelMetadata()
@@ -515,7 +604,11 @@ class EmbedRequest(RequestBase):
             engine_request_id=self.id,
             task=self.output_spec.task,
         )
-        # Create PoolingParams for embeddings
+        # vLLM >= 0.30 expects rendered EngineInput for pooling as for generation.
+        # Older engines have no native preparer and keep their original prompt.
+        if self.prompt_preparer is not None:
+            prepared = await self.prompt_preparer(BuiltMediaPrompt(prompt, {}))
+            prompt = prepared.prompt
         response_iterator = self.executor_callback(
             prompt, pooling_params, self.id, lora_request=self.lora_request
         )

@@ -99,7 +99,7 @@ def read_model_config(path):
     def peek():
         return tokens[position][1] if position < len(tokens) else None
 
-    def value(depth):
+    def value(depth, message_list=False):
         nonlocal position
         if depth > DEPTH_LIMIT:
             raise ValueError(f'{path}: protobuf nesting exceeds local limit')
@@ -111,6 +111,8 @@ def read_model_config(path):
             position += 1
             if peek() != ']':
                 while True:
+                    if message_list and peek() not in ("{", "<"):
+                        raise ValueError(f'{path}: expected protobuf message in colonless list')
                     value(depth+1)
                     if peek() != ',':
                         break
@@ -139,11 +141,14 @@ def read_model_config(path):
                 raise ValueError(f'{path}: expected protobuf field name')
             name = peek()
             position += 1
+            message_list = False
             if peek() == ':':
                 position += 1
+            elif peek() == '[':
+                message_list = True
             elif peek() not in ('{', '<'):
                 raise ValueError(f'{path}: missing colon for protobuf field {name}')
-            parsed = value(depth)
+            parsed = value(depth, message_list=message_list)
             if depth == 0 and name in identity:
                 if identity[name] is not None:
                     raise ValueError(f'{path}: duplicate top-level {name}')

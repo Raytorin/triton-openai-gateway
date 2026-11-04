@@ -27,6 +27,39 @@ curl -fsS http://127.0.0.1:8080/ready
 Triton reports ready. A model can still be loading when strict Triton readiness
 is disabled; inspect the repository index for per-model state.
 
+Successful GET/HEAD probes to `/health` and `/ready` produce completion logs
+only at DEBUG. At the default INFO level, periodic probes are quiet; errors and
+redirects keep their normal log levels, and HTTP metrics remain enabled.
+
+## Gateway Status And Restart
+
+Run these commands inside the gateway container, as the same OS user that runs
+the supervisor:
+
+```bash
+triton-gateway status
+triton-gateway restart
+triton-gateway restart --timeout 120
+```
+
+`status` reports the supervisor, gateway PID and generation, gateway `/health`,
+and Triton live/ready checks. Exit code `0` means the supervisor and gateway
+process are valid and `/health` succeeds; Triton readiness is reported separately.
+Missing or stale supervisor state, an unsafe runtime directory, or an unhealthy
+gateway returns a nonzero code. `/health` does not verify inference or individual models.
+
+`restart` asks the existing supervisor to replace only Uvicorn and waits for the
+new process to pass `/health`. Triton and loaded models stay running. Active HTTP
+and SSE requests are interrupted. Concurrent requests share an in-progress
+restart. The default wait is 90 seconds; a timeout returns a nonzero code and
+does not cancel a restart already submitted to the supervisor.
+
+The supervisor and CLI share a private runtime directory,
+`/tmp/triton-gateway-<uid>` by default. It must belong to that user with mode
+`0700`. If `GATEWAY_RUN_DIR` is customized, use the same value for both. The
+command is installed when the image is rebuilt; existing images do not gain it
+automatically. See [watchdog settings](configuration.md#gateway-watchdog).
+
 ## Model Lifecycle
 
 List repository state:
@@ -46,10 +79,18 @@ curl -fsS -X POST \
 ```
 
 During S3 load, the watcher logs the temporary `model.json` update and active
-symlink. After unload, the temporary directory disappears and the stale link is
-removed.
+symlink. Unlinked/replaced copies are retired and collected after 300 seconds of
+unchanged files by default, provided no process or active link still uses them.
+Older unpublished duplicates of the same model/version are collected too.
+Malformed configs are retained and an identical parse failure is logged only
+once until the config changes. See [cleanup settings](configuration.md#model-repository-layout)
+and the watcher environment variables in the configuration reference.
 
 ## Metrics
+
+Visual input accounting is separate from main token totals and estimated
+context reservation. See [visual usage](visual-usage.md) for API fields,
+Prometheus counters, preprocessing scope and unavailable/partial states.
 
 ### Gateway
 
@@ -124,6 +165,18 @@ finish reason. It does not log prompts or tool results. Enable
 `DEBUG_LOG_PAYLOADS=true` only for controlled diagnostics because payload
 previews may contain sensitive user data.
 
+The backend emits `generation.completed` once per engine completion, with
+cumulative counts and finish diagnostics. Empty decoded output raises its level
+to WARNING. The gateway also emits `generation.empty_output` with metadata
+availability, engine reason, counts and first/last token IDs. Neither event logs
+prompt/output text or raw string stop reasons; string reasons are represented
+by type and length. An empty final wire delta after earlier text is not an empty
+completion.
+
+A streaming HTTP 200 is committed before generation finishes. A later upstream
+failure is an SSE error; this metadata change does not defer response headers
+or automatically classify empty EOS as overload.
+
 ### Context Compaction Validation
 
 Use the focused evaluator after changing a summarization model or compaction
@@ -187,7 +240,7 @@ production profiling.
 | Prompt exceeds context | Text plus media tokens plus output reservation exceed `max_model_len` | Reduce media resolution/chunk size, history, or requested output; increase context only if memory permits |
 | Audio is rejected by a VL model | The architecture has no audio modality and no ASR is configured | Configure a local ASR model or use an audio-capable model |
 | GPU series are absent on `:8002` | Embedded DCGM could not initialize | Use root built-in mode or an external DCGM Exporter |
-| `pip` reports conflicts involving Pydantic, OpenAI, NumPy, or CUTLASS during the image build | The pinned NVIDIA `26.09` base image contains dependency-metadata mismatches; runtime version verification does not imply a clean `pip check` | Keep the pinned digest and versions described in [Migration](migration-26.09.md); do not upgrade core runtime packages independently |
+| `pip` reports NumPy or CUTLASS dependency conflicts during the image build | The pinned NVIDIA `26.10` image retains librosa/OpenCV NumPy and vLLM/CUTLASS metadata mismatches; runtime version verification does not imply a clean `pip check` | See [Migration](migration-26.10.md); retain the coherent vendor runtime rather than changing its core packages independently |
 | Gateway returns `429` | In-flight and queue capacity are full | Retry with backoff or tune tested admission limits |
 | Gateway returns `413` | Request body, media item, pages, pixels, frames, or audio duration exceeds a hard limit | Reduce the input or raise a specific limit after capacity testing |
 

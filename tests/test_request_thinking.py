@@ -134,6 +134,7 @@ def endpoint(tmp_path):
         stack.enter_context(patch.object(generation, "call_triton_multimodal", infer))
         stack.enter_context(patch.object(tc, "call_triton_multimodal", infer))
         stack.enter_context(patch.object(tc, "_build_grpc_generate_inputs", inputs))
+        stack.enter_context(patch.object(tc, "get_grpc_client", AsyncMock(return_value=object())))
         stack.enter_context(patch.object(tc, "_stream_grpc_results", stream))
         yield SimpleNamespace(tokenizer=tokenizer, records=records, path=tmp_path)
 

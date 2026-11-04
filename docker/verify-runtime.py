@@ -10,17 +10,18 @@ REQUIREMENTS_FILE = Path(__file__).with_name("triton-chat-gateway-requirements.t
 # These packages are supplied by the NVIDIA image and must move with it.
 BASE_IMAGE_VERSIONS = {
     "compressed-tensors": "0.17.0",
-    "flashinfer-python": "0.6.18.post1+f8a38c73.nv26.9.cu.68241617",
-    "torch": "2.14.0a0+b2c75dd062.nv26.9.68203377",
-    "transformers": "5.16.1",
-    "tritonserver": "2.73.0",
-    "vllm": "0.29.0+5013de39.nv26.9.69442229",
+    "flashinfer-python": "0.7.1rc5+c6a6b324.nvinternal.26.10.fi.rc5.5943.pr6394.cu.73382939",
+    "torch": "2.15.0a0+875d815502.nv26.10.72655024",
+    "transformers": "5.17.0",
+    "tritonserver": "2.74.0",
+    "vllm": "0.31.0+88641915.nv26.10.75644909",
+    "openai": "2.54.0",
 }
 
 # Compatibility-sensitive overlay packages are intentionally duplicated here.
 # Dependabot must not advance one of them without a complete runtime review.
 # FastAPI 0.136.3 is the newest release in vLLM's supported >=0.133,<0.137
-# range. Pydantic stays at 2.10.6 because Triton frontend 2.73 pins it exactly.
+# range. Triton frontend 2.74 accepts Pydantic >=2.12,<3, matching vLLM.
 LOCKED_OVERLAY_VERSIONS = {
     "fastapi": "0.136.3",
     "grpcio": "1.84.0",
@@ -34,12 +35,12 @@ LOCKED_OVERLAY_VERSIONS = {
     "pillow": "13.0.0",
     "prometheus-client": "0.26.0",
     "protobuf": "6.33.6",
-    "pydantic": "2.10.6",
+    "pydantic": "2.14.1",
     "sentencepiece": "0.2.2",
-    "starlette": "1.3.1",
-    "tritonclient": "2.73.0",
-    "uvicorn": "0.51.0",
-    "uvloop": "0.22.1",
+    "starlette": "1.9.0",
+    "tritonclient": "2.74.0",
+    "uvicorn": "0.54.0",
+    "uvloop": "0.23.0",
 }
 
 

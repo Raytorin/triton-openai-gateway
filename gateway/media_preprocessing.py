@@ -99,6 +99,7 @@ class VisualItem:
     label: str
     data: str
     mime_type: str = "image/jpeg"
+    source_kind: str = "image"
 
 
 def load_vllm_media_settings(model_path: Path) -> VllmMediaSettings:
@@ -374,6 +375,7 @@ def _render_pdf_pages(
                     label=f"PDF {document_index}, page {page_index + 1}/{document.page_count}",
                     data=_encode_pil_image(image, settings.pdf_max_pixels, "PNG"),
                     mime_type="image/png",
+                    source_kind="pdf",
                 )
             )
     return pages
@@ -457,6 +459,7 @@ def _extract_video_frames(
                     f"timestamp {timestamp:.2f}s"
                 ),
                 data=_encode_pil_image(image, settings.video_max_pixels, "JPEG"),
+                source_kind="video",
             )
         )
     return items
@@ -495,6 +498,7 @@ def _image_payload_to_item(
     return VisualItem(
         label=f"Image {image_index}",
         data=_encode_pil_image(image, settings.image_max_pixels, "JPEG"),
+        source_kind=getattr(payload, "source_kind", None) or "image",
     )
 
 

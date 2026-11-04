@@ -308,7 +308,7 @@ class NativeGatewayTests(unittest.TestCase):
             {"role": "user", "content": "Что на старой картинке?"},
             {"role": "assistant", "content": "На изображении цифра 2."},
             {"role": "user", "content": "О чем старый PDF?"},
-            {"role": "assistant", "content": "Документ описывает Dognauts."},
+            {"role": "assistant", "content": "Документ описывает тестовый проект."},
             {
                 "role": "user",
                 "content": [
