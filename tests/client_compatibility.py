@@ -29,6 +29,11 @@ def serve():
 
     captured = []
     async def generate(request, **kwargs):
+        if request.model in {"invalid-request-fixture", "media-limit-fixture"}:
+            from fastapi import HTTPException
+            if request.model == "media-limit-fixture":
+                raise HTTPException(413, "Media item exceeds the configured size limit")
+            raise HTTPException(400, "Malformed test parameter")
         if request.tools and not any(m.role == "tool" for m in request.messages):
             message = {"tool_calls": [{"id": "call_weather", "type": "function", "function": {
                 "name": "weather", "arguments": '{"city":"Paris"}'}}]}
@@ -111,6 +116,42 @@ def serve():
                 stack.enter_context(patch.object(tc, "_stream_grpc_results", backend))
                 return TestClient(app).post("/v1/chat/completions", json=body)
 
+    def context_response(path, body):
+        # Keep generation, prompt measurement, context rejection, and HTTP error
+        # rendering real. Replace only unavailable model/registry resources.
+        from contextlib import ExitStack
+        import tempfile
+        from types import SimpleNamespace
+        from gateway import generation
+        from gateway.admission import AdmissionLease
+
+        class WhitespaceTokenizer:
+            def apply_chat_template(self, messages, **kwargs):
+                return " ".join(str(message.get("content", "")) for message in messages)
+            def encode(self, text, **kwargs):
+                return text.split()
+            def __call__(self, text, **kwargs):
+                return SimpleNamespace(input_ids=self.encode(text))
+
+        with tempfile.TemporaryDirectory(prefix="context-client-") as folder:
+            model_path = Path(folder)
+            (model_path / "model.json").write_text('{"max_model_len":128}')
+            (model_path / "gateway.json").write_text(json.dumps({
+                "context_compression": {"mode": "disabled", "safety_margin_tokens": 2},
+            }))
+            with ExitStack() as stack:
+                for name, replacement in {
+                    "resolve": lambda *args: model_path,
+                    "validate_route": lambda *args: None,
+                    "get_backend": lambda *args: "vllm",
+                    "get_tokenizer_async": AsyncMock(return_value=(WhitespaceTokenizer(), model_path)),
+                }.items():
+                    stack.enter_context(patch.object(generation.registry, name, replacement))
+                stack.enter_context(patch.object(generation.admission, "acquire", AsyncMock(return_value=AdmissionLease([]))))
+                stack.enter_context(patch.object(generation, "call_triton_multimodal", AsyncMock(
+                    side_effect=AssertionError("Overflow must be rejected before inference"))))
+                return TestClient(app).post(path, json=body)
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -124,6 +165,8 @@ def serve():
             captured.append({"path": self.path, "body": body})
             if body.get("model") == "deepseek-fixture":
                 response = deepseek_response(body, captured[-1])
+            elif body.get("model") == "context-overflow-fixture":
+                response = context_response(self.path, body)
             else:
                 with patch("gateway.responses.generation.generate", generate), patch("gateway.app.generate", generate):
                     response = TestClient(app).post(self.path, json=body)
@@ -152,9 +195,9 @@ def check_clients(url):
     text = {"format": {"type": "json_schema", "name": "answer", "strict": True,
         "schema": {"type": "object", "properties": {"answer": {"type": "string"}},
                    "required": ["answer"], "additionalProperties": False}}}
-    client = openai.OpenAI(base_url=url+"/v1", api_key="local-fixture", max_retries=0)
+    client = openai.OpenAI(base_url=url+"/v1", api_key="fixture", max_retries=0)
     def lite(**kwargs):
-        return litellm.responses(model="openai/test", api_base=url+"/v1", api_key="local-fixture", **kwargs)
+        return litellm.responses(model="openai/test", api_base=url+"/v1", api_key="fixture", **kwargs)
     client_starts = []
     for name, create in [("openai", lambda **kw: client.responses.create(model="test", **kw)), ("litellm", lite)]:
         client_starts.append(len(httpx.get(url+"/captured").json()))
@@ -258,7 +301,7 @@ def check_clients(url):
     ]
     for case in chat_cases:
         result = litellm.completion(
-            model="openai/qwen-fixture", api_base=url+"/v1", api_key="local-fixture",
+            model="openai/qwen-fixture", api_base=url+"/v1", api_key="fixture",
             messages=[{"role": "user", "content": "Hello"}], drop_params=False,
             **case,
         )
@@ -267,7 +310,7 @@ def check_clients(url):
     router = litellm.Router(model_list=[{
         "model_name": "Qwen3-Example",
         "litellm_params": {"model": "openai/qwen-fixture", "api_base": url+"/v1",
-                           "api_key": "local-fixture", "timeout": 300,
+                           "api_key": "fixture", "timeout": 300,
                            "allowed_openai_params": ["reasoning_effort"]},
     }])
     for effort in ("high", "xhigh"):
@@ -316,7 +359,7 @@ def check_clients(url):
                         result = client.chat.completions.create(model="deepseek-fixture", **params)
                     else:
                         result = litellm.completion(model="openai/deepseek-fixture", api_base=url+"/v1",
-                            api_key="local-fixture", drop_params=False, **params)
+                            api_key="fixture", drop_params=False, **params)
                     content = ""; reasoning = ""; calls = {}
                     messages = [part.choices[0].delta for part in result] if streaming else [result.choices[0].message]
                     for message in messages:
@@ -346,12 +389,67 @@ def check_clients(url):
     captured = httpx.get(url+"/captured").json()
     deep_requests = len(captured) - deep_start
     print("openai/litellm: DeepSeek real gateway on/off, SSE, DSML tool IDs/arguments and replay passed")
+    # Real model-independent overflow -> HTTP -> SDK error classification.
+    # A generic 400/413 is not sufficient: LiteLLM must identify the context
+    # rejection so callers can apply their context fallback policy.
+    overflow_input = " ".join(["word"] * 80)
+    context_cases = 0
+    for route in ("chat", "responses"):
+        for streaming in (False, True):
+            for name in ("litellm", "openai"):
+                params = {"stream": streaming}
+                if route == "chat":
+                    params.update(messages=[{"role": "user", "content": overflow_input}], max_completion_tokens=64)
+                    if name == "openai":
+                        create = lambda **kw: client.chat.completions.create(model="context-overflow-fixture", **kw)
+                    else:
+                        create = lambda **kw: litellm.completion(model="openai/context-overflow-fixture",
+                            api_base=url+"/v1", api_key="fixture", num_retries=0, **kw)
+                else:
+                    params.update(input=overflow_input, max_output_tokens=64, store=False)
+                    if name == "openai":
+                        create = lambda **kw: client.responses.create(model="context-overflow-fixture", **kw)
+                    else:
+                        create = lambda **kw: litellm.responses(model="openai/context-overflow-fixture",
+                            api_base=url+"/v1", api_key="fixture", num_retries=0, **kw)
+                expected_error = openai.BadRequestError if name == "openai" else litellm.ContextWindowExceededError
+                try:
+                    result = create(**params)
+                    if streaming:
+                        list(result)
+                except expected_error as exc:
+                    assert exc.status_code == 400, (name, route, streaming, exc)
+                    message = str(exc)
+                    assert "maximum context length is 128 tokens" in message, (name, route, message)
+                    assert "80" in message and "64" in message, (name, route, message)
+                    if name == "openai":
+                        assert exc.code == "context_length_exceeded", (route, streaming, exc.body)
+                else:
+                    raise AssertionError(f"{name}/{route}/stream={streaming}: context overflow was accepted")
+                context_cases += 1
+    for model, status in (("invalid-request-fixture", 400), ("media-limit-fixture", 413)):
+        for route in ("chat", "responses"):
+            try:
+                if route == "chat":
+                    litellm.completion(model="openai/"+model, api_base=url+"/v1", api_key="fixture",
+                        messages=[{"role": "user", "content": "hello"}], num_retries=0)
+                else:
+                    litellm.responses(model="openai/"+model, api_base=url+"/v1", api_key="fixture",
+                        input="hello", store=False, num_retries=0)
+            except litellm.ContextWindowExceededError as exc:
+                raise AssertionError(f"{route}: non-context HTTP {status} was classified as context overflow") from exc
+            except (litellm.APIError, litellm.BadRequestError) as exc:
+                assert exc.status_code == status, (route, model, exc)
+            else:
+                raise AssertionError(f"{route}: non-context HTTP {status} was accepted")
+    print("openai/litellm: Chat/Responses context overflow, streaming preflight, and non-context errors passed")
+    captured = httpx.get(url+"/captured").json()
     print(json.dumps({"openai": version("openai"), "litellm": version("litellm"),
         "requests": len(captured), "routes": ["/v1/responses", "/v1/chat/completions"],
         "deepseek_production_gateway_requests": deep_requests, "chat_thinking_wire_cases": len(chat_cases), "reasoning_effort_forwarding": ["high", "xhigh"], "injected_default_limit": False,
         "litellm_minimum_explicit_limit": 16, "litellm_invalid_integer_limits_normalized": True,
         "sdk_incomplete_requires_terminal_event_handling": True,
-        "litellm_incomplete_event_type": "response.completed"}))
+        "litellm_incomplete_event_type": "response.completed", "context_overflow_sdk_cases": context_cases}))
     client.close()
 
 

@@ -68,6 +68,17 @@ Thinking, text and function arguments consume the same budget. A length finish
 produces `status=incomplete` and `incomplete_details.reason=max_output_tokens`,
 even if thinking exhausted the budget before any visible text. No automatic retry.
 
+Gateway context rejections and recognized vLLM token-limit errors use HTTP 400
+for both Chat and Responses: `error.type=invalid_request_error` and
+`error.code=context_length_exceeded`. The message includes the context limit and
+known token counts; LiteLLM recognizes it as `ContextWindowExceededError`.
+`error.details` separates input tokens, the output budget, estimated media reserve
+and the safety margin. Their `budget_tokens` sum is a context reservation, not
+actual token usage. Unknown backend counts are omitted. Once SSE has started,
+Chat emits an error frame; Responses emits `error` and `response.failed` with the
+same context code and message. Internal backend diagnostics are not included in
+these context errors.
+
 The current Triton text transports expose text without authoritative token usage
 or finish metadata; usage and limit detection are estimated by retokenization.
 `X-Token-Usage-Source: estimated` makes this explicit. `X-Output-Token-Limit` and
@@ -80,9 +91,10 @@ adjust its context window to the real runtime.
 ## Python example
 
 ```python
+import os
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="configured-by-proxy")
+client = OpenAI(base_url="http://localhost:8080/v1", api_key=os.environ["OPENAI_API_KEY"])
 response = client.responses.create(
     model="your-model", input="Say hello", store=False, max_output_tokens=128,
 )

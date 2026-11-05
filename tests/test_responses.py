@@ -228,9 +228,12 @@ def test_truncation_preserves_latest_tools_and_recalculates_media(tmp_path):
     assert prepared.dropped_messages == 2
     assert prepared.conversation == [history[0], *history[3:]]
     assert _additional_media_tokens(tokenizer, prepared.conversation, None, media_settings, False) == 0
-    with pytest.raises(Exception, match="context window"):
+    from gateway.context_errors import ContextLengthExceeded
+    with pytest.raises(ContextLengthExceeded) as caught:
         _prepare_responses_context(tokenizer, history, None, 20, 3,
             replace(settings, mode="disabled"), media_settings, False)
+    assert caught.value.error["details"]["context_limit"] == 20
+    assert caught.value.error["details"]["reserved_media_tokens"] > 0
 
 
 @pytest.mark.parametrize("backend", ["python", "http", "vllm", "native_multimodal"])

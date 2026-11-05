@@ -9,6 +9,7 @@ import json
 import time
 
 from fastapi import HTTPException
+from .context_errors import ContextLengthExceeded
 
 from .generation_telemetry import get_generation_telemetry
 from .generation_types import GenerationEvent, GenerationStream
@@ -28,7 +29,7 @@ async def response_events(request: ResponsesRequest, stream: GenerationStream,
 
     def emit(kind, **fields):
         nonlocal sequence
-        payload = {"type": kind, "sequence_number": sequence, **fields}
+        payload = {**fields, "type": kind, "sequence_number": sequence}
         sequence += 1
         return f"event: {kind}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -104,9 +105,11 @@ async def response_events(request: ResponsesRequest, stream: GenerationStream,
         logger.exception("Responses stream failed")
         message = str(exc.detail) if isinstance(exc, HTTPException) else "Generation failed"
         error = {"code": "server_error", "message": message}
+        if isinstance(exc, ContextLengthExceeded):
+            error = exc.error
         for item in output:
             item["status"] = "incomplete"
-        yield emit("error", **error, param=None)
+        yield emit("error", **{**error, "param": None})
         yield emit("response.failed", response=snapshot("failed", error=error))
     finally:
         await stream.aclose()

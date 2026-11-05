@@ -80,7 +80,7 @@ class ContextWindowTests(unittest.TestCase):
             {"role": "user", "content": "current " * 20},
         ]
 
-        with self.assertRaisesRegex(HTTPException, "latest user message"):
+        with self.assertRaises(HTTPException) as caught:
             fit_conversation_to_context(
                 FakeTokenizer(),
                 conversation,
@@ -89,6 +89,9 @@ class ContextWindowTests(unittest.TestCase):
                 max_completion_tokens=8,
                 safety_margin_tokens=2,
             )
+        self.assertEqual(caught.exception.error["code"], "context_length_exceeded")
+        self.assertEqual(caught.exception.error["details"]["context_limit"], 24)
+        self.assertEqual(caught.exception.error["details"]["requested_output_tokens"], 8)
 
 
 if __name__ == "__main__":
