@@ -123,6 +123,12 @@ lookup, validates the target against the selected template, and does not alter
 template defaults when the request omits effort. Thinking must be enabled;
 constrained JSON output continues to disable thinking.
 
+The included engine `model.json` declares `<think>` / `</think>` boundaries.
+With thinking enabled, add `"thinking_token_budget": 128` and a larger total
+limit such as `"max_completion_tokens": 4096` to close reasoning at its budget
+and continue the answer. This numeric budget is separate from effort; it still
+consumes the common completion limit, including the closing tokens.
+
 Startup/shutdown deadlines are Triton parameters, not engine keys. The startup
 deadline includes the supported-task query. Cooperative startup failures close
 the engine context and retain the first cause; late factories cannot announce

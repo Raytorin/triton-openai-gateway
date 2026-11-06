@@ -466,13 +466,64 @@ configuration error (500); an unsupported unmapped client value remains 400.
 Omitting effort keeps the template default. Mapped effort still requires
 thinking and cannot be combined with constrained JSON output.
 
-The Responses API contract is unchanged and does not accept these reasoning
-controls. Chat sampling also accepts `top_k` (`-1` or a positive integer) and
+Responses does not accept `chat_template_kwargs` or `reasoning_effort`;
+the numeric `thinking_token_budget` is described below. Chat sampling also accepts `top_k` (`-1` or a positive integer) and
 `presence_penalty` (from `-2` to `2`); these are passed to generation.
 
 See the [paired Qwen3.6 requests](../examples/REQUEST_EXAMPLES.en.md#qwen36-27b-fp8-thinking-on-and-off)
 for generation on/off and visibility examples. Local template and request
 validation does not establish GPU performance or model quality.
+
+#### Numeric thinking budget
+
+Chat and Responses accept top-level `thinking_token_budget`, a nonnegative
+integer passed to native vLLM sampling. For example, a Chat request can use:
+
+```json
+{
+  "model": "your-thinking-model",
+  "messages": [{"role": "user", "content": "Summarize this document."}],
+  "max_completion_tokens": 4096,
+  "thinking_token_budget": 128,
+  "chat_template_kwargs": {"enable_thinking": true}
+}
+```
+
+For Responses, use the same `thinking_token_budget` beside `max_output_tokens`;
+thinking follows the model policy and the reasoning text remains hidden.
+`reasoning_effort` still selects a template's reasoning level; it is not a
+numeric token limit.
+
+The model must enable thinking in `gateway.json` (`hidden` or `separate`), and
+its vLLM `model.json` must declare the actual reasoning boundaries:
+
+```json
+{
+  "reasoning_config": {
+    "reasoning_start_str": "<think>",
+    "reasoning_end_str": "</think>"
+  }
+}
+```
+
+Use the exact matching tags from the active template; padded tags and added
+transition phrases are rejected. These boundaries apply to the supported Qwen
+and DeepSeek think-tag templates.
+Changing engine configuration requires reloading the model. The image includes
+a compatibility hook for the stock `vllm` backend and the custom
+`vllm_multimodal`/`vllm_deepseek` engine factory; unsupported engine settings fail
+explicitly instead of silently ignoring the budget.
+
+At the budget, vLLM forces the configured closing sequence and continues the
+answer within the **same total output limit**. Zero forces closure immediately;
+omitting/null budget leaves native generation unchanged. The gateway requires
+space for the budget, the opening tokens when the template does not prefill
+them, the closing tokens, and at least one answer token after context fitting. A disabled/unsupported thinking mode, missing
+boundaries, or insufficient final output budget returns HTTP 400 before
+inference; invalid budget types or negative values return 422. This reserve
+does not guarantee a complete answer: a small total limit can still end with
+`finish_reason: "length"`. Internal media summaries use their own budgets and
+do not inherit the main request's thinking budget.
 
 ## Environment Variables
 
@@ -621,9 +672,16 @@ examples.
 
 Chat uses `max_completion_tokens` (or legacy `max_tokens`). Equal aliases are
 accepted; conflicting values return 400. Limits must be positive integers.
-Omitted/null limits select 4096 tokens normally or 8192 with thinking enabled,
-reduced to the available context without discarding an already fitting history.
-Explicit limits are never silently clamped. Thinking and function arguments
+Omitted/null limits select 4096 tokens normally or 8192 with thinking enabled.
+Chat with `summarize`/`truncate` enabled first reserves this default, bounded by
+the model cap, and applies the configured compression and trigger. With
+compression disabled, and for automatic Responses budgets, fitting history is
+preserved and the output budget shrinks to the available context. If the default
+itself exceeds the entire usable window, the compatible clipped reserve is used
+while configured Chat compression remains active. Explicit limits are never
+silently clamped. If the current turn alone prevents the configured default
+reserve from fitting, enabled compression returns a context-length error; choose
+a smaller explicit output limit for that request. Thinking and function arguments
 count toward the same output budget. Prompt and completion totals use cumulative
 engine counts when the backend supports generation metadata; otherwise the
 gateway estimates them by tokenization. Reasoning segmentation remains estimated.

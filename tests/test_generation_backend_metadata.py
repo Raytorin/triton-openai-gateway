@@ -113,7 +113,9 @@ def backend(monkeypatch):
         request_module = _load("utils.request", BACKEND / "utils" / "request.py")
         model_module = _load("metadata_test_model", BACKEND / "model.py")
         policy_module = _load("metadata_test_policy", BACKEND.parent / "vllm_deepseek" / "policy.py")
-    return SimpleNamespace(request=request_module, model=model_module, policy=policy_module)
+        vision_usage_module = sys.modules["utils.vision_usage"]
+    return SimpleNamespace(request=request_module, model=model_module, policy=policy_module,
+                           vision_usage=vision_usage_module)
 
 
 def completion(text="", token_ids=(), *, index=0, finish_reason=None, stop_reason=None):
@@ -294,7 +296,7 @@ def test_eos_completion_diagnostic_keeps_numeric_stop_id(backend):
 
 
 def test_native_preparer_input_identity_and_usage_are_used_by_generate(backend):
-    from utils.vision_usage import PreparedEnginePrompt
+    PreparedEnginePrompt = backend.vision_usage.PreparedEnginePrompt
     request = generation_request(backend)
     engine_input = {'type': 'multimodal', 'prompt_token_ids': [1, 2, 3]}
     facts = {'status': 'available', 'source': 'engine', 'unit': 'embedding_positions',

@@ -60,6 +60,7 @@ from .prompt import (
 from .registry import ModelRegistry
 from .reasoning import (
     load_reasoning_settings,
+    validate_thinking_token_budget_output,
     observe_reasoning_result,
     reasoning_message_fields,
     split_reasoning_output,
@@ -342,6 +343,8 @@ def _chat_stream_headers(
 async def _generate(request: ChatCompletionRequest, *, context_mode: str | None = None):
     backend = registry.get_backend(request.model)
     is_vllm_backend = backend in {"vllm", "vllm_multimodal", "vllm_deepseek"}
+    if request.thinking_token_budget is not None and not is_vllm_backend:
+        raise HTTPException(400, "thinking_token_budget requires a supported vLLM backend")
     tokenizer, model_path = await registry.get_tokenizer_async(request.model)
     shared_tokenizer = tokenizer
     tools = selected_tools(request.tools, request.tool_choice)
@@ -359,6 +362,7 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         enable_thinking=controls.enable_thinking if controls is not None else None,
         preserve_thinking=controls.preserve_thinking if controls is not None else None,
         reasoning_effort=request.reasoning_effort,
+        thinking_token_budget=request.thinking_token_budget,
         tools=tools,
     )
     tokenizer = RequestTokenizer(tokenizer, reasoning_settings.template_kwargs,
@@ -533,16 +537,21 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         _measure_prompt, tokenizer, conversation, tools, media_settings,
         reasoning_settings.enable_thinking,
     )
-    # Preserve fitting history; reuse this exact measurement in context fitting.
-    available = limits.context_window - initial_tokens - reserved_media_tokens - context_settings.safety_margin_tokens
-    reserve = requested if requested is not None else max(1, min(limits.default, limits.cap, available))
-    effective_context_settings = context_settings
-    if requested is None and available > 0:
-        effective_context_settings = replace(context_settings, mode="disabled")
+    # Reserve the normal output budget before applying configured compression.
+    # Disabled compression and Responses retain their automatic input-preserving
+    # policy. If the default cannot fit even an empty context, keep the bounded
+    # automatic reserve while still honoring the configured compression trigger.
+    usable_context = limits.context_window - reserved_media_tokens - context_settings.safety_margin_tokens
+    available = usable_context - initial_tokens
+    desired_default = min(limits.default, limits.cap)
+    reserve = requested if requested is not None else max(1, min(desired_default, available))
+    if (requested is None and context_mode is None
+            and context_settings.mode != "disabled" and desired_default < usable_context):
+        reserve = desired_default
     context_started_at = time.monotonic()
     try:
         if context_mode is not None or (backend == 'vllm_deepseek'
-                and request_media.images and effective_context_settings.mode == 'truncate'):
+                and request_media.images and context_settings.mode == 'truncate'):
             context_preparation = await run_cpu(_prepare_responses_context,
                 tokenizer, conversation, tools, limits.context_window,
                 (requested or 1) if context_mode is not None else reserve,
@@ -558,7 +567,7 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
                 max_model_len=limits.context_window,
                 max_completion_tokens=reserve,
                 reserved_media_tokens=reserved_media_tokens,
-                settings=effective_context_settings,
+                settings=context_settings,
                 summary_generator=lambda previous, source: _generate_context_summary(
                     request.model,
                     context_settings,
@@ -631,7 +640,10 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         # This is a context upper bound, including delimiters, not engine usage.
         # Mixed audio/vision reservation cannot be split reliably here.
         reserve_visual_context(reserved_media_tokens)
-    sampling_parameters["max_tokens"] = budget.effective
+    await run_cpu(validate_thinking_token_budget_output,
+        model_path, tokenizer, request.thinking_token_budget, budget.effective,
+        prefilled_thinking=reasoning_settings.prefills_thinking)
+    sampling_parameters = build_sampling_parameters(request, output_token_limit=budget.effective)
     log_event(logger, "generation.token_budget", "Output token budget selected",
               model=request.model, **budget.__dict__, usage_source="estimated")
     CONTEXT_COMPRESSION_REQUESTS.labels(

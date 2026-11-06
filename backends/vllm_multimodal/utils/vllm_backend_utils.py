@@ -82,6 +82,8 @@ class TritonSamplingParams(SamplingParams):
         try:
             params_dict = json.loads(params_dict_str)
             vllm_params_dict = SamplingParams.__annotations__
+            from utils.thinking_budget import validate_sampling_budget
+            validate_sampling_budget(params_dict, vllm_params_dict)
             type_mapping = {
                 int: int,
                 float: float,
@@ -124,6 +126,12 @@ async def build_async_engine_client_from_engine_args(
     Returns the Client or None if the creation failed.
     """
 
+    from utils.thinking_budget import (
+        guard_engine_thinking_budget,
+        normalize_engine_reasoning_config,
+    )
+    # JSON config must be native before EngineArgs accesses its attributes.
+    normalize_engine_reasoning_config(engine_args)
     # Create the EngineConfig
     vllm_config = engine_args.create_engine_config(usage_context=usage_context)
 
@@ -149,6 +157,7 @@ async def build_async_engine_client_from_engine_args(
         assert async_llm is not None
         await async_llm.reset_mm_cache()
 
+        guard_engine_thinking_budget(async_llm)
         yield async_llm
     except BaseException as error:
         primary_error = error

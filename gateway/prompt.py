@@ -402,6 +402,13 @@ def build_sampling_parameters(
         "temperature": float(request.temperature if request.temperature is not None else 0.2),
     }
 
+    if request.thinking_token_budget is not None:
+        if request.thinking_token_budget >= max_tokens:
+            raise HTTPException(400, "thinking_token_budget must be less than the effective output token limit to leave room for the final answer")
+        sampling["thinking_token_budget"] = request.thinking_token_budget
+        # The gateway must see the forced closing marker to enter final content.
+        sampling["skip_special_tokens"] = False
+
     if request.top_p is not None:
         sampling["top_p"] = float(request.top_p)
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+from numbers import Integral
 import os
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,8 @@ class ReasoningSettings:
     deepseek_profile: bool = False
     requires_template_kwargs: bool = False
     resolved_chat_template: str | None = None
+    thinking_tag: str | None = None
+    prefills_thinking: bool = False
     _template_options: tuple[tuple[str, Any], ...] = ()
 
     @property
@@ -131,6 +134,7 @@ def load_reasoning_settings(
     enable_thinking: bool | None = None,
     preserve_thinking: bool | None = None,
     reasoning_effort: str | None = None,
+    thinking_token_budget: int | None = None,
     tools: list[dict[str, Any]] | None = None,
 ) -> ReasoningSettings:
     for name, value in (("enable_thinking", enable_thinking), ("preserve_thinking", preserve_thinking)):
@@ -138,6 +142,10 @@ def load_reasoning_settings(
             raise HTTPException(status_code=400, detail=f"{name} must be a boolean")
     if reasoning_effort is not None and not isinstance(reasoning_effort, str):
         raise HTTPException(status_code=400, detail="reasoning_effort must be a string")
+    if thinking_token_budget is not None and (
+        type(thinking_token_budget) is not int or thinking_token_budget < 0
+    ):
+        raise HTTPException(400, "thinking_token_budget must be a nonnegative integer")
     effort_map = read_reasoning_effort_map(model_path)
     from .deepseek import is_deepseek_profile, template_capabilities
     deepseek_profile = is_deepseek_profile(model_path, tokenizer)
@@ -176,6 +184,16 @@ def load_reasoning_settings(
         if mode == "disabled":
             raise HTTPException(status_code=400, detail="reasoning_effort requires thinking to be enabled")
 
+    if thinking_token_budget is not None:
+        if mode == "disabled":
+            raise HTTPException(400, "thinking_token_budget requires thinking to be enabled")
+        if not (configured.supported and capabilities.has_think_tags
+                and capabilities.thinking in {"switch", "on"}):
+            raise HTTPException(400, "thinking_token_budget is not supported by the resolved chat template")
+        start, _ = _thinking_budget_boundaries(model_path)
+        if start != capabilities.thinking_tag:
+            raise HTTPException(400, "thinking_token_budget reasoning_start_str does not match the resolved chat template")
+
     if mode != "disabled" and not configured.supported:
         raise HTTPException(
             status_code=500,
@@ -195,6 +213,8 @@ def load_reasoning_settings(
         qwen_profile=qwen_profile,
         deepseek_profile=deepseek_profile,
         resolved_chat_template=capabilities.template,
+        thinking_tag=capabilities.thinking_tag,
+        prefills_thinking=capabilities.prefills_thinking,
         requires_template_kwargs=(
             enable_thinking is not None or preserve_thinking is not None
             or reasoning_effort is not None
@@ -204,6 +224,48 @@ def load_reasoning_settings(
             ("preserve_thinking", preserve_thinking), ("reasoning_effort", native_effort)
         ) if value is not None),
     )
+
+
+def _thinking_budget_boundaries(model_path: Path) -> tuple[str, str]:
+    try:
+        payload = json.loads((model_path / "model.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        payload = None
+    configured = payload.get("reasoning_config") if isinstance(payload, dict) else None
+    if not isinstance(configured, dict) or any(
+        not isinstance(configured.get(key), str) or not configured[key].strip()
+        for key in ("reasoning_start_str", "reasoning_end_str")
+    ):
+        raise HTTPException(400, "thinking_token_budget requires model.json reasoning_config with nonempty reasoning_start_str and reasoning_end_str")
+    start, end = configured["reasoning_start_str"], configured["reasoning_end_str"]
+    closing = dict(zip(_OPEN_TAGS, _CLOSE_TAGS)).get(start)
+    if closing is None or end != closing:
+        raise HTTPException(400, "thinking_token_budget reasoning_config must use matching reasoning tags supported by the gateway parser")
+    return start, end
+
+
+def validate_thinking_token_budget_output(
+    model_path: Path, tokenizer: Any, thinking_token_budget: int | None,
+    output_token_limit: int, *, prefilled_thinking: bool = True,
+) -> None:
+    """Reserve generated boundaries and at least one final-answer token."""
+    if thinking_token_budget is None:
+        return
+    opening, closing = _thinking_budget_boundaries(model_path)
+    boundary_tokens = 0
+    try:
+        for marker in ((closing,) if prefilled_thinking else (opening, closing)):
+            encoded = tokenizer.encode(marker, add_special_tokens=False)
+            if isinstance(encoded, (str, bytes)):
+                raise ValueError("Token ids must be integers")
+            token_ids = list(encoded)
+            if not token_ids or any(isinstance(token, bool) or not isinstance(token, Integral) or token < 0 for token in token_ids):
+                raise ValueError("Invalid reasoning boundary token ids")
+            boundary_tokens += len(token_ids)
+    except (AttributeError, TypeError, ValueError, NotImplementedError) as exc:
+        raise HTTPException(400, "thinking_token_budget requires a tokenizer that can encode reasoning boundaries") from exc
+    if thinking_token_budget + boundary_tokens >= output_token_limit:
+        raise HTTPException(400, "thinking_token_budget plus generated reasoning boundary tags must leave room within the effective output token limit for the final answer")
 
 
 def _read_reasoning_settings(

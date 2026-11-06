@@ -20,6 +20,7 @@ class ResponsesRequest(BaseModel):
     input: str | list[dict[str, Any]]
     instructions: str | None = None
     max_output_tokens: int | None = Field(default=None, strict=True, gt=0)
+    thinking_token_budget: int | None = Field(default=None, ge=0, strict=True)
     temperature: float | None = 0.2
     top_p: float | None = None
     stream: bool = False
@@ -192,7 +193,8 @@ def to_chat(request: ResponsesRequest) -> ChatCompletionRequest:
         else:
             reject("Unsupported text.format.type")
     return ChatCompletionRequest(model=request.model, messages=input_messages(request),
-        max_completion_tokens=request.max_output_tokens, temperature=request.temperature,
+        max_completion_tokens=request.max_output_tokens, thinking_token_budget=request.thinking_token_budget,
+        temperature=request.temperature,
         top_p=request.top_p, stream=request.stream, tools=tools or None,
         tool_choice=choice, response_format=response_format, lora_name=request.lora_name,
         include_reasoning=False)

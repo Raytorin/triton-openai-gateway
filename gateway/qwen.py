@@ -28,6 +28,8 @@ class TemplateCapabilities:
     preserves_thinking: bool = False
     efforts: frozenset[str] = frozenset()
     has_think_tags: bool = False
+    thinking_tag: str | None = None
+    prefills_thinking: bool = False
 
 
 _CACHE: OrderedDict[tuple[str, type, bool, str, tuple[str, ...]], TemplateCapabilities] = OrderedDict()
@@ -138,6 +140,21 @@ def _probe_template(
           and on_state is False and off_state is False and (qwen_profile or has_tags)):
         thinking = 'off'
 
+    # Native budget boundaries must come from active rendered generation, never
+    # Jinja comments or literals used only by another branch of the template.
+    thinking_tag = None
+    prefills_thinking = False
+    tags = (("<think>", "</think>"), ("<thinking>", "</thinking>"))
+    if thinking in {"switch", "on"} and on_state is True:
+        thinking_tag = max((opening for opening, _ in tags), key=on_prefix.rfind)
+        prefills_thinking = True
+    elif thinking == "switch" and empty_block_off:
+        candidates = [opening for opening, closing in tags
+            if off_prefix.rfind(opening) >= 0
+            and off_prefix.rfind(closing) > off_prefix.rfind(opening)]
+        if candidates:
+            thinking_tag = max(candidates, key=off_prefix.rfind)
+
     efforts: set[str] = set()
     if 'reasoning_effort' in variables:
         values = {value: render(enable_thinking=True, reasoning_effort=value)
@@ -157,6 +174,8 @@ def _probe_template(
         preserves_thinking='preserve_thinking' in variables,
         efforts=frozenset(efforts),
         has_think_tags=has_tags,
+        thinking_tag=thinking_tag,
+        prefills_thinking=prefills_thinking,
     )
 
 

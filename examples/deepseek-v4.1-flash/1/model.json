@@ -20,5 +20,9 @@
   "tensor_parallel_size": 1,
   "pipeline_parallel_size": 1,
   "data_parallel_size": 1,
-  "enable_expert_parallel": false
+  "enable_expert_parallel": false,
+  "reasoning_config": {
+    "reasoning_start_str": "<think>",
+    "reasoning_end_str": "</think>"
+  }
 }

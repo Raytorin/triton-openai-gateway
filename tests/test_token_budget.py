@@ -96,7 +96,7 @@ class Tokenizer:
 def test_generation_keeps_history_and_reports_effective_budget(tmp_path):
     import asyncio
     (tmp_path / "model.json").write_text('{"max_model_len":100}')
-    (tmp_path / "gateway.json").write_text('{"context_compression":{"mode":"summarize"}}')
+    (tmp_path / "gateway.json").write_text('{"context_compression":{"mode":"disabled"}}')
     req = request()
     req.messages = [type(req.messages[0])(role="user", content="old question"),
                     type(req.messages[0])(role="assistant", content="old answer"),

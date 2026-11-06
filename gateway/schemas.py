@@ -76,6 +76,7 @@ class ChatCompletionRequest(BaseModel):
     include_reasoning: bool | None = None
     chat_template_kwargs: ChatTemplateKwargs | None = None
     reasoning_effort: StrictStr | None = None
+    thinking_token_budget: int | None = Field(default=None, ge=0, strict=True)
     lora_name: str | None = None
 
     model_config = {"extra": "allow"}
