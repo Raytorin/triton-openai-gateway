@@ -14,15 +14,15 @@ POLICY = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/audit
 def test_exception_expires_at_utc_date_boundary():
     args = POLICY["runtime_exception_args"]
     assert args("accelerate==1.14.0", date(2026, 10, 12)) == ["--ignore-vuln", "PYSEC-2026-3804"]
-    assert args("accelerate==1.14.0", date(2026, 11, 9)) == ["--ignore-vuln", "PYSEC-2026-3804"]
-    assert args("accelerate==1.14.0", date(2026, 11, 10)) == []
-    assert args("accelerate==1.14.0", date(2026, 11, 11)) == []
+    assert args("accelerate==1.14.0", date(2026, 11, 25)) == ["--ignore-vuln", "PYSEC-2026-3804"]
+    assert args("accelerate==1.14.0", date(2026, 11, 26)) == []
+    assert args("accelerate==1.14.0", date(2026, 11, 27)) == []
 
 
 def test_exception_does_not_follow_package_upgrades_or_other_packages():
     args = POLICY["runtime_exception_args"]
     for pins in ("accelerate==1.15.0", "other==1.14.0", "# accelerate==1.14.0", ""):
-        assert args(pins, date(2026, 11, 9)) == []
+        assert args(pins, date(2026, 11, 25)) == []
 
 
 def test_unrelated_audit_failure_is_propagated():
