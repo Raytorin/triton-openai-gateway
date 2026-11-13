@@ -466,8 +466,8 @@ configuration error (500); an unsupported unmapped client value remains 400.
 Omitting effort keeps the template default. Mapped effort still requires
 thinking and cannot be combined with constrained JSON output.
 
-Responses does not accept `chat_template_kwargs` or `reasoning_effort`;
-the numeric `thinking_token_budget` is described below. Chat sampling also accepts `top_k` (`-1` or a positive integer) and
+Responses accepts `reasoning.effort` and applies the same model-specific policy
+as Chat's `reasoning_effort`. Chat sampling also accepts `top_k` (`-1` or a positive integer) and
 `presence_penalty` (from `-2` to `2`); these are passed to generation.
 
 See the [paired Qwen3.6 requests](../examples/REQUEST_EXAMPLES.en.md#qwen36-27b-fp8-thinking-on-and-off)
@@ -668,6 +668,17 @@ helm upgrade --install triton-openai-gateway ./helm/triton-gateway \
 See the [chart README](../helm/triton-gateway/README.md) for focused deployment
 examples.
 
+### Chat streaming usage and errors
+
+For `stream=true`, set `stream_options.include_usage=true` to receive token
+usage in a separate final chunk with `choices: []`, before `[DONE]`. The ordinary
+chunks carry `usage: null`. Set it to `false` to omit usage. Without an explicit
+value, usage remains attached to the completion chunk for existing clients.
+
+If generation fails after the stream starts, Chat sends an error frame followed
+by `[DONE]`, with no successful finish or final usage. The error frame contains
+a public message. Context overflow retains its dedicated code and token counts.
+
 ### Output token budgets
 
 Chat uses `max_completion_tokens` (or legacy `max_tokens`). Equal aliases are
@@ -679,10 +690,11 @@ compression disabled, and for automatic Responses budgets, fitting history is
 preserved and the output budget shrinks to the available context. If the default
 itself exceeds the entire usable window, the compatible clipped reserve is used
 while configured Chat compression remains active. Explicit limits are never
-silently clamped. If the current turn alone prevents the configured default
-reserve from fitting, enabled compression returns a context-length error; choose
-a smaller explicit output limit for that request. Thinking and function arguments
-count toward the same output budget. Prompt and completion totals use cumulative
+silently clamped. If the full automatic reserve cannot fit after compression,
+Chat uses the remaining capacity of a fitting conversation for a shorter answer.
+Chat rejects the request if the available output cannot fit the requested
+thinking budget and at least one answer token.
+Thinking and function arguments count toward the same output budget. Prompt and completion totals use cumulative
 engine counts when the backend supports generation metadata; otherwise the
 gateway estimates them by tokenization. Reasoning segmentation remains estimated.
 

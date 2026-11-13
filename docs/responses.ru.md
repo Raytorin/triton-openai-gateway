@@ -20,17 +20,18 @@ Chat, Responses, выбор LoRA и admission используют общий с
 | `text.format` | text, json_object или json_schema с name/schema/strict; необходима поддержка constrained output в backend |
 | `temperature`, `top_p` | Передаются существующему слою sampling |
 | `max_output_tokens` | Положительное целое или null; общая политика с Chat |
+| `thinking_token_budget` | Необязательный числовой бюджет для моделей с нативной поддержкой |
 | `lora_name` | Расширение gateway; маршрутизация как в Chat |
 | `metadata` | Возвращается в ответе, не сохраняется |
 | `truncation` | disabled по умолчанию или auto; скрытого суммаризирования нет |
 | `stream` | События Responses, а не Chat chunks |
 | `store`, `background` | Только отсутствие/null/false; хранения и фонового выполнения нет |
-| `reasoning` | Только пустой объект/null; thinking настраивается для модели |
+| `reasoning.effort` | Уровни и алиасы из настроек модели, как в Chat. При пропуске/null действует значение по умолчанию |
 | `parallel_tool_calls` | Отсутствие/null/true; false отклоняется, backend не гарантирует последовательные вызовы |
 
 Неподдерживаемые параметры возвращают 400 до инференса: встроенные инструменты,
 strict для аргументов функций, file_id, входные audio/video/PDF, text verbosity,
-непустые настройки reasoning, previous_response_id, conversation, store=true,
+поля reasoning кроме effort, previous_response_id, conversation, store=true,
 background=true. Audio/video/PDF доступны через Chat. Получение/удаление/отмена
 по ID, Conversations, compact, генерация audio/images и legacy `/v1/completions`
 не поддерживаются. Функции выполняет клиент.
@@ -166,8 +167,9 @@ content_part.added/done; output_text.delta/done; function_call_arguments.delta/d
 Некоторые Python и tool-aware пути Triton буферизуют генерацию перед выдачей.
 На этих путях Responses не обещает инкрементальную генерацию аргументов функций.
 
-Ошибки до заголовков возвращаются HTTP-ответом. После заголовков выдаются error
-и response.failed. Disconnect закрывает backend iterator и освобождает admission,
+Ошибки до заголовков возвращаются HTTP-ответом. После заголовков выдаются
+`error` и `response.failed`. Частичный вывод помечается как незавершённый.
+Итоговая статистика и внутренние детали бэкенда в ошибку не попадают. Disconnect закрывает backend iterator и освобождает admission,
 включая этап подготовки. Отмена передаётся в gRPC; фактическая остановка
 генерации зависит от backend и транспорта. Закрытие HTTP-транспорта
 не гарантирует немедленную остановку GPU.

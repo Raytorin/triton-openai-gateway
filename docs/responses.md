@@ -20,17 +20,18 @@ Chat, Responses, LoRA selection and admission use one generation service.
 | `text.format` | text, json_object, or json_schema with name/schema/strict; requires backend support for constrained output |
 | `temperature`, `top_p` | Passed to the existing sampling layer |
 | `max_output_tokens` | Positive integer or null; shared budget with Chat |
+| `thinking_token_budget` | Optional numeric reasoning budget for models with native support |
 | `lora_name` | Gateway extension; same routing as Chat |
 | `metadata` | Echoed, never persisted |
 | `truncation` | disabled (default) or auto; no hidden summarization |
 | `stream` | Native Responses events, not Chat chunks |
 | `store`, `background` | Omitted/null/false only; no persistence or background execution |
-| `reasoning` | Empty/null only; model configuration controls thinking |
+| `reasoning.effort` | Uses the model's allowed values and aliases, as in Chat. Omitted/null keeps the model default |
 | `parallel_tool_calls` | Omitted/null/true; false is rejected because the backend cannot enforce serial calls |
 
 Unsupported fields return 400 before inference: built-in tools, strict function
 argument enforcement, file_id, input audio/video/PDF, text verbosity, nonempty
-reasoning settings, previous_response_id, conversation, store=true, background=true.
+reasoning settings other than effort, previous_response_id, conversation, store=true, background=true.
 Use Chat for audio/video/PDF. Retrieval/deletion/cancellation by response ID,
 Conversations, compact, generated audio/images and legacy `/v1/completions`
 are not supported. Functions execute in the client, never in the gateway.
@@ -165,7 +166,9 @@ Some existing Python and tool-aware Triton paths buffer generation before
 emitting deltas. Responses does not claim incremental tool decoding on those paths.
 
 Errors before headers use an HTTP error envelope. Errors after headers emit
-`error`, then `response.failed`. Disconnect closes the backend iterator and
+`error`, then `response.failed`. Partial output is marked incomplete, and a
+failed stream has no final usage. Public errors omit backend diagnostics.
+Disconnect closes the backend iterator and
 releases admission, including during request preparation. gRPC cancellation is
 propagated; actual generation cancellation depends on the backend and transport.
 HTTP transport closure cannot guarantee immediate GPU abort.

@@ -9,6 +9,7 @@ import pytest
 
 from gateway import generation
 from gateway.admission import AdmissionLease
+from gateway.context_errors import ContextLengthExceeded
 from gateway.context_compression import SummaryGeneration, clear_context_summary_cache
 from gateway.schemas import ChatCompletionRequest
 
@@ -24,7 +25,7 @@ class Tokenizer:
         return type("Encoded", (), {"input_ids": self.encode(text)})()
 
 
-def run_generation(tmp_path, mode, *, history_tokens=90, trigger_ratio=1.0,
+def run_generation(tmp_path, mode, *, history_tokens=90, latest_tokens=20, trigger_ratio=1.0,
                    explicit_limit=None, context_mode=None, default_output=80, output_cap=32768):
     clear_context_summary_cache()
     (tmp_path / "model.json").write_text('{"max_model_len":256}')
@@ -38,10 +39,11 @@ def run_generation(tmp_path, mode, *, history_tokens=90, trigger_ratio=1.0,
         },
     }))
     request = ChatCompletionRequest(model="test", messages=[
-        {"role": "user", "content": "old " * history_tokens},
-        {"role": "assistant", "content": "history " * history_tokens},
-        {"role": "user", "content": "latest " * 20},
-    ], max_tokens=explicit_limit)
+        *([{"role": "user", "content": "old " * history_tokens},
+           {"role": "assistant", "content": "history " * history_tokens}]
+          if history_tokens else []),
+        {"role": "user", "content": "latest " * latest_tokens},
+    ], max_completion_tokens=explicit_limit)
     inference = AsyncMock(return_value="answer")
     summary = AsyncMock(return_value=SummaryGeneration("compact memory", 180, 2))
 
@@ -120,3 +122,51 @@ def test_default_reserve_respects_model_output_cap(tmp_path):
     assert result.extensions["context_status"]["action"] == "truncate"
     assert inference.call_args.args[2]["max_tokens"] == 64
     summary.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mode", ["truncate", "summarize"])
+@pytest.mark.parametrize("history_tokens", [0, 12])
+def test_chat_shortens_automatic_output_when_full_reserve_cannot_fit(
+    tmp_path, mode, history_tokens,
+):
+    result, inference, summary = run_generation(
+        tmp_path, mode, history_tokens=history_tokens, latest_tokens=200,
+    )
+    available = 48 - 2 * history_tokens
+    assert result.headers["X-Output-Token-Limit"] == str(available)
+    assert inference.call_args.args[2]["max_tokens"] == available
+    assert result.extensions["context_status"]["action"] == "none"
+    assert ("old " in inference.call_args.args[1]) == bool(history_tokens)
+    summary.assert_not_awaited()
+
+
+def test_chat_truncates_just_enough_to_fit_a_shorter_answer(tmp_path):
+    result, inference, summary = run_generation(tmp_path, "truncate", latest_tokens=200)
+    assert result.headers["X-Output-Token-Limit"] == "48"
+    assert inference.call_args.args[2]["max_tokens"] == 48
+    assert result.extensions["context_status"]["dropped_messages"] == 2
+    assert "old " not in inference.call_args.args[1]
+    summary.assert_not_awaited()
+
+
+def test_chat_can_summarize_history_to_fit_a_shorter_answer(tmp_path):
+    result, inference, summary = run_generation(tmp_path, "summarize", latest_tokens=145)
+    assert result.extensions["context_status"]["action"] == "summarize"
+    assert summary.await_count == 1
+    assert "compact memory" in inference.call_args.args[1]
+    assert "latest " * 144 in inference.call_args.args[1]
+    available = 248 - len(inference.call_args.args[1].split())
+    assert 0 < available < 80
+    assert inference.call_args.args[2]["max_tokens"] == available
+
+
+@pytest.mark.parametrize("mode", ["truncate", "summarize"])
+@pytest.mark.parametrize(("latest_tokens", "explicit_limit"), [(248, None), (200, 80)])
+def test_chat_rejects_true_overflow_or_explicit_overflow(
+    tmp_path, mode, latest_tokens, explicit_limit,
+):
+    with pytest.raises(ContextLengthExceeded):
+        run_generation(
+            tmp_path, mode, history_tokens=0, latest_tokens=latest_tokens,
+            explicit_limit=explicit_limit,
+        )

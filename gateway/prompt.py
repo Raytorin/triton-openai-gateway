@@ -286,6 +286,8 @@ def fit_conversation_to_context(
     safety_margin_tokens: int = 64,
     enable_thinking: bool = False,
     initial_prompt: tuple[str, int] | None = None,
+    *,
+    minimum_output_tokens: int | None = None,
 ) -> tuple[list[dict[str, Any]], str, int, int]:
     fitted = [dict(message) for message in conversation]
     if initial_prompt is None:
@@ -298,6 +300,9 @@ def fit_conversation_to_context(
         prompt_tokens=initial_prompt[1],
     )
 
+    relaxed_limit = (prompt_limit + max(max_completion_tokens, 1) - minimum_output_tokens
+                     if minimum_output_tokens is not None else prompt_limit)
+    shorter = None
     dropped_messages = 0
     while True:
         checkpoint()
@@ -311,9 +316,16 @@ def fit_conversation_to_context(
         if prompt_tokens <= prompt_limit:
             return fitted, prompt, prompt_tokens, dropped_messages
 
+        if shorter is None and prompt_tokens <= relaxed_limit:
+            # Keep the most history possible if no candidate leaves the full reserve.
+            shorter = (fitted, prompt, prompt_tokens, dropped_messages)
+
         removable = oldest_removable_turn(fitted)
         if not removable:
-            raise ContextLengthExceeded(max_model_len, prompt_tokens, max_completion_tokens,
+            if shorter is not None:
+                return shorter
+            raise ContextLengthExceeded(max_model_len, prompt_tokens,
+                minimum_output_tokens if minimum_output_tokens is not None else max_completion_tokens,
                 reserved_media_tokens=reserved_media_tokens, safety_margin_tokens=safety_margin_tokens)
         removable_set = set(removable)
         fitted = [

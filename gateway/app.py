@@ -55,7 +55,9 @@ from .tracing import shutdown_tracing
 
 
 from .generation import registry, admission, generate
-from .generation_types import GenerationStream, chat_events, ManagedStreamingResponse, until_disconnected
+from .generation_types import (
+    GenerationStream, chat_events, ManagedStreamingResponse, stream_error_payload, until_disconnected,
+)
 
 
 @asynccontextmanager
@@ -208,7 +210,7 @@ async def _guard_openai_stream(source: AsyncIterator[str]) -> AsyncIterator[str]
     try:
         async for event in source:
             yield event
-    except HTTPException as exc:
+    except Exception as exc:
         if telemetry := get_generation_telemetry():
             telemetry.fail(exc)
         log_event(
@@ -216,39 +218,11 @@ async def _guard_openai_stream(source: AsyncIterator[str]) -> AsyncIterator[str]
             "stream.failed",
             "Streaming inference failed",
             level=logging.ERROR,
-            status_code=exc.status_code,
+            status_code=exc.status_code if isinstance(exc, HTTPException) else 500,
             error_type=type(exc).__name__,
         )
-        payload = {
-            "error": {
-                "message": str(exc.detail),
-                "type": "triton_error",
-                "code": exc.status_code,
-            }
-        }
-        if isinstance(exc, ContextLengthExceeded):
-            payload = {"error": exc.error}
+        payload = {"error": stream_error_payload(exc)}
         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-        yield "data: [DONE]\n\n"
-    except Exception as exc:
-        if telemetry := get_generation_telemetry():
-            telemetry.fail(exc)
-        logger.exception(
-            "Unexpected streaming inference failure",
-            extra={
-                "event": "stream.failed",
-                "status_code": 500,
-                "error_type": type(exc).__name__,
-            },
-        )
-        payload = {
-            "error": {
-                "message": "Unexpected streaming inference failure",
-                "type": "internal_error",
-                "code": 500,
-            }
-        }
-        yield f"data: {json.dumps(payload)}\n\n"
         yield "data: [DONE]\n\n"
 
 
@@ -452,8 +426,9 @@ async def create_chat_completion(request: ChatCompletionRequest, response: Respo
     set_request_model(request.model)
     result = await until_disconnected(generate(request), http_request)
     if isinstance(result, GenerationStream):
+        include_usage = request.stream_options.include_usage if request.stream_options else None
         return ManagedStreamingResponse(
-            _guard_openai_stream(chat_events(result)),
+            _guard_openai_stream(chat_events(result, include_usage=include_usage)),
             media_type="text/event-stream", headers=result.headers,
             close=result.aclose,
         )

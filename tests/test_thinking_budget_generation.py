@@ -46,9 +46,11 @@ def model(tmp_path, monkeypatch):
     return tmp_path
 
 
-def execute(model, *, stream=False, backend='vllm', prompt='Summarize this.', tokenizer=None, **fields):
+def execute(model, *, stream=False, backend='vllm', prompt='Summarize this.',
+            tokenizer=None, history=None, **fields):
     inference = AsyncMock(return_value='brief</think>Summary.')
-    request = ChatCompletionRequest(model='test', messages=[{'role':'user', 'content':prompt}],
+    request = ChatCompletionRequest(model='test', messages=[
+        *(history or []), {'role': 'user', 'content': prompt}],
         stream=stream, **fields)
 
     async def run():
@@ -85,6 +87,24 @@ def test_context_clipping_revalidates_numeric_budget(model):
         execute(model, thinking_token_budget=20, prompt='word ' * 40)
     assert caught.value.status_code == 400
     assert 'thinking_token_budget' in caught.value.detail
+
+
+def test_automatic_chat_limit_drops_history_for_thinking_and_a_visible_token(model):
+    path = model / 'gateway.json'
+    config = json.loads(path.read_text())
+    config['context_compression']['mode'] = 'truncate'
+    path.write_text(json.dumps(config))
+    result, inference = execute(
+        model, thinking_token_budget=12, prompt='word ' * 43,
+        history=[{'role': 'user', 'content': 'old request'},
+                 {'role': 'assistant', 'content': 'old answer'}],
+    )
+    used_prompt = inference.call_args.args[1]
+    assert 'old request' not in used_prompt
+    expected = 64 - 2 - len(Tokenizer().encode(used_prompt))
+    assert 15 <= expected < 32
+    assert inference.call_args.args[2]['max_tokens'] == expected
+    assert result.extensions['context_status']['dropped_messages'] == 2
 
 
 def test_final_output_reserves_closing_tokens_and_visible_answer(model):

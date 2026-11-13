@@ -283,6 +283,40 @@ def check_clients(url):
     assert boundary[1]["body"]["max_output_tokens"] == 16
     for index in range(2, 10, 2):
         assert boundary[index+1]["body"]["max_output_tokens"] == 16
+    usage_start = len(captured)
+    chat_messages = [{"role": "user", "content": "Hello"}]
+    for include_usage in (True, False):
+        options = {"messages": chat_messages, "stream": True,
+                   "stream_options": {"include_usage": include_usage}}
+        chunks = list(client.chat.completions.create(model="test", **options))
+        assert "".join(chunk.choices[0].delta.content or "" for chunk in chunks if chunk.choices) == "It is sunny"
+        if include_usage:
+            assert chunks[-2].choices[0].finish_reason == "stop"
+            assert all(chunk.usage is None for chunk in chunks[:-1])
+            assert chunks[-1].choices == [] and chunks[-1].usage.total_tokens == 9
+        else:
+            assert chunks[-1].choices[0].finish_reason == "stop"
+            assert all(chunk.usage is None for chunk in chunks)
+        adapted = list(litellm.completion(model="openai/test", api_base=url+"/v1", api_key="fixture",
+                                          drop_params=False, **options))
+        assert "".join(chunk.choices[0].delta.content or "" for chunk in adapted if chunk.choices) == "It is sunny"
+        if include_usage:
+            # LiteLLM can transform chunks. Check recovery of the actual API total.
+            assert adapted[-1].usage.total_tokens == 9
+    captured = httpx.get(url+"/captured").json()
+    assert [row["body"]["stream_options"]["include_usage"] for row in captured[usage_start:]] == [True, True, False, False]
+    print("openai/litellm: Chat SSE include_usage forwarded and SDK usage recovered")
+    reasoning = {"effort": "low"}
+    response = client.responses.create(model="test", input="Hello", reasoning=reasoning, store=False)
+    assert response.reasoning.effort == "low"
+    events = list(client.responses.create(
+        model="test", input="Hello", reasoning=reasoning, store=False, stream=True,
+    ))
+    assert events[-1].type == "response.completed"
+    assert events[-1].response.reasoning.effort == "low"
+    captured = httpx.get(url+"/captured").json()
+    assert [row["body"]["reasoning"] for row in captured[-2:]] == [reasoning, reasoning]
+    print("openai: Responses reasoning.effort forwarded in JSON and SSE requests")
     # Actual installed LiteLLM -> localhost HTTP -> gateway schema boundary.
     # Generation is deterministic above; these checks prove wire forwarding,
     # not capability validation or real-model thinking. In particular, high and

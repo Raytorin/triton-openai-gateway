@@ -8,11 +8,23 @@ import uuid
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Response, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import generation
-from .generation_types import GenerationResult, GenerationStream, ManagedStreamingResponse, until_disconnected
+from .generation_telemetry import get_generation_telemetry
+from .generation_types import (
+    GenerationResult, GenerationStream, ManagedStreamingResponse, stream_error_payload, until_disconnected,
+)
+from .observability import set_request_model
 from .schemas import ChatCompletionRequest, ChatMessage, ResponseFormat
+from .settings import logger
+
+
+class ResponsesReasoning(BaseModel):
+    effort: str | None = Field(default=None, strict=True, min_length=1)
+
+    model_config = {"extra": "forbid"}
 
 
 class ResponsesRequest(BaseModel):
@@ -33,7 +45,7 @@ class ResponsesRequest(BaseModel):
     tool_choice: Any | None = None
     parallel_tool_calls: bool | None = None
     text: dict[str, Any] | None = None
-    reasoning: dict[str, Any] | None = None
+    reasoning: ResponsesReasoning | None = None
     metadata: dict[str, str] | None = None
     lora_name: str | None = None
 
@@ -143,8 +155,6 @@ def to_chat(request: ResponsesRequest) -> ChatCompletionRequest:
         value = getattr(request, name)
         if (value is True if name in {"store", "background"} else value is not None):
             reject(f"{name} is unavailable: Responses currently supports stateless generation only; send history in input and use store=false")
-    if request.reasoning:
-        reject("Responses reasoning parameters are not supported; thinking is configured per model")
     if request.parallel_tool_calls is False:
         reject("parallel_tool_calls=false is not supported by the current backend")
     tools = []
@@ -197,6 +207,7 @@ def to_chat(request: ResponsesRequest) -> ChatCompletionRequest:
         temperature=request.temperature,
         top_p=request.top_p, stream=request.stream, tools=tools or None,
         tool_choice=choice, response_format=response_format, lora_name=request.lora_name,
+        reasoning_effort=request.reasoning.effort if request.reasoning is not None else None,
         include_reasoning=False)
 
 
@@ -217,6 +228,7 @@ def response_object(request: ResponsesRequest, *, response_id: str, created: int
                     status: str, output: list, usage: dict | None = None,
                     headers: dict | None = None, error: dict | None = None) -> dict:
     effective_limit = (headers or {}).get("X-Output-Token-Limit")
+    effort = request.reasoning.effort if request.reasoning is not None else None
     return {"id": response_id, "object": "response", "created_at": created,
         "status": status, "error": error,
         "incomplete_details": {"reason": "max_output_tokens"} if status == "incomplete" else None,
@@ -224,7 +236,7 @@ def response_object(request: ResponsesRequest, *, response_id: str, created: int
         "instructions": request.instructions, "max_output_tokens": int(effective_limit) if effective_limit else request.max_output_tokens,
         "temperature": request.temperature, "top_p": request.top_p, "tools": request.tools or [],
         "tool_choice": request.tool_choice or "auto", "parallel_tool_calls": True,
-        "text": request.text or {"format": {"type": "text"}}, "reasoning": {"effort": None, "summary": None},
+        "text": request.text or {"format": {"type": "text"}}, "reasoning": {"effort": effort, "summary": None},
         "truncation": request.truncation or "disabled", "metadata": request.metadata or {},
         "store": False, "background": False, "previous_response_id": None}
 
@@ -259,7 +271,6 @@ async def create_response(request: ResponsesRequest, response: Response, http_re
         reject(str(exc))
     except (TypeError, ValueError):
         reject("Malformed Responses input or parameter type")
-    from .observability import set_request_model
     set_request_model(request.model)
     result = await until_disconnected(generation.generate(chat, context_mode="truncate" if request.truncation == "auto" else "disabled"), http_request)
     if isinstance(result, GenerationStream):
@@ -275,9 +286,18 @@ async def create_response(request: ResponsesRequest, response: Response, http_re
             first = await until_disconnected(first_backend_event(), http_request)
             if first is None:
                 raise HTTPException(502, "Backend stream ended without a completion status")
-        except BaseException:
+        except BaseException as exc:
             await result.aclose()
-            raise
+            if not isinstance(exc, Exception):
+                raise
+            status = exc.status_code if isinstance(exc, HTTPException) else 500
+            if status == 499:
+                raise
+            if telemetry := get_generation_telemetry():
+                telemetry.fail(exc)
+            logger.error("Responses stream failed before headers",
+                         extra={"status_code": status, "error_type": type(exc).__name__})
+            return JSONResponse(status_code=status, content={"error": stream_error_payload(exc)})
         return ManagedStreamingResponse(response_events(request, result, first),
             media_type="text/event-stream", headers=result.headers, close=result.aclose)
     response.headers.update(result.headers)

@@ -317,6 +317,7 @@ async def prepare_conversation_context(
     summary_generator: SummaryGenerator | None = None,
     enable_thinking: bool = False,
     initial_prompt: tuple[str, int] | None = None,
+    minimum_output_tokens: int | None = None,
 ) -> ContextPreparation:
     started_at = time.monotonic()
     if initial_prompt is None:
@@ -332,7 +333,8 @@ async def prepare_conversation_context(
     )
 
     def overflow():
-        return ContextLengthExceeded(max_model_len, tokens, max_completion_tokens,
+        output = minimum_output_tokens if minimum_output_tokens is not None else max_completion_tokens
+        return ContextLengthExceeded(max_model_len, tokens, output,
             reserved_media_tokens=reserved_media_tokens,
             safety_margin_tokens=settings.safety_margin_tokens)
 
@@ -370,6 +372,7 @@ async def prepare_conversation_context(
             action="truncate",
             enable_thinking=enable_thinking,
             initial_prompt=(prompt, tokens),
+            minimum_output_tokens=minimum_output_tokens,
         )
         return replace(
             result,
@@ -382,6 +385,9 @@ async def prepare_conversation_context(
             detail="Context summarize mode requires a summary generator",
         )
 
+    relaxed_limit = (prompt_limit + max(max_completion_tokens, 1) - minimum_output_tokens
+                     if minimum_output_tokens is not None else prompt_limit)
+    can_keep_original = prompt_limit < tokens <= relaxed_limit
     try:
         result = await _summarize_context(
             model_name=model_name,
@@ -390,6 +396,9 @@ async def prepare_conversation_context(
             conversation=conversation,
             tools=tools,
             prompt_limit=target_limit,
+            shorter_output_prompt_limit=(
+                relaxed_limit if minimum_output_tokens is not None and tokens > relaxed_limit else None
+            ),
             settings=settings,
             summary_generator=summary_generator,
             enable_thinking=enable_thinking,
@@ -397,12 +406,13 @@ async def prepare_conversation_context(
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        if settings.fallback_mode != "truncate":
+        use_truncate_fallback = settings.fallback_mode == "truncate"
+        fitting_failed = isinstance(exc, _ContextFittingError)
+        if not use_truncate_fallback and not (fitting_failed and can_keep_original):
             if isinstance(exc, ContextLengthExceeded):
                 raise HTTPException(502, "Context summarization failed: the summary model context limit was exceeded") from exc
-            # These are fitting failures, not failures of the auxiliary model
-            # or limits on summary work. Normalize only an actual input overflow.
-            if isinstance(exc, _ContextFittingError) and tokens > prompt_limit:
+            # Keep auxiliary backend failures distinct from an input overflow.
+            if fitting_failed and tokens > prompt_limit:
                 raise overflow() from exc
             if isinstance(exc, HTTPException):
                 raise
@@ -410,14 +420,14 @@ async def prepare_conversation_context(
                 status_code=502,
                 detail=f"Context summarization failed: {type(exc).__name__}",
             ) from exc
-        fallback_reason = _context_fallback_reason(exc)
-        if tokens <= prompt_limit:
+        fallback_reason = _context_fallback_reason(exc) if use_truncate_fallback else ""
+        if tokens <= prompt_limit or not use_truncate_fallback:
             result = ContextPreparation(
                 conversation=[dict(message) for message in conversation],
                 prompt=prompt,
                 prompt_tokens=tokens,
                 mode=settings.mode,
-                action="none_fallback",
+                action="none_fallback" if use_truncate_fallback else "none",
                 summary_model=summary_model,
                 fallback_reason=fallback_reason,
             )
@@ -435,6 +445,7 @@ async def prepare_conversation_context(
                 fallback_reason=fallback_reason,
                 enable_thinking=enable_thinking,
                 initial_prompt=(prompt, tokens),
+                minimum_output_tokens=minimum_output_tokens,
             )
 
     return replace(
@@ -513,6 +524,7 @@ async def _summarize_context(
     conversation: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
     prompt_limit: int,
+    shorter_output_prompt_limit: int | None,
     settings: ContextCompressionSettings,
     summary_generator: SummaryGenerator,
     enable_thinking: bool,
@@ -524,6 +536,7 @@ async def _summarize_context(
         prompt_limit,
         settings,
         enable_thinking,
+        shorter_output_prompt_limit,
     )
     if not removed:
         raise _ContextFittingError(
@@ -534,6 +547,8 @@ async def _summarize_context(
             ),
         )
 
+    if shorter_output_prompt_limit is not None:
+        prompt_limit = shorter_output_prompt_limit
     boundary_hashes = await run_cpu(_boundary_hashes, removed)
     boundary = boundary_hashes[-1]
     evidence, evidence_messages = await run_cpu(_build_verbatim_evidence,
@@ -675,6 +690,7 @@ def _truncate_context(
     fallback_reason: str = "",
     enable_thinking: bool = False,
     initial_prompt: tuple[str, int] | None = None,
+    minimum_output_tokens: int | None = None,
 ) -> ContextPreparation:
     fitted, prompt, prompt_tokens, dropped = fit_conversation_to_context(
         tokenizer,
@@ -686,13 +702,14 @@ def _truncate_context(
         safety_margin_tokens=settings.safety_margin_tokens,
         enable_thinking=enable_thinking,
         initial_prompt=initial_prompt,
+        minimum_output_tokens=minimum_output_tokens,
     )
     return ContextPreparation(
         conversation=fitted,
         prompt=prompt,
         prompt_tokens=prompt_tokens,
         mode=settings.mode,
-        action=action,
+        action=action if dropped else ("none_fallback" if fallback_reason else "none"),
         dropped_messages=dropped,
         summary_model=summary_model,
         fallback_reason=fallback_reason,
@@ -706,9 +723,11 @@ def _select_summary_source(
     prompt_limit: int,
     settings: ContextCompressionSettings,
     enable_thinking: bool,
+    shorter_output_prompt_limit: int | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     retained = [dict(message) for message in conversation]
     removed: list[dict[str, Any]] = []
+    shorter = None
     while True:
         if removed:
             trial = _inject_summary(
@@ -732,6 +751,9 @@ def _select_summary_source(
             )
             if estimated_tokens <= prompt_limit:
                 return retained, removed
+            if (shorter_output_prompt_limit is not None and shorter is None
+                    and estimated_tokens <= shorter_output_prompt_limit):
+                shorter = retained, removed.copy()
 
         removable = oldest_removable_turn(retained)
         protected = _protected_history_indices(
@@ -739,6 +761,8 @@ def _select_summary_source(
             settings.preserve_recent_messages,
         )
         if not removable or any(index in protected for index in removable):
+            if shorter is not None:
+                return shorter
             raise _ContextFittingError(
                 status_code=400,
                 detail=(
