@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+# CPython 3.12 / Linux amd64 gateway overlay for vllm032-cu129.
+# Install after the complete manifested base, with --only-binary=:all:
+# and --require-hashes; retain dependency resolution and run pip check.
+# Existing compatible base packages remain pinned by its original lock.
+
+accelerate==1.14.0
+deepseek-recipe==0.2.0
+ml-dtypes==0.5.4
+protobuf==6.33.6
+python-rapidjson==1.25
+qwen-vl-utils[decord]==0.0.14
+soundfile==0.14.0
+soxr==1.1.0
+tritonclient[grpc]==2.74.0

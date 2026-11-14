@@ -156,6 +156,11 @@ docker build \
 
 Версии добавленных Python-зависимостей закреплены и проверяются во время сборки.
 
+Это поддерживаемый официальный/legacy runtime. Отдельная сборка с vLLM `0.32`
+включается явно; её шаги и границы проверки описаны в
+[руководстве по вариантам runtime](docker/README.unified.ru.md). Оба варианта
+получают актуальный код gateway; обновления официального образа NVIDIA сохраняются.
+
 ### 2. Подготовка модели
 
 Для S3/remote repository используется стандартная структура Triton:
@@ -255,6 +260,7 @@ Raw Triton HTTP, gRPC и metrics остаются доступными на по
 | [Эксплуатация](docs/operations.ru.md) | Health, метрики, логи, tracing и диагностика |
 | [Миграция на Triton 26.10](docs/migration-26.10.ru.md) | Runtime pins и ограничения совместимости |
 | [Миграция на Triton 26.09](docs/migration-26.09.ru.md) | Предыдущая матрица runtime |
+| [Варианты runtime и unified-сборка](docker/README.unified.ru.md) | Обновления официального runtime, сборка с vLLM 0.32, проверки и откат |
 | [Sparse и hybrid embeddings](docs/sparse-embeddings.ru.md) | Запросы BGE-M3, параметры и формат sparse-векторов |
 | [Примеры API](examples/REQUEST_EXAMPLES.md) | Чат, media, tools, embeddings и rerank |
 | [Собственный backend](backends/vllm_multimodal/README.ru.md) | Контракт нативных мультимодальных input Triton |
