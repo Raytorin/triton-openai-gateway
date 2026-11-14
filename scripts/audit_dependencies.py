@@ -28,6 +28,7 @@ def main() -> int:
     for relative_path in (
         "requirements-test.txt",
         "docker/triton-chat-gateway-requirements.txt",
+        "requirements-client.txt",
     ):
         path = ROOT / relative_path
         exceptions = (

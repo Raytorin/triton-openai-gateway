@@ -6,6 +6,8 @@ import runpy
 from pathlib import Path
 from urllib.parse import unquote
 
+from scripts.check_workflow_refs import action_reference_errors
+
 
 ROOT = Path(__file__).resolve().parents[1]
 LANGUAGE_PAIRS = (
@@ -30,7 +32,6 @@ LANGUAGE_PAIRS = (
     ),
 )
 MARKDOWN_LINK = re.compile(r"!?\[[^\]]*]\(([^)]+)\)")
-COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
 
 
 def test_local_markdown_links_resolve():
@@ -134,19 +135,9 @@ def test_helm_production_override_uses_the_default_runtime_release():
 def test_external_github_actions_are_pinned_to_commit_shas():
     unpinned = []
     for workflow in (ROOT / ".github" / "workflows").glob("*.y*ml"):
-        for line_number, line in enumerate(
-            workflow.read_text(encoding="utf-8").splitlines(), start=1
-        ):
-            stripped = line.strip()
-            if not stripped.startswith("uses:"):
-                continue
-
-            action = stripped.split("#", 1)[0].split(":", 1)[1].strip()
-            if action.startswith("./"):
-                continue
-            _, separator, reference = action.rpartition("@")
-            if not separator or not COMMIT_SHA.fullmatch(reference):
-                unpinned.append(f"{workflow.relative_to(ROOT)}:{line_number}: {action}")
+        unpinned.extend(action_reference_errors(
+            workflow.read_text(encoding="utf-8"), str(workflow.relative_to(ROOT)),
+        ))
 
     assert not unpinned, "GitHub Actions must use immutable commit SHAs:\n" + "\n".join(
         unpinned

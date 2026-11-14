@@ -43,29 +43,31 @@ python3.12 -m venv .venv
 .venv/bin/python -m pytest -q \
   --cov=gateway \
   --cov=backends/vllm_multimodal \
-  --cov-fail-under=50
+  --cov=backends/vllm_deepseek \
+  --cov-fail-under=75
 .venv/bin/python tests/runtime_media_smoke.py
 .venv/bin/cffconvert --validate
-.venv/bin/pip-audit --requirement requirements-test.txt --progress-spinner off
-.venv/bin/pip-audit \
-  --requirement docker/triton-chat-gateway-requirements.txt \
-  --progress-spinner off
+.venv/bin/python scripts/audit_dependencies.py
 ```
 
-GitHub Actions runs the same tests and dependency audits for every pull request. The test
-requirements are intentionally smaller than the GPU runtime and must not be
-used to build the production image.
+GitHub Actions runs two Linux jobs for pull requests, pushes to `dev`/`main`,
+and manual runs. Early checks validate tracked Python, JSON, and Bash sources;
+actionlint and ShellCheck validate workflows and shell scripts. Test, runtime,
+and SDK requirements are audited separately. The existing narrow runtime audit
+exception is described in [SECURITY.md](SECURITY.md).
 
-To confirm behavior against the exact pinned Triton runtime, run the unit tests
-inside the built image:
+JUnit and coverage reports are retained for seven days. Only those two XML
+files are uploaded; local notes, virtual environments, payloads, and runtime
+dumps are excluded. The test requirements are intentionally smaller than the
+GPU runtime and must not be used to build the production image.
+
+Run the SDK compatibility suite in its separate client environment:
 
 ```bash
-docker run --rm \
-  --entrypoint python3 \
-  -v "$PWD:/workspace" \
-  -w /workspace \
-  triton-openai-gateway:dev \
-  -m unittest discover -s tests -v
+python3.12 -m venv .local/client-venv
+.local/client-venv/bin/python -m pip install --requirement requirements-client.txt
+.local/client-venv/bin/python tests/client_compatibility.py \
+  --server-python "$PWD/.venv/bin/python"
 ```
 
 Run the standalone PDF/video preprocessing smoke test:
@@ -88,6 +90,12 @@ docker run --rm --network none \
   -w /workspace \
   triton-openai-gateway:dev \
   tests/runtime_vllm_smoke.py
+docker run --rm --network none \
+  --entrypoint python3 \
+  -v "$PWD:/workspace:ro" \
+  -w /workspace \
+  triton-openai-gateway:dev \
+  tests/runtime_stock_vllm_smoke.py
 ```
 
 This checks sampling, structured output, LoRA, pooling, metrics, and engine
@@ -97,11 +105,17 @@ inference. Missing runtime dependencies fail the check instead of skipping it.
 Validate shell and Helm files when those areas change:
 
 ```bash
-bash -n watch_triton.sh docker/80-watch-triton.sh docker/90-triton-chat-gateway.sh
+python3.12 scripts/check_repository.py
 helm lint ./helm/triton-gateway
 helm template test ./helm/triton-gateway >/dev/null
+helm template test ./helm/triton-gateway \
+  --values helm/triton-gateway/values.production.example.yaml >/dev/null
 helm lint ./helm/dcgm-exporter
 ```
+
+Ordinary CI does not download model weights or build the large Triton images.
+The real vLLM contract checks above require a prepared image; native DeepSeek
+and GPU inference qualification remain separate from the hosted CPU suite.
 
 GPU and end-to-end media changes also require a live Triton test with a model
 that supports the affected modality. Include model architecture, GPU type,
