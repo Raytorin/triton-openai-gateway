@@ -198,6 +198,51 @@ async def test_streaming_budget_without_engine_config_is_http_400_before_transpo
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("stream", [False, True])
+async def test_responses_auto_truncation_makes_room_for_thinking_and_answer(endpoint, stream):
+    model_path = endpoint.path / "model.json"
+    runtime = json.loads(model_path.read_text())
+    runtime["max_model_len"] = 166
+    model_path.write_text(json.dumps(runtime))
+    config_path = endpoint.path / "gateway.json"
+    config = json.loads(config_path.read_text())
+    config["context_compression"]["safety_margin_tokens"] = 8
+    config["generation"] = {"reasoning_default_output_tokens": 90}
+    config_path.write_text(json.dumps(config))
+
+    history = [
+        {"role": "user", "content": "old question " * 18},
+        {"role": "assistant", "content": "old reply " * 8},
+        {"role": "user", "content": "recent question " * 9},
+        {"role": "assistant", "content": "recent reply " * 8},
+        {"role": "user", "content": "current request " * 11},
+    ]
+    body = {
+        "model": "budget-http", "input": history, "stream": stream,
+        "truncation": "auto", "thinking_token_budget": 16,
+    }
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app_module.app), base_url="http://test") as client:
+        response = await client.post("/v1/responses", json=body)
+    assert response.status_code == 200, response.text
+    assert len(endpoint.client.records) == 1
+    wire = endpoint.client.records[0]
+    assert "old question" not in wire["prompt"]
+    assert "recent question" in wire["prompt"]
+    assert "current request" in wire["prompt"]
+    assert wire["sampling"]["thinking_token_budget"] == 16
+    limit = int(response.headers["X-Output-Token-Limit"])
+    assert 18 <= limit < 90
+    assert wire["sampling"]["max_tokens"] == limit
+    if stream:
+        terminal = sse(response)[-1]
+        assert terminal["type"] == "response.completed"
+        result = terminal["response"]
+    else:
+        result = response.json()
+    assert result["output"][0]["content"][0]["text"] == ANSWER
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stream", [False, True])
 async def test_responses_effort_uses_model_alias_without_exposing_thinking(endpoint, stream):
     config = endpoint.path / "gateway.json"
     settings = json.loads(config.read_text())

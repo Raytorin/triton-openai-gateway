@@ -81,9 +81,10 @@ HTTP 400 в Chat и Responses: `error.type=invalid_request_error`,
 `response.failed` с тем же кодом и сообщением. Внутренняя диагностика backend
 в эти ошибки не включается.
 
-Текущие текстовые транспорты Triton не предоставляют достоверных usage и finish
-metadata; usage и исчерпание лимита оцениваются повторной токенизацией.
-Это обозначено `X-Token-Usage-Source: estimated`. Заголовки X-Output-Token-Limit
+Gateway использует счётчики токенов и причину завершения, если бэкенд сообщает
+о поддержке этих данных. В остальных случаях расход токенов и исчерпание лимита
+оцениваются повторной токенизацией. Эту политику обозначает
+`X-Token-Usage-Source: backend-preferred`. Заголовки X-Output-Token-Limit
 и X-Output-Token-Limit-Source показывают выбранный бюджет. Сырой thinking не
 выдаётся за OpenAI reasoning summary. Defaults, caps и обязательная настройка
 runtime context описаны в [конфигурации](configuration.ru.md). Есть

@@ -77,6 +77,16 @@ def test_summarize_honors_proactive_trigger_without_explicit_output_limit(tmp_pa
     assert inference.call_args.args[2]["max_tokens"] == 80
 
 
+def test_chat_keeps_fitting_prompt_when_proactive_summary_has_no_history(tmp_path):
+    result, inference, summary = run_generation(
+        tmp_path, "summarize", history_tokens=0, latest_tokens=140, trigger_ratio=0.7,
+    )
+    assert result.extensions["context_status"]["action"] == "none"
+    assert result.headers["X-Output-Token-Limit"] == "80"
+    assert inference.await_args.args[1].split() == ["latest"] * 140
+    summary.assert_not_awaited()
+
+
 def test_truncate_reserves_full_default_output_before_shortening_budget(tmp_path):
     result, inference, summary = run_generation(tmp_path, "truncate")
     assert result.extensions["context_status"]["action"] == "truncate"

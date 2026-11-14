@@ -80,10 +80,10 @@ Chat emits an error frame; Responses emits `error` and `response.failed` with th
 same context code and message. Internal backend diagnostics are not included in
 these context errors.
 
-The current Triton text transports expose text without authoritative token usage
-or finish metadata; usage and limit detection are estimated by retokenization.
-`X-Token-Usage-Source: estimated` makes this explicit. `X-Output-Token-Limit` and
-`X-Output-Token-Limit-Source` report the selected budget. Raw thinking is never
+The gateway uses token counts and finish metadata when the backend advertises
+them. Otherwise it estimates usage and limit detection by retokenizing the
+text. `X-Token-Usage-Source: backend-preferred` identifies this policy.
+`X-Output-Token-Limit` and `X-Output-Token-Limit-Source` report the selected budget. Raw thinking is never
 presented as an OpenAI reasoning summary. See [configuration](configuration.md)
 for defaults, caps and mandatory runtime context configuration. A complete
 [model configuration example](../examples/responses/gateway.json) is provided;

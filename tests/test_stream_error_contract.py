@@ -115,3 +115,23 @@ def test_unexpected_responses_backend_failure_before_headers_is_json(monkeypatch
     assert response.json()["error"]["message"] == "Generation failed"
     assert DIAGNOSTIC not in response.text
     stream.lease.release.assert_awaited_once()
+
+
+def test_responses_overload_before_first_event_preserves_retry_after(monkeypatch):
+    async def backend():
+        yield GenerationEvent("fixture-id", 1, "fixture", {"role": "assistant"})
+        raise HTTPException(429, DIAGNOSTIC, headers={
+            "Retry-After": "1",
+            "X-Backend-Diagnostic": DIAGNOSTIC,
+        })
+
+    stream = GenerationStream(backend(), {})
+    stream.lease = AsyncMock()
+    response = post_stream(monkeypatch, RESPONSES, stream)
+
+    assert response.status_code == 429
+    assert response.headers.get("retry-after") == "1"
+    assert "x-backend-diagnostic" not in response.headers
+    assert response.json()["error"]["message"] == "Generation request failed"
+    assert DIAGNOSTIC not in response.text
+    stream.lease.release.assert_awaited_once()
