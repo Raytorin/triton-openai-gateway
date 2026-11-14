@@ -45,7 +45,8 @@ prompts and explicitly configured checkpoint-native images. Vision requires a
 matching checkpoint/tokenizer and explicit model policy; text-only remains the
 default. Embedding, native audio, video and PDF inputs are rejected. Keep
 checkpoint validation and engine settings in the model configuration. Existing
-Qwen/BGE models keep their original backend and execution environment.
+Qwen/BGE models keep their original backend and execution environment with this
+recipe. The [unified image](README.unified.md) uses the shared vLLM 0.32 environment.
 
 The independent engine remains pinned to vLLM 0.32 / CUDA 12.9. Updating the
 classic base does not upgrade or remove it. Its native ABI policy is bound to

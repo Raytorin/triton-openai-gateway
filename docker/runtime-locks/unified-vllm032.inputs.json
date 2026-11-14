@@ -1,0 +1,150 @@
+{
+  "schema": 1,
+  "platform": "linux/amd64",
+  "python": "3.12.15",
+  "base_requirements": "vllm032-cu129.requirements.txt",
+  "base_requirements_sha256": "cc4970e51a7a612375553c4515cebc8fe87fc05135989e08c667df1313d94aa4",
+  "base_inputs": "vllm032-cu129.inputs.json",
+  "base_inputs_sha256": "660d74ece30eaa29b185e16d78a09cd2f133d6b263c3ca49eabf021b2fed36b9",
+  "requirements": "unified-vllm032.requirements.txt",
+  "requirements_sha256": "a9c10d5adec42c9e397ab5049cd509e5c3dd19ef217d53cf7897b437eb2ba153",
+  "installation_policy": "Install into the manifested base with dependency resolution, --only-binary=:all: and --require-hashes, then verify all merged pins and run strict pip check.",
+  "base_overrides": {
+    "protobuf": {
+      "from": "7.36.2",
+      "to": "6.33.6"
+    },
+    "ml-dtypes": {
+      "from": "0.6.0",
+      "to": "0.5.4"
+    }
+  },
+  "inherited_direct_dependencies": {
+    "av": "19.0.2",
+    "cffi": "2.1.1",
+    "decord": "0.6.0",
+    "grpcio": "1.84.1",
+    "huggingface-hub": "2.3.0",
+    "numpy": "2.3.5",
+    "packaging": "26.3",
+    "pillow": "13.0.0",
+    "psutil": "7.2.2",
+    "pyyaml": "6.0.3",
+    "requests": "2.34.2",
+    "safetensors": "0.8.0",
+    "torch": "2.13.0+cu129",
+    "typing-extensions": "4.16.0",
+    "urllib3": "2.8.0"
+  },
+  "active_overlay_requirements": {
+    "accelerate": [
+      "numpy>=1.17",
+      "packaging>=20.0",
+      "psutil",
+      "pyyaml",
+      "torch>=2.0.0",
+      "huggingface_hub>=0.21.0",
+      "safetensors>=0.4.3"
+    ],
+    "deepseek-recipe": [],
+    "ml-dtypes": [
+      "numpy>=1.21",
+      "numpy>=1.21.2; python_version >= \"3.10\"",
+      "numpy>=1.23.3; python_version >= \"3.11\"",
+      "numpy>=1.26.0; python_version >= \"3.12\""
+    ],
+    "protobuf": [],
+    "python-rapidjson": [],
+    "qwen-vl-utils": [
+      "av",
+      "packaging",
+      "pillow",
+      "requests",
+      "decord; extra == \"decord\""
+    ],
+    "soundfile": [
+      "cffi>=1.0",
+      "numpy",
+      "typing-extensions"
+    ],
+    "soxr": [
+      "numpy"
+    ],
+    "tritonclient": [
+      "ml-dtypes<=0.5.4",
+      "numpy>=1.19.1",
+      "python-rapidjson>=0.9.1",
+      "urllib3>=2.0.7",
+      "grpcio>=1.81.1; extra == \"grpc\"",
+      "numpy>=1.19.1; extra == \"grpc\"",
+      "packaging>=14.1; extra == \"grpc\"",
+      "protobuf<7.0,>=6.30.0; extra == \"grpc\"",
+      "python-rapidjson>=0.9.1; extra == \"grpc\""
+    ]
+  },
+  "artifacts": [
+    {
+      "name": "accelerate",
+      "version": "1.14.0",
+      "filename": "accelerate-1.14.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/a8/db/253133d7e7cb40d3af384bb2f5c0b4a2b7fdcffbc95c688cc67a20a3c103/accelerate-1.14.0-py3-none-any.whl",
+      "sha256": "e94390c2863b873be18f623f9df48a0d8fe5eff13ea7f1a00092b0a7904888c6"
+    },
+    {
+      "name": "deepseek-recipe",
+      "version": "0.2.0",
+      "filename": "deepseek_recipe-0.2.0-cp310-abi3-manylinux_2_28_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/f5/50/bfc176a196e438509e5821b9b5e668d866ccc791aefc01fa1119e857d8e9/deepseek_recipe-0.2.0-cp310-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "259812bf382bc82668b672707c5922095cc4f5f60a6c514ff89640bb62a746f7"
+    },
+    {
+      "name": "ml-dtypes",
+      "version": "0.5.4",
+      "filename": "ml_dtypes-0.5.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/3a/cb/28ce52eb94390dda42599c98ea0204d74799e4d8047a0eb559b6fd648056/ml_dtypes-0.5.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "9ad459e99793fa6e13bd5b7e6792c8f9190b4e5a1b45c63aba14a4d0a7f1d5ff"
+    },
+    {
+      "name": "protobuf",
+      "version": "6.33.6",
+      "filename": "protobuf-6.33.6-cp39-abi3-manylinux2014_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/16/92/d1e32e3e0d894fe00b15ce28ad4944ab692713f2e7f0a99787405e43533a/protobuf-6.33.6-cp39-abi3-manylinux2014_x86_64.whl",
+      "sha256": "e9db7e292e0ab79dd108d7f1a94fe31601ce1ee3f7b79e0692043423020b0593"
+    },
+    {
+      "name": "python-rapidjson",
+      "version": "1.25",
+      "filename": "python_rapidjson-1.25-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/89/db/259cafa8461482d017c65ddb0a299b39a9c4038d83f18b293e89d101ffc4/python_rapidjson-1.25-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "d425190a9cc78f46f897d0efceddc094048ea08d584340a5830f48e186607f9c"
+    },
+    {
+      "name": "qwen-vl-utils",
+      "version": "0.0.14",
+      "filename": "qwen_vl_utils-0.0.14-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/c4/43/80f67e0336cb2fc725f8e06f7fe35c1d0fe946f4d2b8b2175e797e07349e/qwen_vl_utils-0.0.14-py3-none-any.whl",
+      "sha256": "5e28657bfd031e56bd447c5901b58ddfc3835285ed100f4c56580e0ade054e96"
+    },
+    {
+      "name": "soundfile",
+      "version": "0.14.0",
+      "filename": "soundfile-0.14.0-py2.py3-none-manylinux_2_28_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/7b/a2/70fd4432b924684c372df8b0a45708c36c057ef3596c9eb53e0a806b980b/soundfile-0.14.0-py2.py3-none-manylinux_2_28_x86_64.whl",
+      "sha256": "1e38bac1853412871318e82a1ba69a8be677619b56025bbfcccdb41b6cafe82d"
+    },
+    {
+      "name": "soxr",
+      "version": "1.1.0",
+      "filename": "soxr-1.1.0-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/5c/f1/0e55195893228609c9a08c3b13b7a83a46c3a992cd00d3304f0f320cfb07/soxr-1.1.0-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "3b033078e86f3c4a658e5697fac8995764fad9e799563616b630136b613167f1"
+    },
+    {
+      "name": "tritonclient",
+      "version": "2.74.0",
+      "filename": "tritonclient-2.74.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/37/b7/aec90fc89e37dbe69be5c903d67eff121a44098e075da4b34f02a9f17cce/tritonclient-2.74.0-py3-none-any.whl",
+      "sha256": "0252de30581bf944ac36f12318ed2ca9d72dff9f6622afc9a37dcfd46f76f8ee"
+    }
+  ]
+}

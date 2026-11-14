@@ -6,7 +6,6 @@ import importlib.util
 import io
 import json
 from pathlib import Path
-import sys
 import zipfile
 
 import pytest
@@ -151,10 +150,27 @@ def test_idempotence_requires_unchanged_payload_record_and_prior_derivation(inst
     assert snapshot(env) == before
 
 
-def test_cli_refuses_the_system_interpreter(tmp_path):
+def test_cli_refuses_an_unqualified_interpreter(tmp_path):
+    import runpy
     import subprocess
+    import venv
+
     helper = ROOT / 'docker/repair-decord-metadata.py'
     assert helper.exists(), 'qualified Decord metadata repair is missing'
-    result = subprocess.run([sys.executable, '-I', str(helper)], capture_output=True, text=True)
+    policy = runpy.run_path(str(helper))
+    metadata = policy['ENV_ROOT'] / 'lib/python3.12/site-packages' / policy['DIST']
+    owned_files = (
+        metadata / 'WHEEL',
+        metadata / 'RECORD',
+        policy['ARTIFACT_ROOT'] / 'decord-metadata-repair.json',
+    )
+    before = {path: path.read_bytes() if path.exists() else None for path in owned_files}
+    unqualified = tmp_path / 'unqualified-env'
+    venv.EnvBuilder(with_pip=False).create(unqualified)
+    result = subprocess.run(
+        [str(unqualified / 'bin/python'), '-I', str(helper)],
+        capture_output=True, text=True, timeout=20,
+    )
     assert result.returncode != 0
     assert 'owned execution environment' in result.stderr
+    assert {path: path.read_bytes() if path.exists() else None for path in owned_files} == before

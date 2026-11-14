@@ -573,12 +573,17 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
     fallback_output = minimum_output if automatic_compression and minimum_output <= desired_default else None
     if fallback_output is not None:
         reserve = max(reserve, fallback_output)
+    if context_mode is not None:
+        reserve = requested if requested is not None else 1
+        # Automatic Responses truncation keeps history until the request needs room to answer.
+        if context_mode == "truncate" and requested is None and minimum_output <= desired_default:
+            reserve = minimum_output
     context_started_at = time.monotonic()
     try:
         if context_mode is not None or refit_image_reserve:
             context_preparation = await run_cpu(_prepare_responses_context,
                 tokenizer, conversation, tools, limits.context_window,
-                (requested or 1) if context_mode is not None else reserve,
+                reserve,
                 context_settings, media_settings,
                 reasoning_settings.enable_thinking,
                 initial=(initial_prompt, initial_tokens, reserved_media_tokens),

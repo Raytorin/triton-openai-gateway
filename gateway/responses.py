@@ -297,7 +297,11 @@ async def create_response(request: ResponsesRequest, response: Response, http_re
                 telemetry.fail(exc)
             logger.error("Responses stream failed before headers",
                          extra={"status_code": status, "error_type": type(exc).__name__})
-            return JSONResponse(status_code=status, content={"error": stream_error_payload(exc)})
+            headers = None
+            if isinstance(exc, HTTPException) and exc.headers:
+                headers = {name: value for name, value in exc.headers.items()
+                           if name.lower() == "retry-after"}
+            return JSONResponse(status_code=status, content={"error": stream_error_payload(exc)}, headers=headers)
         return ManagedStreamingResponse(response_events(request, result, first),
             media_type="text/event-stream", headers=result.headers, close=result.aclose)
     response.headers.update(result.headers)

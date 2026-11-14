@@ -2,34 +2,36 @@
 # SPDX-License-Identifier: Apache-2.0
 """CPU contracts for the stock Triton 26.10 / NVIDIA vLLM 0.31 backend.
 
-Run directly in the actual image. ``--backend PATH`` selects an
-alternate stock-backend copy for qualification. Missing dependencies fail;
+Run directly in the actual gateway image. ``--backend PATH`` selects an
+alternate patched stock-backend copy for qualification. Missing dependencies fail;
 only GPU engine execution and Triton's injected response/metric APIs are doubled.
 With a read-only root, point ``VLLM_CACHE_ROOT`` at writable scratch space.
 """
 import argparse
 import asyncio
+from copy import copy
 import importlib.util
 import inspect
 import json
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import numpy as np
 import torch
 import vllm
 from tokenizers import Tokenizer, models, pre_tokenizers
 from transformers import PreTrainedTokenizerFast
-from vllm.config import DeviceConfig, ModelConfig, VllmConfig
+from vllm.config import DeviceConfig, ModelConfig, ReasoningConfig, VllmConfig
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.lora.request import LoRARequest
 from vllm.outputs import CompletionOutput, PoolingOutput, PoolingRequestOutput, RequestOutput
 from vllm.pooling_params import PoolingParams
 from vllm.renderers.hf import HfRenderer
-from vllm.sampling_params import StructuredOutputsParams
+from vllm.sampling_params import SamplingParams, StructuredOutputsParams
 from vllm.tokenizers.hf import get_cached_tokenizer
 from vllm.usage.usage_lib import UsageContext
 from vllm.v1.engine import FinishReason
@@ -40,9 +42,11 @@ parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument('--backend', type=Path, default=Path('/opt/tritonserver/backends/vllm'))
 options, test_arguments = parser.parse_known_args()
 sys.argv[1:] = test_arguments
-sys.path[:0] = [str(options.backend.resolve()), '/opt/tritonserver/backends/python']
+sys.path[:0] = [str(options.backend.resolve()), '/opt/tritonserver/backends/python', '/opt/tritonserver']
 
 import triton_python_backend_utils as pb_utils  # noqa: E402
+from gateway.prompt import build_sampling_parameters  # noqa: E402
+from gateway.schemas import ChatCompletionRequest  # noqa: E402
 from utils.metrics import VllmStatLoggerFactory  # noqa: E402
 from utils.request import EmbedRequest, GenerateRequest  # noqa: E402
 from utils.vllm_backend_utils import (  # noqa: E402
@@ -166,6 +170,73 @@ class StockVllmContracts(unittest.TestCase):
                 self.assertIsInstance(params.structured_outputs, StructuredOutputsParams)
                 for name, value in payload.items():
                     self.assertEqual(value, getattr(params.structured_outputs, name))
+
+    def test_native_thinking_budget_from_gateway_through_installed_stock_backend(self):
+        args = AsyncEngineArgs(model=str(self.model_path))
+        args.reasoning_config = {'reasoning_start_str': '<think>', 'reasoning_end_str': '</think>'}
+        config = copy(self.config)
+        token_ids = {'<think>': [7], '</think>': [8, 9]}
+
+        def encode(text, *, add_special_tokens):
+            self.assertFalse(add_special_tokens)
+            return token_ids[text]
+
+        def create_config(*, usage_context):
+            native = args.reasoning_config
+            self.assertIsInstance(native, ReasoningConfig)
+            with patch('vllm.config.reasoning.cached_tokenizer_from_config',
+                       return_value=SimpleNamespace(encode=encode)):
+                native.initialize_token_ids(self.config.model_config)
+            self.assertTrue(native.enabled)
+            self.assertEqual((token_ids['<think>'], token_ids['</think>']),
+                             (native.reasoning_start_token_ids, native.reasoning_end_token_ids))
+            config.reasoning_config = native
+            return config
+
+        engine = SimpleNamespace(vllm_config=config, reset_mm_cache=AsyncMock(),
+                                 shutdown=lambda: None, generate=lambda prompt, params: params)
+        logger = Logger()
+        prompt = {'prompt_token_ids': [10, 7]}
+
+        async def run():
+            async with build_async_engine_client_from_engine_args(args, logger) as client:
+                for fields, budget in (({}, None), ({'thinking_token_budget': None}, None),
+                                       ({'thinking_token_budget': 0}, 0), ({'thinking_token_budget': 8}, 8)):
+                    with self.subTest(fields=fields):
+                        request = ChatCompletionRequest(model='smoke', messages=[
+                            {'role': 'user', 'content': 'Hello'},
+                        ], **fields)
+                        # The positive budget leaves exactly one answer token after the closing tags.
+                        sampling = build_sampling_parameters(request, output_token_limit=11)
+                        self.assertEqual(budget is not None, 'thinking_token_budget' in sampling)
+                        params = TritonSamplingParams.from_dict(json.dumps(sampling), logger)
+                        self.assertIsInstance(params, SamplingParams, logger.errors)
+                        self.assertEqual(budget, params.thinking_token_budget)
+                        if budget is not None:
+                            self.assertFalse(params.skip_special_tokens)
+                        self.assertIs(params, client.generate(prompt, params))
+
+                too_short = TritonSamplingParams.from_dict(json.dumps({
+                    'max_tokens': 10, 'thinking_token_budget': 8,
+                }), logger)
+                self.assertIsInstance(too_short, SamplingParams, logger.errors)
+                with self.assertRaisesRegex(ValueError, 'leave room for a final answer'):
+                    client.generate(prompt, too_short)
+
+        with patch.object(args, 'create_engine_config', create_config), \
+                patch.object(AsyncLLM, 'from_vllm_config', return_value=engine):
+            asyncio.run(run())
+        self.assertEqual([], logger.errors)
+
+    def test_native_thinking_budget_rejects_invalid_wire_values(self):
+        for budget in (True, '8', -1):
+            with self.subTest(budget=budget):
+                logger = Logger()
+                params = TritonSamplingParams.from_dict(json.dumps({
+                    'max_tokens': 32, 'thinking_token_budget': budget,
+                }), logger)
+                self.assertIsNone(params)
+                self.assertTrue(any('must be a nonnegative integer' in error for error in logger.errors))
 
     def test_generation_lora_dispatch_and_original_text_wire_output(self):
         dispatched = []

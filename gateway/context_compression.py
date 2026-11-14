@@ -387,7 +387,8 @@ async def prepare_conversation_context(
 
     relaxed_limit = (prompt_limit + max(max_completion_tokens, 1) - minimum_output_tokens
                      if minimum_output_tokens is not None else prompt_limit)
-    can_keep_original = prompt_limit < tokens <= relaxed_limit
+    # Proactive compression may have no eligible history even when the original fits.
+    can_keep_original = minimum_output_tokens is not None and tokens <= relaxed_limit
     try:
         result = await _summarize_context(
             model_name=model_name,
