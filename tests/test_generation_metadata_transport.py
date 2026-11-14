@@ -235,7 +235,10 @@ async def test_chat_http_boundary_exposes_true_finish_or_typed_error(tmp_path, s
         if stream:
             assert response.status_code == 200
             payloads = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: {")]
-            assert any(p.get("error", {}).get("code") == 502 for p in payloads)
+            assert payloads[-1]["error"] == {
+                "message": "Generation failed", "type": "server_error",
+                "param": None, "code": "server_error",
+            }
             assert not any(c.get("finish_reason") for p in payloads for c in p.get("choices", []))
         else:
             assert response.status_code == 502

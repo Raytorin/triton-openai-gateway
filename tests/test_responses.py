@@ -28,15 +28,28 @@ def test_json_contract_and_defaults(path):
     assert data["usage"] == {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7,
         "input_tokens_details": {"cached_tokens": 0}, "output_tokens_details": {"reasoning_tokens": 0}}
     assert data["store"] is False and data["max_output_tokens"] == 4096
+    assert data["reasoning"] == {"effort": None, "summary": None}
     assert response.headers["x-token-usage-source"] == "estimated"
     assert response.headers["x-request-id"]
     assert generate.call_args.kwargs == {"context_mode": "disabled"}
     assert generate.call_args.args[0].max_completion_tokens is None
 
 
+@pytest.mark.parametrize("reasoning", [None, {}, {"effort": None}])
+def test_empty_reasoning_uses_model_default(reasoning):
+    with patch("gateway.responses.generation.generate", AsyncMock(return_value=result())) as generate:
+        response = TestClient(app).post("/v1/responses",
+            json={"model": "test", "input": "Hello", "reasoning": reasoning})
+    assert response.status_code == 200
+    assert generate.call_args.args[0].reasoning_effort is None
+    assert response.json()["reasoning"] == {"effort": None, "summary": None}
+
+
 @pytest.mark.parametrize("extra", [
     {"store": True}, {"background": True}, {"previous_response_id": "resp_a"},
-    {"conversation": "conv_a"}, {"reasoning": {"effort": "high"}},
+    {"conversation": "conv_a"}, {"reasoning": {"summary": "auto"}},
+    {"reasoning": {"effort": 1}}, {"reasoning": {"effort": True}},
+    {"reasoning": {"effort": ""}},
     {"tools": [{"type": "web_search"}]}, {"max_output_tokens": True},
     {"max_output_tokens": 0}, {"max_output_tokens": -1}, {"max_output_tokens": 1.5},
     {"max_output_tokens": "123"}, {"text": {"verbosity": "high"}},
@@ -155,7 +168,7 @@ def test_stream_backend_error_and_release(after_start):
         assert events[-1]["response"]["status"] == "failed"
     else:
         assert response.status_code == 502
-        assert response.json()["error"]["message"] == "Backend unavailable"
+        assert response.json()["error"]["message"] == "Generation failed"
     assert source.closed and closed == [True]
 
 

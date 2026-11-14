@@ -194,3 +194,40 @@ async def test_streaming_budget_without_engine_config_is_http_400_before_transpo
     assert "reasoning_config" in detail
     assert endpoint.client.records == []
     assert "text/event-stream" not in response.headers.get("content-type", "")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_responses_effort_uses_model_alias_without_exposing_thinking(endpoint, stream):
+    config = endpoint.path / "gateway.json"
+    settings = json.loads(config.read_text())
+    settings["reasoning"]["effort_map"] = {"high": "low"}
+    config.write_text(json.dumps(settings))
+    path, body = request("responses", stream)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app_module.app), base_url="http://test") as client:
+        response = await client.post(path, json={**body, "reasoning": {"effort": "high"}})
+    assert response.status_code == 200, response.text
+    assert len(endpoint.client.records) == 1
+    wire = endpoint.client.records[0]
+    assert "Reasoning effort is set to low." in wire["prompt"]
+    assert wire["sampling"]["thinking_token_budget"] == 128
+    assert REASONING not in response.text
+    if stream:
+        packets = sse(response)
+        assert packets[-1]["type"] == "response.completed"
+        objects = [packet["response"] for packet in packets if "response" in packet]
+    else:
+        objects = [response.json()]
+    assert all(obj["reasoning"] == {"effort": "high", "summary": None} for obj in objects)
+    assert objects[-1]["output"][0]["content"][0]["text"] == ANSWER
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_responses_unsupported_effort_rejected_by_model_before_transport(endpoint, stream):
+    path, body = request("responses", stream)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app_module.app), base_url="http://test") as client:
+        response = await client.post(path, json={**body, "reasoning": {"effort": "high"}})
+    assert response.status_code == 400
+    assert "not supported by the resolved chat template" in response.json()["error"]["message"]
+    assert endpoint.client.records == []

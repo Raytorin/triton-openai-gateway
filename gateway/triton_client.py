@@ -20,7 +20,7 @@ import tritonclient.grpc as grpcclient
 import tritonclient.grpc.aio as grpc_aio
 from tritonclient.utils import InferenceServerException
 from fastapi import HTTPException
-from .context_errors import ContextLengthExceeded, backend_context_length_error
+from .context_errors import backend_context_length_error
 from grpc.aio import AioRpcError
 
 from .cpu_work import run_cpu
@@ -359,18 +359,6 @@ async def list_ready_triton_models() -> list[str] | None:
 def _is_context_length_error(text: str) -> bool:
     lowered = text.lower()
     return all(marker.lower() in lowered for marker in ("longer than", "maximum model length"))
-
-
-def _friendly_error_message(detail: Any) -> str:
-    detail_text = detail if isinstance(detail, str) else json.dumps(detail, ensure_ascii=False)
-    if _is_context_length_error(detail_text):
-        return (
-            "Не удалось обработать запрос: PDF/изображения вместе с историей диалога "
-            "не помещаются в контекст модели. Начните новый диалог без старой истории, "
-            "уменьшите `pdf_chunk_pages` или `pdf_max_pixels`, либо увеличьте "
-            "`max_model_len` для модели."
-        )
-    return f"Не удалось обработать запрос через Triton: {detail_text}"
 
 
 def _triton_grpc_error(operation: str, exc: Exception) -> HTTPException:
@@ -1693,49 +1681,9 @@ async def stream_python_chat_to_openai(
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
 
-    try:
-        generated_text = await call_triton_python_chat(
-            request.model,
-            prompt,
-            conversation,
-            sampling_parameters,
-        )
-    except GenerationMetadataError:
-        raise
-    except HTTPException as exc:
-        if isinstance(exc, ContextLengthExceeded):
-            raise
-        error_text = _friendly_error_message(exc.detail)
-        usage = await run_cpu(build_usage, tokenizer, prompt, "")
-
-        yield sse_event(
-            build_openai_chunk(
-                response_id,
-                created,
-                request.model,
-                {"role": "assistant"},
-            )
-        )
-        yield sse_event(
-            build_openai_chunk(
-                response_id,
-                created,
-                request.model,
-                {"content": error_text},
-            )
-        )
-        yield sse_event(
-            build_openai_chunk(
-                response_id,
-                created,
-                request.model,
-                {},
-                finish_reason="stop",
-                usage=usage,
-            )
-        )
-        yield "data: [DONE]\n\n"
-        return
+    generated_text = await call_triton_python_chat(
+        request.model, prompt, conversation, sampling_parameters,
+    )
 
     generated_text, reasoning_result, usage = await run_cpu(_process_completed_generation,
         request,

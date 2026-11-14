@@ -52,6 +52,10 @@ class ChatTemplateKwargs(BaseModel):
         return value
 
 
+class ChatStreamOptions(BaseModel):
+    include_usage: StrictBool | None = None
+
+
 class ChatCompletionRequest(BaseModel):
     model: str
     messages: list[ChatMessage]
@@ -72,6 +76,7 @@ class ChatCompletionRequest(BaseModel):
     )
     response_format: ResponseFormat | None = None
     stream: bool = False
+    stream_options: ChatStreamOptions | None = None
     debug: bool = False
     include_reasoning: bool | None = None
     chat_template_kwargs: ChatTemplateKwargs | None = None

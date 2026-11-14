@@ -139,11 +139,11 @@ def test_budget_requires_a_supported_thinking_template(model):
     assert caught.value.status_code == 400
 
 
-def test_responses_nested_reasoning_remains_unsupported():
+def test_responses_maps_effort_and_numeric_budget_independently():
     request = ResponsesRequest(model="test", input="text", reasoning={"effort": "low"}, thinking_token_budget=128)
-    with pytest.raises(HTTPException) as caught:
-        to_chat(request)
-    assert caught.value.status_code == 400
+    chat = to_chat(request)
+    assert chat.reasoning_effort == "low"
+    assert chat.thinking_token_budget == 128
 
 
 @pytest.mark.parametrize("config", [{}, {"reasoning_start_str": "<think>"},

@@ -249,8 +249,18 @@ def validate_thinking_token_budget_output(
     output_token_limit: int, *, prefilled_thinking: bool = True,
 ) -> None:
     """Reserve generated boundaries and at least one final-answer token."""
+    minimum = minimum_thinking_output_tokens(
+        model_path, tokenizer, thinking_token_budget, prefilled_thinking=prefilled_thinking,
+    )
+    check_thinking_output_room(minimum, output_token_limit)
+
+
+def minimum_thinking_output_tokens(
+    model_path: Path, tokenizer: Any, thinking_token_budget: int | None,
+    *, prefilled_thinking: bool = True,
+) -> int:
     if thinking_token_budget is None:
-        return
+        return 1
     opening, closing = _thinking_budget_boundaries(model_path)
     boundary_tokens = 0
     try:
@@ -264,7 +274,11 @@ def validate_thinking_token_budget_output(
             boundary_tokens += len(token_ids)
     except (AttributeError, TypeError, ValueError, NotImplementedError) as exc:
         raise HTTPException(400, "thinking_token_budget requires a tokenizer that can encode reasoning boundaries") from exc
-    if thinking_token_budget + boundary_tokens >= output_token_limit:
+    return thinking_token_budget + boundary_tokens + 1
+
+
+def check_thinking_output_room(minimum: int, output_token_limit: int) -> None:
+    if output_token_limit < minimum:
         raise HTTPException(400, "thinking_token_budget plus generated reasoning boundary tags must leave room within the effective output token limit for the final answer")
 
 
