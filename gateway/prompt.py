@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from .cpu_work import checkpoint
+from .context_errors import ContextLengthExceeded
 from .multimodal import normalize_message_content
 from .openai_contract import structured_outputs_parameter
 from .qwen import chat_template_accepts_keyword
@@ -285,15 +286,23 @@ def fit_conversation_to_context(
     safety_margin_tokens: int = 64,
     enable_thinking: bool = False,
     initial_prompt: tuple[str, int] | None = None,
+    *,
+    minimum_output_tokens: int | None = None,
 ) -> tuple[list[dict[str, Any]], str, int, int]:
+    fitted = [dict(message) for message in conversation]
+    if initial_prompt is None:
+        initial_prompt = render_and_count_prompt(tokenizer, fitted, tools, enable_thinking=enable_thinking)
     prompt_limit = context_prompt_limit(
         max_model_len,
         max_completion_tokens,
         reserved_media_tokens,
         safety_margin_tokens,
+        prompt_tokens=initial_prompt[1],
     )
 
-    fitted = [dict(message) for message in conversation]
+    relaxed_limit = (prompt_limit + max(max_completion_tokens, 1) - minimum_output_tokens
+                     if minimum_output_tokens is not None else prompt_limit)
+    shorter = None
     dropped_messages = 0
     while True:
         checkpoint()
@@ -307,16 +316,17 @@ def fit_conversation_to_context(
         if prompt_tokens <= prompt_limit:
             return fitted, prompt, prompt_tokens, dropped_messages
 
+        if shorter is None and prompt_tokens <= relaxed_limit:
+            # Keep the most history possible if no candidate leaves the full reserve.
+            shorter = (fitted, prompt, prompt_tokens, dropped_messages)
+
         removable = oldest_removable_turn(fitted)
         if not removable:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "The system prompt and latest user message do not fit the model "
-                    f"context: prompt_tokens={prompt_tokens}, allowed_prompt_tokens="
-                    f"{prompt_limit}, max_model_len={max_model_len}."
-                ),
-            )
+            if shorter is not None:
+                return shorter
+            raise ContextLengthExceeded(max_model_len, prompt_tokens,
+                minimum_output_tokens if minimum_output_tokens is not None else max_completion_tokens,
+                reserved_media_tokens=reserved_media_tokens, safety_margin_tokens=safety_margin_tokens)
         removable_set = set(removable)
         fitted = [
             message for index, message in enumerate(fitted) if index not in removable_set
@@ -334,6 +344,8 @@ def context_prompt_limit(
     max_completion_tokens: int,
     reserved_media_tokens: int = 0,
     safety_margin_tokens: int = 64,
+    *,
+    prompt_tokens: int | None = None,
 ) -> int:
     prompt_limit = (
         int(max_model_len)
@@ -342,14 +354,9 @@ def context_prompt_limit(
         - max(int(safety_margin_tokens), 0)
     )
     if prompt_limit <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Requested output and media reserve leave no room for the input prompt: "
-                f"max_model_len={max_model_len}, max_tokens={max_completion_tokens}, "
-                f"media_reserve={reserved_media_tokens}."
-            ),
-        )
+        raise ContextLengthExceeded(max_model_len, prompt_tokens, max(max_completion_tokens, 1),
+            reserved_media_tokens=max(reserved_media_tokens, 0),
+            safety_margin_tokens=max(safety_margin_tokens, 0))
     return prompt_limit
 
 
@@ -406,6 +413,13 @@ def build_sampling_parameters(
         "max_tokens": int(max_tokens),
         "temperature": float(request.temperature if request.temperature is not None else 0.2),
     }
+
+    if request.thinking_token_budget is not None:
+        if request.thinking_token_budget >= max_tokens:
+            raise HTTPException(400, "thinking_token_budget must be less than the effective output token limit to leave room for the final answer")
+        sampling["thinking_token_budget"] = request.thinking_token_budget
+        # The gateway must see the forced closing marker to enter final content.
+        sampling["skip_special_tokens"] = False
 
     if request.top_p is not None:
         sampling["top_p"] = float(request.top_p)

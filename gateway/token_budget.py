@@ -11,6 +11,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from .context_errors import ContextLengthExceeded
+
 
 @dataclass(frozen=True)
 class GenerationLimits:
@@ -110,7 +112,9 @@ def choose_budget(limits: GenerationLimits, requested: int | None, *,
     desired = requested if requested is not None else limits.default
     effective = desired if requested is not None else min(desired, limits.cap, available)
     if effective <= 0 or effective > available:
-        raise HTTPException(400, "Input and requested output exceed the model context window")
+        raise ContextLengthExceeded(limits.context_window, prompt_tokens,
+            requested if requested is not None else 1,
+            reserved_media_tokens=media_tokens, safety_margin_tokens=safety_margin)
     return TokenBudget(requested, effective, limits.default, limits.cap,
                        limits.context_window, prompt_tokens, media_tokens, safety_margin,
                        "request" if requested is not None else limits.source)

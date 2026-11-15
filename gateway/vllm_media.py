@@ -937,6 +937,8 @@ def _summary_sampling(
         "max_tokens": min(max(max_tokens, 64), settings.summary_max_tokens),
         "temperature": min(float(sampling_parameters.get("temperature", 0.2)), 0.3),
     }
+    # Auxiliary summaries use a non-thinking prompt and their own output budget.
+    result.pop("thinking_token_budget", None)
     return result
 
 
@@ -980,6 +982,9 @@ def _chunk_label(items: list[VisualItem]) -> str:
 
 
 def _is_context_length_error(exc: Exception) -> bool:
+    from .context_errors import ContextLengthExceeded
+    if isinstance(exc, ContextLengthExceeded):
+        return True
     text = str(getattr(exc, "detail", exc)).lower()
     return "maximum model length" in text or (
         "longer than" in text and "model length" in text

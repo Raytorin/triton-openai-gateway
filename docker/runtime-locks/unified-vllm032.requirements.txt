@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+# CPython 3.12 / Linux amd64 gateway overlay for vllm032-cu129.
+# Install after the complete manifested base, with --only-binary=:all:
+# and --require-hashes; retain dependency resolution and run pip check.
+# Existing compatible base packages remain pinned by its original lock.
+
+accelerate==1.14.0 \
+    --hash=sha256:e94390c2863b873be18f623f9df48a0d8fe5eff13ea7f1a00092b0a7904888c6
+deepseek-recipe==0.2.0 \
+    --hash=sha256:259812bf382bc82668b672707c5922095cc4f5f60a6c514ff89640bb62a746f7
+ml-dtypes==0.5.4 \
+    --hash=sha256:9ad459e99793fa6e13bd5b7e6792c8f9190b4e5a1b45c63aba14a4d0a7f1d5ff
+protobuf==6.33.6 \
+    --hash=sha256:e9db7e292e0ab79dd108d7f1a94fe31601ce1ee3f7b79e0692043423020b0593
+python-rapidjson==1.25 \
+    --hash=sha256:d425190a9cc78f46f897d0efceddc094048ea08d584340a5830f48e186607f9c
+qwen-vl-utils[decord]==0.0.14 \
+    --hash=sha256:5e28657bfd031e56bd447c5901b58ddfc3835285ed100f4c56580e0ade054e96
+soundfile==0.14.0 \
+    --hash=sha256:1e38bac1853412871318e82a1ba69a8be677619b56025bbfcccdb41b6cafe82d
+soxr==1.1.0 \
+    --hash=sha256:3b033078e86f3c4a658e5697fac8995764fad9e799563616b630136b613167f1
+tritonclient[grpc]==2.74.0 \
+    --hash=sha256:0252de30581bf944ac36f12318ed2ca9d72dff9f6622afc9a37dcfd46f76f8ee

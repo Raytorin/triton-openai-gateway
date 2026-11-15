@@ -322,6 +322,63 @@ async def test_truncation_reserves_only_retained_deepseek_images(endpoint, route
 
 
 @pytest.mark.anyio
+async def test_chat_shortens_automatic_output_for_protected_deepseek_image(endpoint):
+    enable(endpoint, limit=1)
+    model_config = json.loads((endpoint.path / 'model.json').read_text())
+    (endpoint.path / 'model.json').write_text(json.dumps({
+        **model_config, 'max_model_len': 1300,
+    }))
+    (endpoint.path / 'gateway.json').write_text(json.dumps({
+        'reasoning': {'mode': 'disabled'},
+        'generation': {'default_output_tokens': 200},
+        'context_compression': {'mode': 'truncate'},
+    }))
+
+    def inputs(prompt, sampling, pictures, stream, **kwargs):
+        assert len(kwargs["media"].images) == 1
+        return [SimpleNamespace(prompt=prompt, sampling=sampling, stream=stream)]
+
+    with patch.object(tc, '_build_grpc_generate_inputs', inputs):
+        response = await post(body(messages=[{'role': 'user', 'content': [image('red')]}]))
+    assert response.status_code == 200, response.text
+    prompt, sampling, _ = endpoint.records[0]
+    available = 1300 - 64 - 1023 - len(endpoint.tokenizer.encode(prompt))
+    assert 0 < available < 200
+    assert sampling['max_tokens'] == available
+    assert response.headers['x-output-token-limit'] == str(available)
+
+@pytest.mark.anyio
+async def test_chat_can_reclaim_historical_image_reserve_for_full_output(endpoint):
+    enable(endpoint, limit=3)
+    model_config = json.loads((endpoint.path / 'model.json').read_text())
+    (endpoint.path / 'model.json').write_text(json.dumps({
+        **model_config, 'max_model_len': 2800,
+    }))
+    (endpoint.path / 'gateway.json').write_text(json.dumps({
+        'reasoning': {'mode': 'disabled'},
+        'generation': {'default_output_tokens': 1200},
+        'multimodal': {'media_history_mode': 'all', 'focus_current_media': False},
+        'context_compression': {'mode': 'truncate'},
+    }))
+    messages = [
+        {'role': 'user', 'content': [image('blue')]},
+        {'role': 'assistant', 'content': 'previous answer'},
+        {'role': 'user', 'content': [image('red')]},
+    ]
+
+    def inputs(prompt, sampling, pictures, stream, **kwargs):
+        return [SimpleNamespace(prompt=prompt, sampling=sampling, stream=stream)]
+
+    with patch.object(tc, '_build_grpc_generate_inputs', inputs):
+        response = await post(body(messages=messages))
+    assert response.status_code == 200, response.text
+    prompt, sampling, _ = endpoint.records[0]
+    assert prompt.count('<｜deepseek_image｜>') == 1
+    assert sampling['max_tokens'] == 1200
+    assert response.headers['x-output-token-limit'] == '1200'
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize('stream', [False, True])
 @pytest.mark.parametrize('history', ['all', 'latest'])
 async def test_truncation_selects_original_turns_before_tool_image_ordering(endpoint, stream, history):

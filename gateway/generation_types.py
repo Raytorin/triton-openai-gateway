@@ -14,6 +14,7 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from .admission import AdmissionLease
+from .context_errors import ContextLengthExceeded
 
 
 @dataclass
@@ -75,6 +76,16 @@ async def backend_events(source: AsyncIterator[str]) -> AsyncIterator[Generation
             await close()
 
 
+def stream_error_payload(exc: Exception) -> dict[str, Any]:
+    """Build a public stream error without forwarding backend diagnostics."""
+    if isinstance(exc, ContextLengthExceeded):
+        return exc.error
+    client_error = isinstance(exc, HTTPException) and exc.status_code < 500
+    kind = "invalid_request_error" if client_error else "server_error"
+    return {"message": "Generation request failed" if client_error else "Generation failed",
+            "type": kind, "param": None, "code": kind}
+
+
 @dataclass
 class GenerationStream:
     events: AsyncIterator[GenerationEvent]
@@ -100,16 +111,35 @@ def generation_stream(source: AsyncIterator[str], *, media_type: str,
     return GenerationStream(backend_events(source), headers)
 
 
-async def chat_events(stream: GenerationStream) -> AsyncIterator[str]:
+async def chat_events(stream: GenerationStream, *, include_usage: bool | None = None) -> AsyncIterator[str]:
+    def chunk(event: GenerationEvent) -> dict[str, Any]:
+        payload = {"id": event.id, "object": "chat.completion.chunk",
+                   "created": event.created, "model": event.model,
+                   "choices": [{"index": 0, "delta": event.delta,
+                                "finish_reason": event.finish_reason}]}
+        if include_usage is True:
+            payload["usage"] = None
+        elif include_usage is None and event.usage is not None:
+            payload["usage"] = event.usage
+        return payload
+
+    terminal = None
     try:
         async for event in stream.events:
-            payload = {"id": event.id, "object": "chat.completion.chunk",
-                       "created": event.created, "model": event.model,
-                       "choices": [{"index": 0, "delta": event.delta,
-                                    "finish_reason": event.finish_reason}]}
-            if event.usage is not None:
-                payload["usage"] = event.usage
-            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            if terminal is not None:
+                raise HTTPException(502, "Backend stream continued after its completion status")
+            if event.finish_reason is not None:
+                # Wait for clean exhaustion so a late backend error cannot look successful.
+                terminal = event
+                continue
+            yield f"data: {json.dumps(chunk(event), ensure_ascii=False)}\n\n"
+        if terminal is None:
+            raise HTTPException(502, "Backend stream ended without a completion status")
+        payload = chunk(terminal)
+        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        if include_usage is True and terminal.usage is not None:
+            usage = {**payload, "choices": [], "usage": terminal.usage}
+            yield f"data: {json.dumps(usage, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
     finally:
         await stream.aclose()

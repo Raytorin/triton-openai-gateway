@@ -258,7 +258,7 @@ async def test_stateless_responses_tools_and_rejections(endpoint, stream):
         {'type': 'function_call_output', 'call_id': call['call_id'], 'output': 'sunny'}]}, '/v1/responses')
     assert replay.status_code == 200, replay.text
     assert replay.json()['output'][0]['content'][0]['text'] == 'Final answer.'
-    for extra in ({'previous_response_id': 'resp_prior'}, {'store': True}, {'reasoning': {'effort': 'high'}}):
+    for extra in ({'previous_response_id': 'resp_prior'}, {'store': True}, {'reasoning': {'summary': 'auto'}}):
         assert (await post({'model': 'deepseek', 'input': 'hello', **extra}, '/v1/responses')).status_code == 400
 
 

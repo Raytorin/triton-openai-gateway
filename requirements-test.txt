@@ -11,10 +11,10 @@ httpx==0.27.2
 Jinja2==3.1.6
 ml-dtypes==0.5.4
 numpy==1.26.4
-opentelemetry-api==1.45.1
-opentelemetry-sdk==1.45.1
-opentelemetry-exporter-otlp==1.45.1
-opentelemetry-exporter-otlp-proto-http==1.45.1
+opentelemetry-api==1.45.2
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
 pillow==13.0.0
 pip-audit==2.10.1
 prometheus-client==0.26.0

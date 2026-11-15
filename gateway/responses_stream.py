@@ -11,7 +11,7 @@ import time
 from fastapi import HTTPException
 
 from .generation_telemetry import get_generation_telemetry
-from .generation_types import GenerationEvent, GenerationStream
+from .generation_types import GenerationEvent, GenerationStream, stream_error_payload
 from .responses import ResponsesRequest, new_id, response_object, text_part
 from .settings import logger
 
@@ -28,13 +28,14 @@ async def response_events(request: ResponsesRequest, stream: GenerationStream,
 
     def emit(kind, **fields):
         nonlocal sequence
-        payload = {"type": kind, "sequence_number": sequence, **fields}
+        payload = {**fields, "type": kind, "sequence_number": sequence}
         sequence += 1
         return f"event: {kind}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     def snapshot(status, error=None):
         return response_object(request, response_id=response_id, created=created,
-            status=status, output=output, usage=usage, headers=stream.headers, error=error)
+            status=status, output=output, usage=usage if status != "failed" else None,
+            headers=stream.headers, error=error)
 
     async def events():
         if first is not None:
@@ -101,12 +102,11 @@ async def response_events(request: ResponsesRequest, stream: GenerationStream,
     except Exception as exc:
         if telemetry := get_generation_telemetry():
             telemetry.fail(exc)
-        logger.exception("Responses stream failed")
-        message = str(exc.detail) if isinstance(exc, HTTPException) else "Generation failed"
-        error = {"code": "server_error", "message": message}
+        logger.error("Responses stream failed", extra={"error_type": type(exc).__name__})
+        error = stream_error_payload(exc)
         for item in output:
             item["status"] = "incomplete"
-        yield emit("error", **error, param=None)
+        yield emit("error", **error)
         yield emit("response.failed", response=snapshot("failed", error=error))
     finally:
         await stream.aclose()

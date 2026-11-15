@@ -1,9 +1,10 @@
 # SPDX-FileCopyrightText: 2026 Raytorin
 # SPDX-License-Identifier: Apache-2.0
 
-"""Audit all dependency lists, with one expiring runtime advisory exception."""
+"""Audit the test dependencies and gateway overlays with one expiring advisory exception."""
 from datetime import date, datetime, timezone
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -13,21 +14,29 @@ ACCELERATE_ADVISORY = "PYSEC-2026-3804"
 # Also known as GHSA-4j2p-28q2-5m79 / CVE-2026-69112.
 # Temporary acceptance for issue #28; this is not a vulnerability fix.
 # The unmodified audit resumes at 00:00 UTC on this date.
-ACCELERATE_EXCEPTION_EXPIRES = date(2026, 11, 10)
+ACCELERATE_EXCEPTION_EXPIRES = date(2026, 11, 26)
 
 
 def runtime_exception_args(requirements: str, today: date) -> list[str]:
-    pins = {line.split("#", 1)[0].strip() for line in requirements.splitlines()}
-    if "accelerate==1.14.0" in pins and today < ACCELERATE_EXCEPTION_EXPIRES:
+    logical_lines = re.sub(r"\\\r?\n", "", requirements).splitlines()
+    pins = {line.split("#", 1)[0].strip() for line in logical_lines}
+    exact_pin = r"accelerate==1\.14\.0(?:[ \t]+--hash=sha256:[a-fA-F0-9]{64})*"
+    if any(re.fullmatch(exact_pin, pin) for pin in pins) and today < ACCELERATE_EXCEPTION_EXPIRES:
         return ["--ignore-vuln", ACCELERATE_ADVISORY]
     return []
 
 
 def main() -> int:
     today = datetime.now(timezone.utc).date()
-    for relative_path in (
-        "requirements-test.txt",
-        "docker/triton-chat-gateway-requirements.txt",
+    for relative_path, resolution_args in (
+        ("requirements-test.txt", ()),
+        ("docker/triton-chat-gateway-requirements.txt", ()),
+        # The overlay is already resolved against the manifested engine.
+        # Audit these exact additions; inherited engine packages are separate.
+        (
+            "docker/runtime-locks/unified-vllm032.requirements.txt",
+            ("--disable-pip", "--no-deps"),
+        ),
     ):
         path = ROOT / relative_path
         exceptions = (
@@ -43,7 +52,7 @@ def main() -> int:
             )
         result = subprocess.run([
             sys.executable, "-m", "pip_audit", "--requirement", str(path),
-            "--progress-spinner", "off", *exceptions,
+            "--progress-spinner", "off", *resolution_args, *exceptions,
         ], check=False)
         if result.returncode:
             return result.returncode

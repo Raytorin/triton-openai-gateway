@@ -23,7 +23,11 @@ def model(monkeypatch, factory, startup=0.1, shutdown=0.3):
 
 def shared_engine_factory(monkeypatch, engine):
     """Import the production builder, replacing unavailable GPU/runtime imports."""
+    from types import ModuleType
+    utils = ModuleType('utils')
+    utils.__path__ = [str(Path(__file__).resolve().parents[1] / 'backends/vllm_multimodal/utils')]
     modules = {
+        'utils': utils,
         'vllm.engine.arg_utils': SimpleNamespace(AsyncEngineArgs=object),
         'vllm.engine.protocol': SimpleNamespace(EngineClient=object),
         'vllm.sampling_params': SimpleNamespace(SamplingParams=object, StructuredOutputsParams=object),

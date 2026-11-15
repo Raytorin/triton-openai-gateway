@@ -20,17 +20,18 @@ Chat, Responses, LoRA selection and admission use one generation service.
 | `text.format` | text, json_object, or json_schema with name/schema/strict; requires backend support for constrained output |
 | `temperature`, `top_p` | Passed to the existing sampling layer |
 | `max_output_tokens` | Positive integer or null; shared budget with Chat |
+| `thinking_token_budget` | Optional numeric reasoning budget for models with native support |
 | `lora_name` | Gateway extension; same routing as Chat |
 | `metadata` | Echoed, never persisted |
 | `truncation` | disabled (default) or auto; no hidden summarization |
 | `stream` | Native Responses events, not Chat chunks |
 | `store`, `background` | Omitted/null/false only; no persistence or background execution |
-| `reasoning` | Empty/null only; model configuration controls thinking |
+| `reasoning.effort` | Uses the model's allowed values and aliases, as in Chat. Omitted/null keeps the model default |
 | `parallel_tool_calls` | Omitted/null/true; false is rejected because the backend cannot enforce serial calls |
 
 Unsupported fields return 400 before inference: built-in tools, strict function
 argument enforcement, file_id, input audio/video/PDF, text verbosity, nonempty
-reasoning settings, previous_response_id, conversation, store=true, background=true.
+reasoning settings other than effort, previous_response_id, conversation, store=true, background=true.
 Use Chat for audio/video/PDF. Retrieval/deletion/cancellation by response ID,
 Conversations, compact, generated audio/images and legacy `/v1/completions`
 are not supported. Functions execute in the client, never in the gateway.
@@ -68,10 +69,21 @@ Thinking, text and function arguments consume the same budget. A length finish
 produces `status=incomplete` and `incomplete_details.reason=max_output_tokens`,
 even if thinking exhausted the budget before any visible text. No automatic retry.
 
-The current Triton text transports expose text without authoritative token usage
-or finish metadata; usage and limit detection are estimated by retokenization.
-`X-Token-Usage-Source: estimated` makes this explicit. `X-Output-Token-Limit` and
-`X-Output-Token-Limit-Source` report the selected budget. Raw thinking is never
+Gateway context rejections and recognized vLLM token-limit errors use HTTP 400
+for both Chat and Responses: `error.type=invalid_request_error` and
+`error.code=context_length_exceeded`. The message includes the context limit and
+known token counts; LiteLLM recognizes it as `ContextWindowExceededError`.
+`error.details` separates input tokens, the output budget, estimated media reserve
+and the safety margin. Their `budget_tokens` sum is a context reservation, not
+actual token usage. Unknown backend counts are omitted. Once SSE has started,
+Chat emits an error frame; Responses emits `error` and `response.failed` with the
+same context code and message. Internal backend diagnostics are not included in
+these context errors.
+
+The gateway uses token counts and finish metadata when the backend advertises
+them. Otherwise it estimates usage and limit detection by retokenizing the
+text. `X-Token-Usage-Source: backend-preferred` identifies this policy.
+`X-Output-Token-Limit` and `X-Output-Token-Limit-Source` report the selected budget. Raw thinking is never
 presented as an OpenAI reasoning summary. See [configuration](configuration.md)
 for defaults, caps and mandatory runtime context configuration. A complete
 [model configuration example](../examples/responses/gateway.json) is provided;
@@ -80,9 +92,10 @@ adjust its context window to the real runtime.
 ## Python example
 
 ```python
+import os
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="configured-by-proxy")
+client = OpenAI(base_url="http://localhost:8080/v1", api_key=os.environ["OPENAI_API_KEY"])
 response = client.responses.create(
     model="your-model", input="Say hello", store=False, max_output_tokens=128,
 )
@@ -153,7 +166,9 @@ Some existing Python and tool-aware Triton paths buffer generation before
 emitting deltas. Responses does not claim incremental tool decoding on those paths.
 
 Errors before headers use an HTTP error envelope. Errors after headers emit
-`error`, then `response.failed`. Disconnect closes the backend iterator and
+`error`, then `response.failed`. Partial output is marked incomplete, and a
+failed stream has no final usage. Public errors omit backend diagnostics.
+Disconnect closes the backend iterator and
 releases admission, including during request preparation. gRPC cancellation is
 propagated; actual generation cancellation depends on the backend and transport.
 HTTP transport closure cannot guarantee immediate GPU abort.

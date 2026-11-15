@@ -58,7 +58,8 @@ def template_capabilities(model_path, tokenizer, *, tools=None):
     if digest != TEMPLATE_SHA256:
         raise HTTPException(500, 'DeepSeek V4.1 requires the pinned upstream chat template')
     return TemplateCapabilities(template=source, fingerprint=digest, thinking='switch',
-        reads_enable_thinking=True, efforts=frozenset({'low', 'medium', 'high', 'max'}), has_think_tags=True)
+        reads_enable_thinking=True, efforts=frozenset({'low', 'medium', 'high', 'max'}), has_think_tags=True,
+        thinking_tag='<think>', prefills_thinking=True)
 
 
 def validate_request(request):

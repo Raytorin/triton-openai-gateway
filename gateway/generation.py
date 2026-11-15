@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from .generation_metadata import GenerationOutput, metadata_of, resolve_finish_reason, log_completion
 from .cpu_work import run_cpu
+from .context_errors import ContextLengthExceeded
 from .admission import AdmissionController
 from .context_compression import (
     ContextCompressionSettings,
@@ -59,6 +60,8 @@ from .prompt import (
 from .registry import ModelRegistry
 from .reasoning import (
     load_reasoning_settings,
+    check_thinking_output_room,
+    minimum_thinking_output_tokens,
     observe_reasoning_result,
     reasoning_message_fields,
     split_reasoning_output,
@@ -175,9 +178,11 @@ def _measure_prompt(tokenizer, conversation, tools, media_settings, thinking):
 
 
 def _prepare_responses_context(tokenizer, conversation, tools, window, reserve,
-                               settings, media_settings, thinking, initial=None):
-    """Stateless truncation removes complete oldest turns; never summarizes."""
+                               settings, media_settings, thinking, initial=None, *,
+                               minimum_output_tokens: int | None = None):
+    """Drop complete oldest turns, remeasuring the media reserve each time."""
     fitted = list(conversation)
+    shorter = None
     dropped = 0
     while True:
         if initial is not None:
@@ -185,13 +190,21 @@ def _prepare_responses_context(tokenizer, conversation, tools, window, reserve,
             initial = None
         else:
             prompt, tokens, media_tokens = _measure_prompt(tokenizer, fitted, tools, media_settings, thinking)
-        if tokens + media_tokens + reserve + settings.safety_margin_tokens <= window:
-            return ContextPreparation(fitted, prompt, tokens, settings.mode,
-                                      "truncate" if dropped else "none", dropped_messages=dropped)
+        available = window - tokens - media_tokens - settings.safety_margin_tokens
+        if (available >= reserve or (minimum_output_tokens is not None
+                and available >= minimum_output_tokens and shorter is None)):
+            candidate = ContextPreparation(fitted, prompt, tokens, settings.mode,
+                                          "truncate" if dropped else "none", dropped_messages=dropped)
+            if available >= reserve:
+                return candidate
+            shorter = candidate
         removable = oldest_removable_turn(fitted) if settings.mode == "truncate" else []
         if not removable:
-            raise HTTPException(400, "Input and output budget exceed the model context window; "
-                                "reduce input/max_output_tokens or allow truncation=auto")
+            if shorter is not None:
+                return shorter
+            raise ContextLengthExceeded(window, tokens,
+                minimum_output_tokens if minimum_output_tokens is not None else reserve,
+                reserved_media_tokens=media_tokens, safety_margin_tokens=settings.safety_margin_tokens)
         fitted = [message for i, message in enumerate(fitted) if i not in removable]
         dropped += len(removable)
 
@@ -341,6 +354,8 @@ def _chat_stream_headers(
 async def _generate(request: ChatCompletionRequest, *, context_mode: str | None = None):
     backend = registry.get_backend(request.model)
     is_vllm_backend = backend in {"vllm", "vllm_multimodal", "vllm_deepseek"}
+    if request.thinking_token_budget is not None and not is_vllm_backend:
+        raise HTTPException(400, "thinking_token_budget requires a supported vLLM backend")
     tokenizer, model_path = await registry.get_tokenizer_async(request.model)
     shared_tokenizer = tokenizer
     tools = selected_tools(request.tools, request.tool_choice)
@@ -358,6 +373,7 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         enable_thinking=controls.enable_thinking if controls is not None else None,
         preserve_thinking=controls.preserve_thinking if controls is not None else None,
         reasoning_effort=request.reasoning_effort,
+        thinking_token_budget=request.thinking_token_budget,
         tools=tools,
     )
     tokenizer = RequestTokenizer(tokenizer, reasoning_settings.template_kwargs,
@@ -532,22 +548,46 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         _measure_prompt, tokenizer, conversation, tools, media_settings,
         reasoning_settings.enable_thinking,
     )
-    # Preserve fitting history; reuse this exact measurement in context fitting.
-    available = limits.context_window - initial_tokens - reserved_media_tokens - context_settings.safety_margin_tokens
-    reserve = requested if requested is not None else max(1, min(limits.default, limits.cap, available))
-    effective_context_settings = context_settings
-    if requested is None and available > 0:
-        effective_context_settings = replace(context_settings, mode="disabled")
+    # Reserve the normal output budget before applying configured compression.
+    # Disabled compression and Responses retain their automatic input-preserving
+    # policy. If the default cannot fit even an empty context, keep the bounded
+    # automatic reserve while still honoring the configured compression trigger.
+    usable_context = limits.context_window - reserved_media_tokens - context_settings.safety_margin_tokens
+    available = usable_context - initial_tokens
+    desired_default = min(limits.default, limits.cap)
+    reserve = requested if requested is not None else max(1, min(desired_default, available))
+    minimum_output = 1
+    if request.thinking_token_budget is not None:
+        minimum_output = await run_cpu(minimum_thinking_output_tokens,
+            model_path, tokenizer, request.thinking_token_budget,
+            prefilled_thinking=reasoning_settings.prefills_thinking)
+    automatic_compression = (requested is None and context_mode is None
+                             and context_settings.mode != "disabled")
+    refit_image_reserve = (backend == "vllm_deepseek" and bool(request_media.images)
+                          and context_settings.mode == "truncate")
+    # A dropped DeepSeek image can free context for the full output reserve.
+    if automatic_compression and (desired_default < usable_context or refit_image_reserve):
+        reserve = desired_default
+    # When the default itself cannot fit, still let compression make room for
+    # the caller's reasoning budget and final answer.
+    fallback_output = minimum_output if automatic_compression and minimum_output <= desired_default else None
+    if fallback_output is not None:
+        reserve = max(reserve, fallback_output)
+    if context_mode is not None:
+        reserve = requested if requested is not None else 1
+        # Automatic Responses truncation keeps history until the request needs room to answer.
+        if context_mode == "truncate" and requested is None and minimum_output <= desired_default:
+            reserve = minimum_output
     context_started_at = time.monotonic()
     try:
-        if context_mode is not None or (backend == 'vllm_deepseek'
-                and request_media.images and effective_context_settings.mode == 'truncate'):
+        if context_mode is not None or refit_image_reserve:
             context_preparation = await run_cpu(_prepare_responses_context,
                 tokenizer, conversation, tools, limits.context_window,
-                (requested or 1) if context_mode is not None else reserve,
+                reserve,
                 context_settings, media_settings,
                 reasoning_settings.enable_thinking,
-                initial=(initial_prompt, initial_tokens, reserved_media_tokens))
+                initial=(initial_prompt, initial_tokens, reserved_media_tokens),
+                minimum_output_tokens=fallback_output)
         else:
             context_preparation = await prepare_conversation_context(
                 model_name=request.model,
@@ -557,7 +597,7 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
                 max_model_len=limits.context_window,
                 max_completion_tokens=reserve,
                 reserved_media_tokens=reserved_media_tokens,
-                settings=effective_context_settings,
+                settings=context_settings,
                 summary_generator=lambda previous, source: _generate_context_summary(
                     request.model,
                     context_settings,
@@ -566,6 +606,7 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
                 ),
                 enable_thinking=reasoning_settings.enable_thinking,
                 initial_prompt=(initial_prompt, initial_tokens),
+                minimum_output_tokens=fallback_output,
             )
     except asyncio.CancelledError:
         raise
@@ -630,7 +671,9 @@ async def _generate(request: ChatCompletionRequest, *, context_mode: str | None 
         # This is a context upper bound, including delimiters, not engine usage.
         # Mixed audio/vision reservation cannot be split reliably here.
         reserve_visual_context(reserved_media_tokens)
-    sampling_parameters["max_tokens"] = budget.effective
+    if request.thinking_token_budget is not None:
+        check_thinking_output_room(minimum_output, budget.effective)
+    sampling_parameters = build_sampling_parameters(request, output_token_limit=budget.effective)
     log_event(logger, "generation.token_budget", "Output token budget selected",
               model=request.model, **budget.__dict__, usage_source="estimated")
     CONTEXT_COMPRESSION_REQUESTS.labels(

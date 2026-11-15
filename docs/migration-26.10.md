@@ -43,7 +43,7 @@ lists vLLM `0.31.0+8977dc6f.nv26.10.72757140`, while this digest contains the
 | Starlette | 1.9.0 |
 | Uvicorn / uvloop | 0.54.0 / 0.23.0 |
 | Pillow | 13.0.0 |
-| OpenTelemetry API, SDK, OTLP exporter, and OTLP HTTP exporter | 1.45.1 |
+| OpenTelemetry API, SDK, OTLP exporter, and OTLP HTTP exporter | 1.45.2 |
 
 `docker/verify-runtime.py` verifies the runtime and overlay versions during
 the build. Triton frontend 2.74 accepts Pydantic `>=2.12,<3`; the old exact

@@ -13,12 +13,12 @@ accelerate==1.14.0
 pillow==13.0.0
 pymupdf==2.0
 qwen-vl-utils[decord]==0.0.14
-opentelemetry-api==1.45.1
-opentelemetry-sdk==1.45.1
+opentelemetry-api==1.45.2
+opentelemetry-sdk==1.45.2
 # The NVIDIA image also installs the OTLP meta-package. Keep both transports
 # on the same release when upgrading its HTTP exporter.
-opentelemetry-exporter-otlp==1.45.1
-opentelemetry-exporter-otlp-proto-http==1.45.1
+opentelemetry-exporter-otlp==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
 
 # Critical transitive dependencies are pinned as well. Triton client 2.74
 # requires grpcio >= 1.81.1, protobuf >= 6.30,<7 and ml-dtypes <= 0.5.4.

@@ -25,7 +25,7 @@
     "DeepGEMM": "1e1842a833699298f7afc02eefb2ed168fff6938"
   },
   "lock_status": "pre-materialization; 204 core packages metadata-resolved, kernel closure pinned from actual shim metadata and official index hashes; full data-wheel metadata/install validation pending build",
-  "requirements_sha256": "f11725eb9367e93c6132a4a76cd90514e67fce48af8bf46111543262a42eb8ef",
+  "requirements_sha256": "cc4970e51a7a612375553c4515cebc8fe87fc05135989e08c667df1313d94aa4",
   "kernel_artifacts_sha256": "32506fe06953dad4fb915a6855f27255d3dbfcf91aa3f0ef43621bc8eac78a63",
   "flashinfer_jit_shim_metadata_verified": true,
   "core_native_abi_policy_sha256": "934e8a8480b1f43dbe8204d7cee980877195dc535fb0aa8c11fa6c209b7d3cba"
