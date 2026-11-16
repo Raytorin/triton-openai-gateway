@@ -9,6 +9,7 @@ import os
 import time
 from dataclasses import dataclass
 from functools import lru_cache
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
@@ -233,12 +234,10 @@ def _configured_int(
     *,
     allow_zero: bool = False,
 ) -> int:
-    if env_name in os.environ:
-        return _env_int(env_name, default, allow_zero=allow_zero)
     try:
-        value = int(configured.get(key, default))
-    except (TypeError, ValueError):
-        value = default
+        value = int(configured[key])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return _env_int(env_name, default, allow_zero=allow_zero)
     minimum = 0 if allow_zero else 1
     return max(value, minimum)
 
@@ -249,13 +248,11 @@ def _configured_float(
     env_name: str,
     default: float,
 ) -> float:
-    if env_name in os.environ:
-        return _env_float(env_name, default)
     try:
-        value = float(configured.get(key, default))
-    except (TypeError, ValueError):
-        value = default
-    return max(value, 0.001)
+        value = float(configured[key])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return _env_float(env_name, default)
+    return max(value, 0.001) if isfinite(value) else _env_float(env_name, default)
 
 
 def _env_int(name: str, default: int, *, allow_zero: bool = False) -> int:

@@ -613,11 +613,12 @@ models. Every waiting request counts toward both queue limits and uses the
 shorter of their queue timeouts. Queue overflow or expiry returns HTTP `429`.
 
 
-Global defaults use `GATEWAY_MAX_INFLIGHT_REQUESTS`,
-`GATEWAY_MAX_QUEUE_SIZE`, and `GATEWAY_QUEUE_TIMEOUT_SECONDS`. Route overrides
-use `GATEWAY_CHAT_*`, `GATEWAY_MEDIA_*`, `GATEWAY_EMBEDDINGS_*`, and
-`GATEWAY_RERANK_*`. Per-model `gateway.json` takes precedence for configured
-routes.
+Global limits use `GATEWAY_MAX_INFLIGHT_REQUESTS`, `GATEWAY_MAX_QUEUE_SIZE`,
+and `GATEWAY_QUEUE_TIMEOUT_SECONDS`. Each model/route field is taken from the
+model's `gateway.json` when it supplies a valid value. Otherwise, Gateway uses the applicable
+`GATEWAY_CHAT_*`, `GATEWAY_MEDIA_*`, `GATEWAY_EMBEDDINGS_*`, or
+`GATEWAY_RERANK_*` environment variable, including Helm values, and falls back
+to the built-in defaults if unset.
 
 ### Logging And Debugging
 

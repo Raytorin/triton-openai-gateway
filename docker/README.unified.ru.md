@@ -120,6 +120,14 @@ docker run --rm --network none --runtime runc --user 1000:1000 \
    python3 /opt/tritonserver/tests/runtime_media_smoke.py'
 ```
 
+CPU smoke-тест по умолчанию загружает две тестовые модели последовательно.
+Каждая модель запускает дочерний процесс Python и ждёт отчёт о runtime до 60
+секунд. Для проверки параллельного старта запустите
+`runtime_unified_smoke.py --model-load-thread-count=2`. Параметр действует
+на процесс Triton, который запускает тест. В Helm число потоков загрузки можно
+задать отдельно через `triton.extraArgs`, передав
+`--model-load-thread-count=<число>`.
+
 Перед использованием unified-кандидата проверьте manifests и полное замыкание
 зависимостей, затем CPU import/spawn, регрессии gateway/client/media и реальный
 нативный stub Triton. Квалификация на целевой GPU также должна включать:

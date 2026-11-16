@@ -355,7 +355,7 @@ def log_excerpt(log, limit=8192):
     return first.decode(errors='replace') + '\n[... log middle omitted ...]\n' + log.read(limit).decode(errors='replace')
 
 
-def run_smoke(tritonserver, root, timeout, shutdown_timeout):
+def run_smoke(tritonserver, root, timeout, shutdown_timeout, *, model_load_thread_count=1):
     import numpy as np
     import tritonclient.grpc as grpc
     from tritonclient.utils import InferenceServerException
@@ -374,6 +374,7 @@ def run_smoke(tritonserver, root, timeout, shutdown_timeout):
                    '--model-control-mode=explicit', '--allow-http=false', '--allow-metrics=false',
                    '--allow-grpc=true', '--grpc-address=127.0.0.1', f'--grpc-port={port}',
                    '--exit-on-error=true', '--strict-model-config=true', '--exit-timeout-secs=5',
+                   f'--model-load-thread-count={model_load_thread_count}',
                    '--pinned-memory-pool-byte-size=0', *[f'--load-model={name}' for name in names]]
         environment = dict(os.environ, CUDA_VISIBLE_DEVICES='', HF_HUB_OFFLINE='1',
                            TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1',
@@ -447,11 +448,17 @@ def main():
     parser.add_argument('--root', type=Path, default=RUNTIME)
     parser.add_argument('--timeout', type=float, default=90)
     parser.add_argument('--shutdown-timeout', type=float, default=10)
+    parser.add_argument('--model-load-thread-count', type=int, default=1,
+                        help='Triton loader threads for this CPU smoke (default: 1; use 2 for parallel startup)')
     args = parser.parse_args()
     if args.timeout <= 0 or args.shutdown_timeout <= 0:
         parser.error('timeouts must be positive')
+    if args.model_load_thread_count < 1:
+        parser.error('--model-load-thread-count must be positive')
     try:
-        print(json.dumps(run_smoke(args.tritonserver, args.root, args.timeout, args.shutdown_timeout), sort_keys=True))
+        result = run_smoke(args.tritonserver, args.root, args.timeout, args.shutdown_timeout,
+                           model_load_thread_count=args.model_load_thread_count)
+        print(json.dumps(result, sort_keys=True))
     except (Exception, KeyboardInterrupt) as error:
         print(f'Unified native smoke failed: {error}', file=sys.stderr)
         return 1

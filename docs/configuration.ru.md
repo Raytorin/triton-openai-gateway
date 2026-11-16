@@ -618,11 +618,13 @@ workers умножает эти лимиты на процесс, как и ли
 меньший из двух таймаутов. Переполнение очереди или таймаут возвращают HTTP `429`.
 
 
-Глобальные значения задаются через `GATEWAY_MAX_INFLIGHT_REQUESTS`,
-`GATEWAY_MAX_QUEUE_SIZE` и `GATEWAY_QUEUE_TIMEOUT_SECONDS`. Route-specific
-переопределения используют `GATEWAY_CHAT_*`, `GATEWAY_MEDIA_*`,
-`GATEWAY_EMBEDDINGS_*` и `GATEWAY_RERANK_*`. Настройки route из `gateway.json`
-имеют приоритет для конкретной модели.
+Глобальные лимиты задаются через `GATEWAY_MAX_INFLIGHT_REQUESTS`,
+`GATEWAY_MAX_QUEUE_SIZE` и `GATEWAY_QUEUE_TIMEOUT_SECONDS`. Каждое поле лимита
+маршрута Gateway сначала читает из `gateway.json` модели. Если поле отсутствует
+или значение некорректно, Gateway берёт соответствующую переменную
+`GATEWAY_CHAT_*`, `GATEWAY_MEDIA_*`, `GATEWAY_EMBEDDINGS_*` или
+`GATEWAY_RERANK_*`, в том числе из Helm. Если переменная не задана,
+используется встроенное значение.
 
 ### Логи и debug
 
