@@ -24,6 +24,45 @@ if [[ ! "${WATCHER_CLEANUP_GRACE_SECONDS}" =~ ^[0-9]+$ || ! "${WATCHER_CLEANUP_I
 fi
 WATCHER_SOURCE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
+declare -a local_repositories=()
+staging_overlap_reported=false
+
+configure_local_repositories() {
+  local repository
+  while (( $# )); do
+    case "$1" in
+      --model-repository=*) repository="${1#*=}" ;;
+      --model-repository)
+        shift
+        repository="${1:-}"
+        ;;
+      *) repository="" ;;
+    esac
+    if [[ -n "${repository}" && "${repository}" != *"://"* ]]; then
+      local_repositories+=("$(realpath -m -- "${repository}")")
+    fi
+    if (( $# )); then shift; fi
+  done
+}
+
+is_local_repository_target() {
+  local repository
+  for repository in "${local_repositories[@]}"; do
+    if [[ "$1" == "${repository%/}/"* ]]; then return 0; fi
+  done
+  return 1
+}
+
+sync_local_repositories() {
+  if (( ! ${#local_repositories[@]} )); then return 0; fi
+  local helper="${WATCHER_SOURCE_ROOT}/gateway/local_repository.py"
+  [[ -f "${helper}" ]] || helper="/opt/tritonserver/gateway/local_repository.py"
+  python3 "${helper}" "${TRITON_BASE_URL:-http://127.0.0.1:8000}" "${MODELS_ACTIVE_DIR}" \
+    "${WATCHER_MODEL_DIR}" "${local_repositories[@]}"
+}
+
+configure_local_repositories "$@"
+
 read_model_field() {
   local helper="${WATCHER_SOURCE_ROOT}/gateway/model_config.py"
   [[ -f "${helper}" ]] || helper="${WATCHER_SOURCE_ROOT}/../libexec/triton-openai-gateway/model_config.py"
@@ -93,6 +132,7 @@ recover_pending_cleanup() {
 
 cleanup_unlinked_target() {
   local target="$1" mode="${2:-version}" helper
+  if is_local_repository_target "${target}"; then return 0; fi
   [[ "${cleanup_recovery_pending}" == false ]] || return 1
   prepare_model_backend "${target}" || return 1
   if [[ "${cleanup_attempted[${target}]+present}" ]] && (( SECONDS - cleanup_attempted[${target}] < 10#${WATCHER_CLEANUP_INTERVAL_SECONDS} )); then
@@ -110,9 +150,11 @@ cleanup_unlinked_target() {
 }
 
 remember_existing_links() {
-  local link_path
+  local link_path target
   [[ -d "${MODELS_ACTIVE_DIR}" ]] || return 0
   while IFS= read -r -d '' link_path; do
+    target="$(readlink -- "${link_path}")" || continue
+    if is_local_repository_target "${target}"; then continue; fi
     published_targets["${link_path}"]="$(readlink -m -- "${link_path}")"
   done < <(find "${MODELS_ACTIVE_DIR}" -mindepth 1 -maxdepth 1 -type l -print0)
 }
@@ -408,6 +450,8 @@ scan_target() {
   model_name="$(resolve_model_name "${target}")" || return 0
   [[ -n "${model_name}" && "${model_name}" != "." && "${model_name}" != ".." && "${model_name}" != */* ]] || return 0
   if [[ -L "${MODELS_ACTIVE_DIR}/${model_name}" ]]; then
+    existing_target="$(readlink -- "${MODELS_ACTIVE_DIR}/${model_name}")" || return 0
+    if is_local_repository_target "${existing_target}"; then return 0; fi
     existing_target="$(readlink -m -- "${MODELS_ACTIVE_DIR}/${model_name}")"
     if [[ "${existing_target}" != "$(readlink -f -- "${target}")" ]] && ! prefer_target "${target}" "${existing_target}"; then
       # Preserve distinct versions and backend changes; only an older duplicate
@@ -425,7 +469,7 @@ scan_target() {
   sync_model_symlink "${target}"
 }
 
-scan_once() {
+scan_remote_once() {
   local folder
   local target
 
@@ -448,6 +492,18 @@ scan_once() {
       scan_target "${target}"
     done < <(find "${folder}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
   done < <(find "${WATCHER_MODEL_DIR}" -maxdepth 1 -type d -name 'folder*' 2>/dev/null | sort)
+}
+
+scan_once() {
+  local status=0
+  sync_local_repositories || status=$?
+  if (( status == 0 )); then
+    staging_overlap_reported=false
+    scan_remote_once
+  elif (( status == 3 )) && [[ "${staging_overlap_reported}" == false ]]; then
+    echo "$(date '+%F %T') skipped temporary checkout scanning: local model repository overlaps ${WATCHER_MODEL_DIR}" >&2
+    staging_overlap_reported=true
+  fi
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

@@ -118,7 +118,7 @@ if [[ ! -x "${WATCH_TRITON_BIN}" ]]; then
     return 1 2>/dev/null || exit 1
 fi
 
-"${WATCH_TRITON_BIN}" &
+"${WATCH_TRITON_BIN}" "$@" &
 echo "$(date '+%F %T') started ${WATCH_TRITON_BIN} in background (pid=$!)"
 
 return 0 2>/dev/null || exit 0

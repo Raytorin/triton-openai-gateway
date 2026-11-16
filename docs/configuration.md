@@ -53,8 +53,16 @@ For the S3 repository flow, the watcher creates a stable link under
 version. The root follows `WATCHER_MODEL_DIR`, `TMP_ROOT`, Triton's
 `TMPDIR`, then `/tmp`, in that order.
 
-The watcher retires replaced/unlinked versions and older, unpublished duplicates
-of the same model, backend, and numeric version. Selection happens before path
+For a local path passed to Triton's `--model-repository`, the watcher creates
+the same link from Triton's ready-version index. If multiple versions are
+ready, it selects the highest one. Unloading a model removes its link, while
+the source files stay in the repository and may be mounted read-only. This
+works with the image entrypoint in both Docker and Kubernetes. When using S3
+and local repositories together, keep the temporary checkout directory separate
+from the local repositories so the watcher can manage the S3 copies safely.
+
+For S3 checkouts, the watcher retires replaced/unlinked versions and older,
+unpublished duplicates of the same model, backend, and numeric version. Selection happens before path
 repair and preserves the original `model.json` timestamp during repair, so a
 rewritten copy cannot look newer, including after a watcher restart.
 Retirement is recorded in `.watcher-retired.json`; these copies are not published
