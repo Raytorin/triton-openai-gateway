@@ -119,6 +119,13 @@ docker run --rm --network none --runtime runc --user 1000:1000 \
    python3 /opt/tritonserver/tests/runtime_media_smoke.py'
 ```
 
+The native CPU smoke loads its two probe models sequentially by default. Each
+probe starts a fresh Python child and allows 60 seconds to receive the runtime
+report. Use `runtime_unified_smoke.py --model-load-thread-count=2` to exercise
+parallel startup. The smoke option applies only to the Triton process started
+by the test. To set the load thread count in a Helm deployment, pass
+`--model-load-thread-count=<count>` through `triton.extraArgs`.
+
 Before using a unified candidate, verify its manifests and full dependency
 closure, then run CPU import/spawn checks, gateway/client/media regressions, and
 the real native Triton stub checks. Qualification on the target GPU must also

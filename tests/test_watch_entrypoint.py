@@ -321,6 +321,30 @@ class WatchEntrypointTests(unittest.TestCase):
             self.assertNotEqual(0, result.returncode)
             self.assertIn("watcher is not executable", result.stderr)
 
+    def test_forwards_triton_arguments_to_watcher(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            watcher = self._fake_watcher(base)
+            watcher.write_text('#!/usr/bin/env bash\nprintf "watcher-arg:%s\\n" "$@"\n')
+            arguments = ("tritonserver", "--model-repository", str(base / "local repository"))
+            env = {key: value for key, value in os.environ.items() if key not in WATCHER_ENV_KEYS}
+            env.update(WATCH_TRITON_BIN=str(watcher), TMPDIR=str(base))
+            result = subprocess.run(
+                ["bash", "-c", 'source "$1" "${@:2}"', "bash", str(ENTRYPOINT_SCRIPT), *arguments],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        forwarded = [
+            line.removeprefix("watcher-arg:")
+            for line in result.stdout.splitlines()
+            if line.startswith("watcher-arg:")
+        ]
+        self.assertEqual(forwarded, list(arguments))
+
 
 class WatcherDirectoryTests(unittest.TestCase):
     def _wait_for_symlink(self, link: Path) -> None:

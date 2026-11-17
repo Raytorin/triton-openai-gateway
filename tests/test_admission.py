@@ -84,16 +84,42 @@ class AdmissionTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "GATEWAY_MAX_INFLIGHT_REQUESTS": "10",
                     "GATEWAY_MAX_QUEUE_SIZE": "10",
+                    "GATEWAY_CHAT_MAX_INFLIGHT_REQUESTS": "64",
+                    "GATEWAY_CHAT_MAX_QUEUE_SIZE": "256",
                 },
-                clear=False,
+                clear=True,
             ):
                 lease = await controller.acquire("chat", "model-a", model_path)
-                with self.assertRaises(HTTPException) as context:
-                    await controller.acquire("chat", "model-a", model_path)
-                await lease.release()
+                try:
+                    with self.assertRaises(HTTPException) as context:
+                        unexpected_lease = await controller.acquire("chat", "model-a", model_path)
+                        await unexpected_lease.release()
+                finally:
+                    await lease.release()
 
         self.assertEqual(context.exception.status_code, 429)
         self.assertEqual(context.exception.headers["Retry-After"], "1")
+
+    async def test_route_defaults_fill_only_missing_or_invalid_model_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory)
+            (model_path / "gateway.json").write_text(
+                json.dumps({"admission": {
+                    "rerank": {"max_inflight": "invalid", "queue_timeout_seconds": 2},
+                }}),
+                encoding="utf-8",
+            )
+            with patch.dict("os.environ", {
+                "GATEWAY_MAX_INFLIGHT_REQUESTS": "3",
+                "GATEWAY_QUEUE_TIMEOUT_SECONDS": "1",
+                "GATEWAY_RERANK_MAX_INFLIGHT_REQUESTS": "12",
+                "GATEWAY_RERANK_MAX_QUEUE_SIZE": "60",
+                "GATEWAY_RERANK_QUEUE_TIMEOUT_SECONDS": "10",
+            }, clear=True):
+                policy = load_admission_policy(model_path, "rerank")
+
+        self.assertEqual(policy.model_gate, GatePolicy(12, 60, 2))
+        self.assertEqual(policy.global_gate, GatePolicy(3, 512, 1))
 
     async def test_release_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:

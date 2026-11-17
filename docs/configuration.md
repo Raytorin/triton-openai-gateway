@@ -53,8 +53,16 @@ For the S3 repository flow, the watcher creates a stable link under
 version. The root follows `WATCHER_MODEL_DIR`, `TMP_ROOT`, Triton's
 `TMPDIR`, then `/tmp`, in that order.
 
-The watcher retires replaced/unlinked versions and older, unpublished duplicates
-of the same model, backend, and numeric version. Selection happens before path
+For a local path passed to Triton's `--model-repository`, the watcher creates
+the same link from Triton's ready-version index. If multiple versions are
+ready, it selects the highest one. Unloading a model removes its link, while
+the source files stay in the repository and may be mounted read-only. This
+works with the image entrypoint in both Docker and Kubernetes. When using S3
+and local repositories together, keep the temporary checkout directory separate
+from the local repositories so the watcher can manage the S3 copies safely.
+
+For S3 checkouts, the watcher retires replaced/unlinked versions and older,
+unpublished duplicates of the same model, backend, and numeric version. Selection happens before path
 repair and preserves the original `model.json` timestamp during repair, so a
 rewritten copy cannot look newer, including after a watcher restart.
 Retirement is recorded in `.watcher-retired.json`; these copies are not published
@@ -613,11 +621,12 @@ models. Every waiting request counts toward both queue limits and uses the
 shorter of their queue timeouts. Queue overflow or expiry returns HTTP `429`.
 
 
-Global defaults use `GATEWAY_MAX_INFLIGHT_REQUESTS`,
-`GATEWAY_MAX_QUEUE_SIZE`, and `GATEWAY_QUEUE_TIMEOUT_SECONDS`. Route overrides
-use `GATEWAY_CHAT_*`, `GATEWAY_MEDIA_*`, `GATEWAY_EMBEDDINGS_*`, and
-`GATEWAY_RERANK_*`. Per-model `gateway.json` takes precedence for configured
-routes.
+Global limits use `GATEWAY_MAX_INFLIGHT_REQUESTS`, `GATEWAY_MAX_QUEUE_SIZE`,
+and `GATEWAY_QUEUE_TIMEOUT_SECONDS`. Each model/route field is taken from the
+model's `gateway.json` when it supplies a valid value. Otherwise, Gateway uses the applicable
+`GATEWAY_CHAT_*`, `GATEWAY_MEDIA_*`, `GATEWAY_EMBEDDINGS_*`, or
+`GATEWAY_RERANK_*` environment variable, including Helm values, and falls back
+to the built-in defaults if unset.
 
 ### Logging And Debugging
 
